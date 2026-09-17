@@ -13,7 +13,7 @@ def test_period_start_round_trip(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.PERIOD_START,
-        video_timestamp=0.0,
+        video_timestamp=0,
         source=EventSource.MANUAL,
         strength_state="5v5",
         period_number=1,
@@ -32,7 +32,7 @@ def test_period_end_round_trip(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.PERIOD_END,
-        video_timestamp=1230.5,
+        video_timestamp=1230,
         strength_state="5v5",
         period_number=1,
     )
@@ -47,7 +47,7 @@ def test_stoppage_round_trip(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.STOPPAGE,
-        video_timestamp=612.0,
+        video_timestamp=612,
         strength_state="5v5",
     )
     session.add(event)
@@ -66,7 +66,7 @@ def test_faceoff_round_trip_with_known_participants(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.FACEOFF,
-        video_timestamp=5.0,
+        video_timestamp=5,
         strength_state="5v5",
         faceoff_x=0.0,
         faceoff_y=0.0,
@@ -95,7 +95,7 @@ def test_faceoff_participant_can_be_explicitly_unknown(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.FACEOFF,
-        video_timestamp=5.0,
+        video_timestamp=5,
         strength_state="5v5",
         faceoff_x=-10.0,
         faceoff_y=3.0,
@@ -117,7 +117,7 @@ def test_faceoff_zone_and_high_danger_are_derived_not_persisted(session, game_an
     event = Event(
         game_id=game.id,
         event_type=EventType.FACEOFF,
-        video_timestamp=5.0,
+        video_timestamp=5,
         strength_state="5v5",
         faceoff_x=40.0,
         faceoff_y=0.0,
@@ -146,7 +146,7 @@ def test_shot_attempt_round_trip_full_fields(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=812.25,
+        video_timestamp=812,
         strength_state="5v5",
         shot_x=85.0,
         shot_y=0.0,
@@ -188,7 +188,7 @@ def test_shot_attempt_missed_has_null_xg_and_no_assists(session, game_and_teams)
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,
@@ -211,7 +211,7 @@ def test_shot_attempt_shooter_can_be_explicitly_unknown(session, game_and_teams)
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,
@@ -233,7 +233,7 @@ def test_shot_attempt_requires_shot_type(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,
@@ -253,7 +253,7 @@ def test_shot_attempt_requires_shot_outcome(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,
@@ -273,7 +273,7 @@ def test_shot_attempt_xg_must_be_in_zero_one_range(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,
@@ -294,7 +294,7 @@ def test_shot_attempt_xg_only_populated_for_shots_on_goal(session, game_and_team
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,
@@ -319,7 +319,7 @@ def test_penalty_round_trip(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.PENALTY,
-        video_timestamp=400.0,
+        video_timestamp=400,
         strength_state="5v5",
         penalty_team_id=team_a.id,
         penalty_player_id=player.id,
@@ -340,7 +340,7 @@ def test_penalty_player_can_be_explicitly_unknown(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.PENALTY,
-        video_timestamp=400.0,
+        video_timestamp=400,
         strength_state="5v5",
         penalty_team_id=team_a.id,
         penalty_player_unknown=True,
@@ -364,7 +364,7 @@ def test_shift_change_round_trip(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.SHIFT_CHANGE,
-        video_timestamp=100.0,
+        video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
         shift_player_id=player.id,
@@ -383,7 +383,7 @@ def test_shift_change_player_can_be_explicitly_unknown(session, game_and_teams):
     event = Event(
         game_id=game.id,
         event_type=EventType.SHIFT_CHANGE,
-        video_timestamp=100.0,
+        video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
         shift_player_unknown=True,
@@ -406,7 +406,7 @@ def test_required_reference_rejects_both_id_and_unknown_set(session, game_and_te
     event = Event(
         game_id=game.id,
         event_type=EventType.SHIFT_CHANGE,
-        video_timestamp=100.0,
+        video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
         shift_player_id=player.id,
@@ -425,7 +425,7 @@ def test_required_reference_rejects_neither_id_nor_unknown_set(session, game_and
     event = Event(
         game_id=game.id,
         event_type=EventType.SHIFT_CHANGE,
-        video_timestamp=100.0,
+        video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
         # neither shift_player_id nor shift_player_unknown set
@@ -447,7 +447,7 @@ def test_optional_reference_rejects_both_id_and_unknown_set(session, game_and_te
     event = Event(
         game_id=game.id,
         event_type=EventType.SHOT_ATTEMPT,
-        video_timestamp=900.0,
+        video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
         shot_y=10.0,

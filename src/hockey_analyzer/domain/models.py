@@ -215,7 +215,7 @@ class Event(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
     event_type: Mapped[EventType] = mapped_column(_enum_column(EventType), nullable=False)
-    video_timestamp: Mapped[float] = mapped_column(Float, nullable=False)
+    video_timestamp: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[EventSource] = mapped_column(_enum_column(EventSource), nullable=False, default=EventSource.MANUAL)
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Explicit per-event value (e.g. "5v5", "PP", "4v4", "EN") — never
