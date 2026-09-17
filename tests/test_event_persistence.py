@@ -3,25 +3,23 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from hockey_analyzer.domain.enums import EventSource, EventType, ShotOutcome, ShotType
-from hockey_analyzer.domain.models import Event, Player
+from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
+from hockey_analyzer.domain.models import Faceoff, Penalty, Player, PeriodEnd, PeriodStart, ShiftChange, ShotAttempt, Stoppage
 from hockey_analyzer.domain.rink import high_danger, zone
 
 
 def test_period_start_round_trip(session, game_and_teams):
     game, _, _ = game_and_teams
-    event = Event(
+    event = PeriodStart(
         game_id=game.id,
-        event_type=EventType.PERIOD_START,
         video_timestamp=0,
-        source=EventSource.MANUAL,
         strength_state="5v5",
         period_number=1,
     )
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(PeriodStart, event.id)
     assert fetched.event_type is EventType.PERIOD_START
     assert fetched.period_number == 1
     assert fetched.confirmed is False  # default
@@ -29,9 +27,8 @@ def test_period_start_round_trip(session, game_and_teams):
 
 def test_period_end_round_trip(session, game_and_teams):
     game, _, _ = game_and_teams
-    event = Event(
+    event = PeriodEnd(
         game_id=game.id,
-        event_type=EventType.PERIOD_END,
         video_timestamp=1230,
         strength_state="5v5",
         period_number=1,
@@ -39,21 +36,20 @@ def test_period_end_round_trip(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    assert session.get(Event, event.id).period_number == 1
+    assert session.get(PeriodEnd, event.id).period_number == 1
 
 
 def test_stoppage_round_trip(session, game_and_teams):
     game, _, _ = game_and_teams
-    event = Event(
+    event = Stoppage(
         game_id=game.id,
-        event_type=EventType.STOPPAGE,
         video_timestamp=612,
         strength_state="5v5",
     )
     session.add(event)
     session.commit()
 
-    assert session.get(Event, event.id).event_type is EventType.STOPPAGE
+    assert session.get(Stoppage, event.id).event_type is EventType.STOPPAGE
 
 
 def test_faceoff_round_trip_with_known_participants(session, game_and_teams):
@@ -63,9 +59,8 @@ def test_faceoff_round_trip_with_known_participants(session, game_and_teams):
     session.add_all([player_a, player_b])
     session.flush()
 
-    event = Event(
+    event = Faceoff(
         game_id=game.id,
-        event_type=EventType.FACEOFF,
         video_timestamp=5,
         strength_state="5v5",
         faceoff_x=0.0,
@@ -79,7 +74,7 @@ def test_faceoff_round_trip_with_known_participants(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(Faceoff, event.id)
     assert fetched.faceoff_x == 0.0
     assert fetched.faceoff_participant_a_id == player_a.id
     assert fetched.faceoff_participant_a_unknown is False
@@ -92,9 +87,8 @@ def test_faceoff_participant_can_be_explicitly_unknown(session, game_and_teams):
     session.add(player_a)
     session.flush()
 
-    event = Event(
+    event = Faceoff(
         game_id=game.id,
-        event_type=EventType.FACEOFF,
         video_timestamp=5,
         strength_state="5v5",
         faceoff_x=-10.0,
@@ -107,16 +101,15 @@ def test_faceoff_participant_can_be_explicitly_unknown(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(Faceoff, event.id)
     assert fetched.faceoff_participant_b_id is None
     assert fetched.faceoff_participant_b_unknown is True
 
 
 def test_faceoff_zone_and_high_danger_are_derived_not_persisted(session, game_and_teams):
     game, team_a, team_b = game_and_teams
-    event = Event(
+    event = Faceoff(
         game_id=game.id,
-        event_type=EventType.FACEOFF,
         video_timestamp=5,
         strength_state="5v5",
         faceoff_x=40.0,
@@ -129,10 +122,10 @@ def test_faceoff_zone_and_high_danger_are_derived_not_persisted(session, game_an
     session.add(event)
     session.commit()
 
-    assert not hasattr(Event, "zone")
-    assert not hasattr(Event, "high_danger")
+    assert not hasattr(Faceoff, "zone")
+    assert not hasattr(Faceoff, "high_danger")
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(Faceoff, event.id)
     assert zone(fetched.faceoff_x, attacking_direction=1) == "offensive"
 
 
@@ -143,9 +136,8 @@ def test_shot_attempt_round_trip_full_fields(session, game_and_teams):
     session.add_all([shooter, assist1])
     session.flush()
 
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=812,
         strength_state="5v5",
         shot_x=85.0,
@@ -165,7 +157,7 @@ def test_shot_attempt_round_trip_full_fields(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(ShotAttempt, event.id)
     assert fetched.shot_outcome is ShotOutcome.GOAL
     assert fetched.shot_type is ShotType.WRIST
     assert fetched.shot_rush is True
@@ -185,9 +177,8 @@ def test_shot_attempt_missed_has_null_xg_and_no_assists(session, game_and_teams)
     session.add(shooter)
     session.flush()
 
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
@@ -200,7 +191,7 @@ def test_shot_attempt_missed_has_null_xg_and_no_assists(session, game_and_teams)
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(ShotAttempt, event.id)
     assert fetched.shot_xg is None
     assert fetched.assist1_id is None
     assert fetched.assist1_unknown is False
@@ -208,9 +199,8 @@ def test_shot_attempt_missed_has_null_xg_and_no_assists(session, game_and_teams)
 
 def test_shot_attempt_shooter_can_be_explicitly_unknown(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
@@ -223,16 +213,15 @@ def test_shot_attempt_shooter_can_be_explicitly_unknown(session, game_and_teams)
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(ShotAttempt, event.id)
     assert fetched.shooter_id is None
     assert fetched.shooter_unknown is True
 
 
 def test_shot_attempt_requires_shot_type(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
@@ -250,9 +239,8 @@ def test_shot_attempt_requires_shot_type(session, game_and_teams):
 
 def test_shot_attempt_requires_shot_outcome(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
@@ -270,9 +258,8 @@ def test_shot_attempt_requires_shot_outcome(session, game_and_teams):
 
 def test_shot_attempt_xg_must_be_in_zero_one_range(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
@@ -291,9 +278,8 @@ def test_shot_attempt_xg_must_be_in_zero_one_range(session, game_and_teams):
 
 def test_shot_attempt_xg_only_populated_for_shots_on_goal(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,
@@ -316,9 +302,8 @@ def test_penalty_round_trip(session, game_and_teams):
     session.add(player)
     session.flush()
 
-    event = Event(
+    event = Penalty(
         game_id=game.id,
-        event_type=EventType.PENALTY,
         video_timestamp=400,
         strength_state="5v5",
         penalty_team_id=team_a.id,
@@ -329,7 +314,7 @@ def test_penalty_round_trip(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(Penalty, event.id)
     assert fetched.penalty_duration_minutes == 2.0
     assert fetched.penalty_infraction == "tripping"
     assert fetched.penalty_player_id == player.id
@@ -337,9 +322,8 @@ def test_penalty_round_trip(session, game_and_teams):
 
 def test_penalty_player_can_be_explicitly_unknown(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = Penalty(
         game_id=game.id,
-        event_type=EventType.PENALTY,
         video_timestamp=400,
         strength_state="5v5",
         penalty_team_id=team_a.id,
@@ -350,7 +334,7 @@ def test_penalty_player_can_be_explicitly_unknown(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(Penalty, event.id)
     assert fetched.penalty_player_id is None
     assert fetched.penalty_player_unknown is True
 
@@ -361,9 +345,8 @@ def test_shift_change_round_trip(session, game_and_teams):
     session.add(player)
     session.flush()
 
-    event = Event(
+    event = ShiftChange(
         game_id=game.id,
-        event_type=EventType.SHIFT_CHANGE,
         video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
@@ -373,16 +356,15 @@ def test_shift_change_round_trip(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(ShiftChange, event.id)
     assert fetched.shift_on_ice is True
     assert fetched.shift_player_id == player.id
 
 
 def test_shift_change_player_can_be_explicitly_unknown(session, game_and_teams):
     game, team_a, _ = game_and_teams
-    event = Event(
+    event = ShiftChange(
         game_id=game.id,
-        event_type=EventType.SHIFT_CHANGE,
         video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
@@ -392,7 +374,7 @@ def test_shift_change_player_can_be_explicitly_unknown(session, game_and_teams):
     session.add(event)
     session.commit()
 
-    fetched = session.get(Event, event.id)
+    fetched = session.get(ShiftChange, event.id)
     assert fetched.shift_player_id is None
     assert fetched.shift_player_unknown is True
 
@@ -403,9 +385,8 @@ def test_required_reference_rejects_both_id_and_unknown_set(session, game_and_te
     session.add(player)
     session.flush()
 
-    event = Event(
+    event = ShiftChange(
         game_id=game.id,
-        event_type=EventType.SHIFT_CHANGE,
         video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
@@ -422,9 +403,8 @@ def test_required_reference_rejects_both_id_and_unknown_set(session, game_and_te
 def test_required_reference_rejects_neither_id_nor_unknown_set(session, game_and_teams):
     game, team_a, _ = game_and_teams
 
-    event = Event(
+    event = ShiftChange(
         game_id=game.id,
-        event_type=EventType.SHIFT_CHANGE,
         video_timestamp=100,
         strength_state="5v5",
         shift_team_id=team_a.id,
@@ -444,9 +424,8 @@ def test_optional_reference_rejects_both_id_and_unknown_set(session, game_and_te
     session.add_all([shooter, assist])
     session.flush()
 
-    event = Event(
+    event = ShotAttempt(
         game_id=game.id,
-        event_type=EventType.SHOT_ATTEMPT,
         video_timestamp=900,
         strength_state="5v5",
         shot_x=30.0,

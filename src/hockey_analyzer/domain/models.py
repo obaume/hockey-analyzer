@@ -1,6 +1,18 @@
 """SQLAlchemy ORM models for the core domain (see CONTEXT.md and
 .scratch/hockey-analyzer-spec/spec.md). No GUI or video dependency.
 
+`Event` is an abstract single-table-inheritance base: only the fields
+every event carries live on it (see CONTEXT.md's Event entry), and each
+of the seven subtypes (`PeriodStart`, `PeriodEnd`, `Stoppage`, `Faceoff`,
+`ShotAttempt`, `Penalty`, `ShiftChange`) declares its own fields on its
+own class. All subtypes still share one physical `events` table, so a
+subtype's fields stay nullable at the database level (another subtype's
+row simply doesn't use them); each subtype's CHECK constraints — attached
+via `_add_constraints` right after its class, since SQLAlchemy only
+builds `__table_args__` for a class that owns its table — narrow that to
+"required for this subtype" (see ADR-0006 for why single-table
+inheritance was chosen over joined-table).
+
 Player-reference fields (shooter, assists, faceoff participants, the
 penalized player, the shift participant) are each backed by a nullable
 foreign key plus a companion `*_unknown` boolean, so a tagger can record an
@@ -18,6 +30,7 @@ derived by later modules (TaggingSession/StatsEngine) from `Event` rows.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date as date_
 
 from sqlalchemy import (
@@ -32,7 +45,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 
 from hockey_analyzer.domain.enums import (
     EventSource,
@@ -56,19 +69,26 @@ def _enum_column(enum_cls):
     return SAEnum(enum_cls, values_callable=lambda members: [member.value for member in members])
 
 
-def _required_reference_constraint(
-    id_column: str, unknown_column: str, name: str, *, for_event_type: str
-) -> CheckConstraint:
-    """For rows of `for_event_type`: exactly one of (id set, unknown flag
+_ConstraintFactory = Callable[[str], CheckConstraint]
+
+
+def _required_reference_constraint(id_column: str, unknown_column: str, name: str) -> _ConstraintFactory:
+    """For rows of the owning subtype: exactly one of (id set, unknown flag
     set) — the reference is always supplied, either as a known player or an
     explicit "unknown". Rows of other event types don't use this field at
-    all, so they're left unconstrained."""
-    return CheckConstraint(
-        f"event_type != '{for_event_type}' OR "
-        f"(({id_column} IS NULL) AND ({unknown_column} = 1)) "
-        f"OR (({id_column} IS NOT NULL) AND ({unknown_column} = 0))",
-        name=name,
-    )
+    all, so they're left unconstrained. `for_event_type` (the owning
+    subtype's `event_type` value) is supplied by `_add_constraints`, not
+    here, so it's stated once per subtype rather than at every constraint."""
+
+    def build(for_event_type: str) -> CheckConstraint:
+        return CheckConstraint(
+            f"event_type != '{for_event_type}' OR "
+            f"(({id_column} IS NULL) AND ({unknown_column} = 1)) "
+            f"OR (({id_column} IS NOT NULL) AND ({unknown_column} = 0))",
+            name=name,
+        )
+
+    return build
 
 
 def _optional_reference_constraint(id_column: str, unknown_column: str, name: str) -> CheckConstraint:
@@ -82,10 +102,32 @@ def _optional_reference_constraint(id_column: str, unknown_column: str, name: st
     )
 
 
-def _required_column_constraint(column: str, name: str, *, for_event_type: str) -> CheckConstraint:
-    """For rows of `for_event_type`, `column` must be set. Rows of other
-    event types don't use this field, so they're left unconstrained."""
-    return CheckConstraint(f"event_type != '{for_event_type}' OR {column} IS NOT NULL", name=name)
+def _required_column_constraint(column: str, name: str) -> _ConstraintFactory:
+    """For rows of the owning subtype, `column` must be set. Rows of other
+    event types don't use this field, so they're left unconstrained. See
+    `_required_reference_constraint` for why `for_event_type` is deferred
+    to `_add_constraints`."""
+
+    def build(for_event_type: str) -> CheckConstraint:
+        return CheckConstraint(f"event_type != '{for_event_type}' OR {column} IS NOT NULL", name=name)
+
+    return build
+
+
+def _add_constraints(model: type["Event"], *constraints: CheckConstraint | _ConstraintFactory) -> None:
+    """Attach an `Event` subtype's CHECK constraints to the shared
+    `events` table. Declarative only builds `__table_args__` for a class
+    that owns its table, which a single-table-inheritance subtype
+    doesn't — so constraints are appended to the inherited table directly,
+    right after the subtype's class body, to keep them next to the fields
+    they govern. A `_ConstraintFactory` (from `_required_reference_constraint`
+    /`_required_column_constraint`) is resolved here using the subtype's own
+    `polymorphic_identity`, so `for_event_type` is stated once per subtype
+    rather than repeated at each constraint call site."""
+    for_event_type = model.__mapper__.polymorphic_identity.value
+    for constraint in constraints:
+        resolved = constraint if isinstance(constraint, CheckConstraint) else constraint(for_event_type)
+        model.__table__.append_constraint(resolved)
 
 
 class Team(Base):
@@ -170,47 +212,12 @@ class GameUnitAssignment(Base):
 
 
 class Event(Base):
-    """Single table covering all seven subtypes; each subtype only uses its
-    own slice of the nullable columns below (see module docstring and
-    CONTEXT.md's Event entry for the discriminator/rationale)."""
+    """Abstract single-table-inheritance base: only the fields every event
+    carries regardless of subtype live here (see CONTEXT.md's Event entry).
+    Subtype-specific fields and constraints live on the seven classes below
+    (see module docstring and ADR-0006)."""
 
     __tablename__ = "events"
-    __table_args__ = (
-        _required_reference_constraint(
-            "shift_player_id", "shift_player_unknown", "ck_shift_player_ref", for_event_type=EventType.SHIFT_CHANGE.value
-        ),
-        _required_reference_constraint(
-            "faceoff_participant_a_id",
-            "faceoff_participant_a_unknown",
-            "ck_faceoff_participant_a_ref",
-            for_event_type=EventType.FACEOFF.value,
-        ),
-        _required_reference_constraint(
-            "faceoff_participant_b_id",
-            "faceoff_participant_b_unknown",
-            "ck_faceoff_participant_b_ref",
-            for_event_type=EventType.FACEOFF.value,
-        ),
-        _required_reference_constraint(
-            "shooter_id", "shooter_unknown", "ck_shooter_ref", for_event_type=EventType.SHOT_ATTEMPT.value
-        ),
-        _optional_reference_constraint("assist1_id", "assist1_unknown", "ck_assist1_ref"),
-        _optional_reference_constraint("assist2_id", "assist2_unknown", "ck_assist2_ref"),
-        _required_reference_constraint(
-            "penalty_player_id",
-            "penalty_player_unknown",
-            "ck_penalty_player_ref",
-            for_event_type=EventType.PENALTY.value,
-        ),
-        _required_column_constraint("shot_type", "ck_shot_type_required", for_event_type=EventType.SHOT_ATTEMPT.value),
-        _required_column_constraint(
-            "shot_outcome", "ck_shot_outcome_required", for_event_type=EventType.SHOT_ATTEMPT.value
-        ),
-        CheckConstraint("shot_xg IS NULL OR (shot_xg >= 0 AND shot_xg <= 1)", name="ck_shot_xg_range"),
-        CheckConstraint(
-            "shot_xg IS NULL OR shot_outcome IN ('goal', 'saved')", name="ck_shot_xg_only_for_shots_on_goal"
-        ),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
@@ -224,10 +231,39 @@ class Event(Base):
 
     game: Mapped["Game"] = relationship(back_populates="events")
 
-    # -- period_start / period_end --
-    period_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    __mapper_args__ = {
+        "polymorphic_on": event_type,
+        "polymorphic_abstract": True,
+    }
 
-    # -- faceoff (raw coordinates only; zone is derived, never stored) --
+
+class _PeriodNumberMixin:
+    """Shared by `PeriodStart`/`PeriodEnd`: single-table inheritance means
+    both classes map to the same `events` table, so this must be one
+    physical column, not two independently-declared ones."""
+
+    @declared_attr
+    def period_number(cls) -> Mapped[int | None]:
+        return mapped_column(Integer, nullable=True, use_existing_column=True)
+
+
+class PeriodStart(_PeriodNumberMixin, Event):
+    __mapper_args__ = {"polymorphic_identity": EventType.PERIOD_START}
+
+
+class PeriodEnd(_PeriodNumberMixin, Event):
+    __mapper_args__ = {"polymorphic_identity": EventType.PERIOD_END}
+
+
+class Stoppage(Event):
+    __mapper_args__ = {"polymorphic_identity": EventType.STOPPAGE}
+
+
+class Faceoff(Event):
+    """Raw coordinates only; `zone` is derived, never stored."""
+
+    __mapper_args__ = {"polymorphic_identity": EventType.FACEOFF}
+
     faceoff_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     faceoff_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     faceoff_team_a_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
@@ -238,7 +274,24 @@ class Event(Base):
     faceoff_participant_b_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     faceoff_winner_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
 
-    # -- shot_attempt (raw coordinates only; zone/high_danger derived) --
+
+_add_constraints(
+    Faceoff,
+    _required_reference_constraint(
+        "faceoff_participant_a_id", "faceoff_participant_a_unknown", "ck_faceoff_participant_a_ref"
+    ),
+    _required_reference_constraint(
+        "faceoff_participant_b_id", "faceoff_participant_b_unknown", "ck_faceoff_participant_b_ref"
+    ),
+)
+
+
+class ShotAttempt(Event):
+    """Raw coordinates only; `zone`/`high_danger` are derived, never
+    stored."""
+
+    __mapper_args__ = {"polymorphic_identity": EventType.SHOT_ATTEMPT}
+
     shot_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     shot_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     shot_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
@@ -258,15 +311,45 @@ class Event(Base):
     assist2_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     assist2_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    # -- penalty --
+
+_add_constraints(
+    ShotAttempt,
+    _required_reference_constraint("shooter_id", "shooter_unknown", "ck_shooter_ref"),
+    _optional_reference_constraint("assist1_id", "assist1_unknown", "ck_assist1_ref"),
+    _optional_reference_constraint("assist2_id", "assist2_unknown", "ck_assist2_ref"),
+    _required_column_constraint("shot_type", "ck_shot_type_required"),
+    _required_column_constraint("shot_outcome", "ck_shot_outcome_required"),
+    CheckConstraint("shot_xg IS NULL OR (shot_xg >= 0 AND shot_xg <= 1)", name="ck_shot_xg_range"),
+    CheckConstraint("shot_xg IS NULL OR shot_outcome IN ('goal', 'saved')", name="ck_shot_xg_only_for_shots_on_goal"),
+)
+
+
+class Penalty(Event):
+    __mapper_args__ = {"polymorphic_identity": EventType.PENALTY}
+
     penalty_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     penalty_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     penalty_player_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     penalty_duration_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
     penalty_infraction: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # -- shift_change --
+
+_add_constraints(
+    Penalty,
+    _required_reference_constraint("penalty_player_id", "penalty_player_unknown", "ck_penalty_player_ref"),
+)
+
+
+class ShiftChange(Event):
+    __mapper_args__ = {"polymorphic_identity": EventType.SHIFT_CHANGE}
+
     shift_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     shift_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     shift_player_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     shift_on_ice: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+_add_constraints(
+    ShiftChange,
+    _required_reference_constraint("shift_player_id", "shift_player_unknown", "ck_shift_player_ref"),
+)
