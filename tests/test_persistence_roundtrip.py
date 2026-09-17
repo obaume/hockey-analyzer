@@ -83,14 +83,10 @@ def test_game_opponent_shifts_complete_defaults_false(session):
     assert session.get(Game, game.id).opponent_shifts_complete is False
 
 
-def test_game_roster_entry_round_trip(session):
-    team = Team(name="Icebreakers")
+def test_game_roster_entry_round_trip(session, game_and_teams):
+    game, team, _ = game_and_teams
     player = Player(full_name="Jordan Kim")
-    session.add_all([team, player])
-    session.flush()
-
-    game = Game()
-    session.add(game)
+    session.add(player)
     session.flush()
 
     entry = GameRosterEntry(
@@ -111,15 +107,11 @@ def test_game_roster_entry_round_trip(session):
     assert fetched.team_id == team.id
 
 
-def test_game_roster_entry_jersey_number_unique_within_game_and_team(session):
-    team = Team(name="Icebreakers")
+def test_game_roster_entry_jersey_number_unique_within_game_and_team(session, game_and_teams):
+    game, team, _ = game_and_teams
     player_a = Player(full_name="Jordan Kim")
     player_b = Player(full_name="Casey Nguyen")
-    session.add_all([team, player_a, player_b])
-    session.flush()
-
-    game = Game()
-    session.add(game)
+    session.add_all([player_a, player_b])
     session.flush()
 
     session.add(GameRosterEntry(game_id=game.id, player_id=player_a.id, team_id=team.id, jersey_number=14))
@@ -131,16 +123,11 @@ def test_game_roster_entry_jersey_number_unique_within_game_and_team(session):
     session.rollback()
 
 
-def test_game_roster_entry_same_jersey_number_allowed_across_teams(session):
-    team_a = Team(name="Icebreakers")
-    team_b = Team(name="Rivals")
+def test_game_roster_entry_same_jersey_number_allowed_across_teams(session, game_and_teams):
+    game, team_a, team_b = game_and_teams
     player_a = Player(full_name="Jordan Kim")
     player_b = Player(full_name="Casey Nguyen")
-    session.add_all([team_a, team_b, player_a, player_b])
-    session.flush()
-
-    game = Game()
-    session.add(game)
+    session.add_all([player_a, player_b])
     session.flush()
 
     session.add(GameRosterEntry(game_id=game.id, player_id=player_a.id, team_id=team_a.id, jersey_number=14))
@@ -148,14 +135,10 @@ def test_game_roster_entry_same_jersey_number_allowed_across_teams(session):
     session.commit()  # no error
 
 
-def test_game_unit_assignment_round_trip(session):
-    team = Team(name="Icebreakers")
+def test_game_unit_assignment_round_trip(session, game_and_teams):
+    game, team, _ = game_and_teams
     player = Player(full_name="Jordan Kim")
-    session.add_all([team, player])
-    session.flush()
-
-    game = Game()
-    session.add(game)
+    session.add(player)
     session.flush()
 
     assignment = GameUnitAssignment(
@@ -173,14 +156,10 @@ def test_game_unit_assignment_round_trip(session):
     assert fetched.unit_number == 1
 
 
-def test_player_can_hold_several_simultaneous_unit_assignments(session):
-    team = Team(name="Icebreakers")
+def test_player_can_hold_several_simultaneous_unit_assignments(session, game_and_teams):
+    game, team, _ = game_and_teams
     player = Player(full_name="Jordan Kim")
-    session.add_all([team, player])
-    session.flush()
-
-    game = Game()
-    session.add(game)
+    session.add(player)
     session.flush()
 
     session.add(
@@ -196,14 +175,10 @@ def test_player_can_hold_several_simultaneous_unit_assignments(session):
     session.commit()  # no error: different unit_type
 
 
-def test_game_unit_assignment_unique_within_game_player_and_unit_type(session):
-    team = Team(name="Icebreakers")
+def test_game_unit_assignment_unique_within_game_player_and_unit_type(session, game_and_teams):
+    game, team, _ = game_and_teams
     player = Player(full_name="Jordan Kim")
-    session.add_all([team, player])
-    session.flush()
-
-    game = Game()
-    session.add(game)
+    session.add(player)
     session.flush()
 
     session.add(

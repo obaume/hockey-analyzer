@@ -4,22 +4,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from hockey_analyzer.domain.enums import EventSource, EventType, ShotOutcome, ShotType
-from hockey_analyzer.domain.models import Event, Game, Player, Team
+from hockey_analyzer.domain.models import Event, Player
 from hockey_analyzer.domain.rink import high_danger, zone
-
-
-@pytest.fixture
-def game_and_teams(session):
-    team_a = Team(name="Icebreakers")
-    team_b = Team(name="Rivals")
-    session.add_all([team_a, team_b])
-    session.flush()
-
-    game = Game()
-    session.add(game)
-    session.flush()
-
-    return game, team_a, team_b
 
 
 def test_period_start_round_trip(session, game_and_teams):
@@ -240,6 +226,88 @@ def test_shot_attempt_shooter_can_be_explicitly_unknown(session, game_and_teams)
     fetched = session.get(Event, event.id)
     assert fetched.shooter_id is None
     assert fetched.shooter_unknown is True
+
+
+def test_shot_attempt_requires_shot_type(session, game_and_teams):
+    game, team_a, _ = game_and_teams
+    event = Event(
+        game_id=game.id,
+        event_type=EventType.SHOT_ATTEMPT,
+        video_timestamp=900.0,
+        strength_state="5v5",
+        shot_x=30.0,
+        shot_y=10.0,
+        shot_team_id=team_a.id,
+        shot_outcome=ShotOutcome.MISSED,
+        shot_type=None,
+        shooter_unknown=True,
+    )
+    session.add(event)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_shot_attempt_requires_shot_outcome(session, game_and_teams):
+    game, team_a, _ = game_and_teams
+    event = Event(
+        game_id=game.id,
+        event_type=EventType.SHOT_ATTEMPT,
+        video_timestamp=900.0,
+        strength_state="5v5",
+        shot_x=30.0,
+        shot_y=10.0,
+        shot_team_id=team_a.id,
+        shot_outcome=None,
+        shot_type=ShotType.WRIST,
+        shooter_unknown=True,
+    )
+    session.add(event)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_shot_attempt_xg_must_be_in_zero_one_range(session, game_and_teams):
+    game, team_a, _ = game_and_teams
+    event = Event(
+        game_id=game.id,
+        event_type=EventType.SHOT_ATTEMPT,
+        video_timestamp=900.0,
+        strength_state="5v5",
+        shot_x=30.0,
+        shot_y=10.0,
+        shot_team_id=team_a.id,
+        shot_outcome=ShotOutcome.SAVED,
+        shot_type=ShotType.WRIST,
+        shooter_unknown=True,
+        shot_xg=1.5,
+    )
+    session.add(event)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_shot_attempt_xg_only_populated_for_shots_on_goal(session, game_and_teams):
+    game, team_a, _ = game_and_teams
+    event = Event(
+        game_id=game.id,
+        event_type=EventType.SHOT_ATTEMPT,
+        video_timestamp=900.0,
+        strength_state="5v5",
+        shot_x=30.0,
+        shot_y=10.0,
+        shot_team_id=team_a.id,
+        shot_outcome=ShotOutcome.MISSED,
+        shot_type=ShotType.WRIST,
+        shooter_unknown=True,
+        shot_xg=0.1,
+    )
+    session.add(event)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
 
 
 def test_penalty_round_trip(session, game_and_teams):

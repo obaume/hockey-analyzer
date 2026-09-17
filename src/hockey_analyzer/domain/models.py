@@ -82,6 +82,12 @@ def _optional_reference_constraint(id_column: str, unknown_column: str, name: st
     )
 
 
+def _required_column_constraint(column: str, name: str, *, for_event_type: str) -> CheckConstraint:
+    """For rows of `for_event_type`, `column` must be set. Rows of other
+    event types don't use this field, so they're left unconstrained."""
+    return CheckConstraint(f"event_type != '{for_event_type}' OR {column} IS NOT NULL", name=name)
+
+
 class Team(Base):
     __tablename__ = "teams"
 
@@ -195,6 +201,14 @@ class Event(Base):
             "penalty_player_unknown",
             "ck_penalty_player_ref",
             for_event_type=EventType.PENALTY.value,
+        ),
+        _required_column_constraint("shot_type", "ck_shot_type_required", for_event_type=EventType.SHOT_ATTEMPT.value),
+        _required_column_constraint(
+            "shot_outcome", "ck_shot_outcome_required", for_event_type=EventType.SHOT_ATTEMPT.value
+        ),
+        CheckConstraint("shot_xg IS NULL OR (shot_xg >= 0 AND shot_xg <= 1)", name="ck_shot_xg_range"),
+        CheckConstraint(
+            "shot_xg IS NULL OR shot_outcome IN ('goal', 'saved')", name="ck_shot_xg_only_for_shots_on_goal"
         ),
     )
 
