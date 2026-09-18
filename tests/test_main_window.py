@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtMultimedia import QMediaPlayer
 
+from hockey_analyzer.domain.enums import EventType
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -267,6 +268,44 @@ def test_constructs_with_a_real_media_player(qtbot):
     qtbot.addWidget(window)
 
     assert window.play_pause_button.text() == "Play"
+
+
+def test_no_tagging_session_means_no_tagging_panel(qtbot):
+    window = _make_window(qtbot, controller=Mock(spec=PlaybackController))
+    assert window.tagging_panel is None
+
+
+def test_tagging_session_wires_a_tagging_panel_bound_to_player_position(qtbot, tagging_session):
+    player = FakePlayer()
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=player,
+        shortcuts=ShortcutRegistry(),
+        tagging_session=tagging_session,
+    )
+    qtbot.addWidget(window)
+
+    assert window.tagging_panel is not None
+    qtbot.mouseClick(window.tagging_panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+
+    assert len(tagging_session.list_events()) == 1
+
+
+def test_tagging_panel_shares_the_windows_shortcut_registry(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=registry,
+        tagging_session=tagging_session,
+    )
+    qtbot.addWidget(window)
+
+    # Space (playback scope) and 1 (tagging scope) must both dispatch
+    # through the same registry MainWindow.keyPressEvent uses.
+    qtbot.keyClick(window, Qt.Key.Key_1)
+
+    assert len(tagging_session.list_events()) == 1
 
 
 def test_shortcuts_register_in_the_playback_scope_not_ad_hoc():
