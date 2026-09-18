@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues (obaume/hockey-analyzer), via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues in this repo (`obaume/hockey-analyzer`), via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
