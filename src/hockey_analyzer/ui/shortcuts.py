@@ -34,6 +34,8 @@ class ShortcutRegistry:
         self._suspended.discard(scope)
 
     def suspend_scope(self, scope: str) -> None:
+        if scope not in self._active:
+            raise ValueError(f"scope {scope!r} is not active")
         self._suspended.add(scope)
 
     def resume_scope(self, scope: str) -> None:

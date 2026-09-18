@@ -126,6 +126,13 @@ def test_a_key_freed_by_exiting_a_scope_can_be_claimed_by_another_scope():
     registry.enter_scope("jersey-entry")  # must not raise
 
 
+def test_suspending_a_scope_that_was_never_entered_raises():
+    registry = ShortcutRegistry()
+
+    with pytest.raises(ValueError):
+        registry.suspend_scope("playback")
+
+
 def test_suspending_an_active_scope_stops_its_bindings_from_firing():
     registry = ShortcutRegistry()
     calls = []
