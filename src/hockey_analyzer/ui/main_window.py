@@ -21,9 +21,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
 from hockey_analyzer.ui.playback_controller import DEFAULT_SPEED_STEPS, PlaybackController
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
+from hockey_analyzer.ui.tagging_panel import TaggingPanel
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
 
 PLAYBACK_SCOPE = "playback"
@@ -39,6 +41,7 @@ class MainWindow(QMainWindow):
         controller: PlaybackController | None = None,
         shortcuts: ShortcutRegistry | None = None,
         file_dialog: Callable[[], str] | None = None,
+        tagging_session: TaggingSession | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -89,13 +92,29 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.play_pause_button)
         controls.addWidget(self.speed_combo)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.video_view, stretch=1)
-        layout.addWidget(self.position_slider)
-        layout.addLayout(controls)
+        playback_layout = QVBoxLayout()
+        playback_layout.addWidget(self.video_view, stretch=1)
+        playback_layout.addWidget(self.position_slider)
+        playback_layout.addLayout(controls)
+
+        # A TaggingSession isn't available until a Game exists to tag
+        # against (ticket 14) -- the panel is an optional seam so this
+        # window works standalone (ticket 13) until that's wired up.
+        self.tagging_panel: TaggingPanel | None = None
+        if tagging_session is not None:
+            self.tagging_panel = TaggingPanel(
+                tagging_session,
+                current_position_ms=self._player.position,
+                shortcuts=self._shortcuts,
+            )
+
+        root_layout = QHBoxLayout()
+        root_layout.addLayout(playback_layout, stretch=2)
+        if self.tagging_panel is not None:
+            root_layout.addWidget(self.tagging_panel, stretch=1)
 
         container = QWidget()
-        container.setLayout(layout)
+        container.setLayout(root_layout)
         self.setCentralWidget(container)
 
         # Buttons/combo/slider opt out of keyboard focus above so a click
