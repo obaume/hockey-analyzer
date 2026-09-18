@@ -79,6 +79,40 @@ def test_an_existing_team_can_be_selected_without_creating_a_new_one(qtbot, game
     assert dialog.away_panel.team_id == existing.id
 
 
+def test_a_new_team_can_be_flagged_as_the_users_own(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    _create_game(qtbot, dialog)
+    panel = dialog.home_panel
+
+    panel.new_team_name_field.setText("Icebreakers")
+    panel.is_user_team_checkbox.setChecked(True)
+    qtbot.mouseClick(panel.create_team_button, Qt.MouseButton.LeftButton)
+
+    team = next(team for team in game_setup_service.list_teams() if team.id == panel.team_id)
+    assert team.is_user_team is True
+
+
+def test_a_new_team_defaults_to_not_the_users_own(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    _create_game(qtbot, dialog)
+
+    _create_team(qtbot, dialog.home_panel, "Icebreakers")
+
+    team = next(team for team in game_setup_service.list_teams() if team.id == dialog.home_panel.team_id)
+    assert team.is_user_team is False
+
+
+def test_the_is_user_team_checkbox_resets_after_creating_a_team(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    _create_game(qtbot, dialog)
+    panel = dialog.home_panel
+    panel.new_team_name_field.setText("Icebreakers")
+    panel.is_user_team_checkbox.setChecked(True)
+    qtbot.mouseClick(panel.create_team_button, Qt.MouseButton.LeftButton)
+
+    assert panel.is_user_team_checkbox.isChecked() is False
+
+
 def test_home_and_away_panels_are_the_same_widget_class(qtbot, game_setup_service):
     # No special-cased "opponent" panel/logic -- both sides use one class.
     dialog = _make_dialog(qtbot, game_setup_service)

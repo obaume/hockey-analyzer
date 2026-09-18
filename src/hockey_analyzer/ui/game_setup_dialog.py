@@ -17,6 +17,7 @@ entry entry).
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -56,12 +57,14 @@ class TeamRosterPanel(QWidget):
 
         self.new_team_name_field = QLineEdit()
         self.new_team_name_field.setPlaceholderText("New team name")
+        self.is_user_team_checkbox = QCheckBox("This is my team")
         self.create_team_button = QPushButton("Create Team")
         self.create_team_button.clicked.connect(self._create_team)
 
         team_row = QHBoxLayout()
         team_row.addWidget(self.team_combo)
         team_row.addWidget(self.new_team_name_field)
+        team_row.addWidget(self.is_user_team_checkbox)
         team_row.addWidget(self.create_team_button)
 
         self.roster_table = QTableWidget(0, 3)
@@ -138,8 +141,9 @@ class TeamRosterPanel(QWidget):
         name = self.new_team_name_field.text().strip()
         if not name:
             return
-        team = self._service.create_team(name)
+        team = self._service.create_team(name, is_user_team=self.is_user_team_checkbox.isChecked())
         self.new_team_name_field.clear()
+        self.is_user_team_checkbox.setChecked(False)
         self._refresh_team_combo()
         self.team_combo.setCurrentIndex(self.team_combo.findData(team.id))
 
