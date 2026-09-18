@@ -16,7 +16,16 @@ def key_string(
 
 
 def key_string_from_event(event: QKeyEvent) -> str:
-    return _combination_string(event.keyCombination())
+    modifiers = event.modifiers()
+    if Qt.KeyboardModifier.ControlModifier in modifiers and Qt.KeyboardModifier.AltModifier in modifiers:
+        # AltGr is synthesized on Windows as a simultaneous left-Ctrl+right-Alt
+        # press. Qt still reports both modifiers on the resulting QKeyEvent even
+        # though the key it resolved (e.g. Key_BracketRight for AltGr+è on a
+        # QWERTZ layout) already accounts for AltGr, so a plain "]" binding
+        # would otherwise never match. No shortcut in this app needs a genuine
+        # Ctrl+Alt chord, so treat that combination as bare AltGr and drop it.
+        modifiers &= ~(Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+    return _combination_string(QKeyCombination(modifiers, Qt.Key(event.key())))
 
 
 def _combination_string(combination: QKeyCombination) -> str:
