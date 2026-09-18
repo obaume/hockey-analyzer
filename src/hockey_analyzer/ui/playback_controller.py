@@ -71,6 +71,9 @@ class PlaybackController:
         target = self._player.position() + round(seconds * 1000)
         self._player.setPosition(_clamp(target, 0, self._player.duration()))
 
+    def seek(self, position_ms: int) -> None:
+        self._player.setPosition(_clamp(position_ms, 0, self._player.duration()))
+
     def step_frame(self, direction: int) -> None:
         self._player.pause()
         frame_ms = round(1000 / self._frame_rate)

@@ -102,6 +102,33 @@ def test_jump_backward_clamps_to_zero():
     assert player.position() == 0
 
 
+def test_seek_moves_to_the_given_absolute_position():
+    player = FakePlayer(position=10_000, duration=100_000)
+    controller = PlaybackController(player)
+
+    controller.seek(42_000)
+
+    assert player.position() == 42_000
+
+
+def test_seek_clamps_to_duration():
+    player = FakePlayer(position=10_000, duration=100_000)
+    controller = PlaybackController(player)
+
+    controller.seek(500_000)
+
+    assert player.position() == 100_000
+
+
+def test_seek_clamps_to_zero():
+    player = FakePlayer(position=10_000, duration=100_000)
+    controller = PlaybackController(player)
+
+    controller.seek(-500)
+
+    assert player.position() == 0
+
+
 def test_step_frame_forward_advances_by_one_frame_duration():
     player = FakePlayer(position=1_000, duration=100_000)
     controller = PlaybackController(player, frame_rate=25.0)

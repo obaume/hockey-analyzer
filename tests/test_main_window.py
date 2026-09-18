@@ -26,6 +26,8 @@ class FakePlayer:
     def __init__(self) -> None:
         self.playbackStateChanged = _FakeSignal()
         self.metaDataChanged = _FakeSignal()
+        self.durationChanged = _FakeSignal()
+        self.positionChanged = _FakeSignal()
         self.source: QUrl | None = None
         self.play_called = False
 
@@ -196,6 +198,68 @@ def test_speed_combo_selection_sets_speed_index(qtbot):
     window.speed_combo.setCurrentIndex(0)
 
     controller.set_speed_index.assert_called_with(0)
+
+
+def test_buttons_and_combo_and_slider_opt_out_of_keyboard_focus(qtbot):
+    # Regression: QAbstractButton/QComboBox/QSlider all intercept keys like
+    # Space/arrows themselves when focused, before MainWindow.keyPressEvent
+    # ever runs. If any of these can hold keyboard focus, a click on it
+    # (e.g. Open) silently breaks the Space hotkey instead of routing
+    # through the shortcut registry.
+    window = _make_window(qtbot, controller=Mock(spec=PlaybackController))
+
+    assert window.open_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.play_pause_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.speed_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.position_slider.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_window_holds_keyboard_focus_after_construction(qtbot):
+    window = _make_window(qtbot, controller=Mock(spec=PlaybackController))
+    window.show()
+    qtbot.waitExposed(window)
+
+    assert window.focusWidget() is window
+
+
+def test_space_still_toggles_play_pause_after_clicking_open_button(qtbot):
+    controller = Mock(spec=PlaybackController)
+    window = _make_window(qtbot, controller=controller, file_dialog=lambda: "")
+    window.show()
+    qtbot.waitExposed(window)
+
+    qtbot.mouseClick(window.open_button, Qt.MouseButton.LeftButton)
+    qtbot.keyClick(window, Qt.Key.Key_Space)
+
+    controller.toggle_play_pause.assert_called_once()
+
+
+def test_duration_change_sets_slider_range(qtbot):
+    player = FakePlayer()
+    window = _make_window(qtbot, player=player)
+
+    player.durationChanged.emit(120_000)
+
+    assert window.position_slider.maximum() == 120_000
+
+
+def test_position_change_updates_slider_value(qtbot):
+    player = FakePlayer()
+    window = _make_window(qtbot, player=player)
+    player.durationChanged.emit(120_000)
+
+    player.positionChanged.emit(30_000)
+
+    assert window.position_slider.value() == 30_000
+
+
+def test_dragging_slider_seeks_the_controller(qtbot):
+    controller = Mock(spec=PlaybackController)
+    window = _make_window(qtbot, controller=controller)
+
+    window.position_slider.sliderMoved.emit(45_000)
+
+    controller.seek.assert_called_once_with(45_000)
 
 
 def test_constructs_with_a_real_media_player(qtbot):

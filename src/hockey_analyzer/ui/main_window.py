@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +52,8 @@ class MainWindow(QMainWindow):
         self._player.setVideoSink(self.video_view.video_sink)
         self._player.metaDataChanged.connect(self._on_meta_data_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self._player.durationChanged.connect(self._on_duration_changed)
+        self._player.positionChanged.connect(self._on_position_changed)
 
         self._controller = (
             controller if controller is not None else PlaybackController(self._player)
@@ -64,15 +67,22 @@ class MainWindow(QMainWindow):
 
         self.open_button = QPushButton("Open…")
         self.open_button.clicked.connect(self._open_video)
+        self.open_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         self.play_pause_button = QPushButton("Play")
         self.play_pause_button.clicked.connect(self._toggle_play_pause)
+        self.play_pause_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         self.speed_combo = QComboBox()
         for rate in DEFAULT_SPEED_STEPS:
             self.speed_combo.addItem(f"{rate:g}x", rate)
         self.speed_combo.setCurrentIndex(DEFAULT_SPEED_STEPS.index(1.0))
         self.speed_combo.currentIndexChanged.connect(self._on_speed_combo_changed)
+        self.speed_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.sliderMoved.connect(self._on_slider_moved)
+        self.position_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         controls = QHBoxLayout()
         controls.addWidget(self.open_button)
@@ -81,11 +91,19 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.addWidget(self.video_view, stretch=1)
+        layout.addWidget(self.position_slider)
         layout.addLayout(controls)
 
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
+
+        # Buttons/combo/slider opt out of keyboard focus above so a click
+        # never leaves one of them holding focus and intercepting a
+        # hotkey (e.g. QAbstractButton's own Space handling) before it
+        # reaches the registry dispatch in keyPressEvent below.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus()
 
         self._register_shortcuts()
 
@@ -149,3 +167,15 @@ class MainWindow(QMainWindow):
         frame_rate = self._player.metaData().value(QMediaMetaData.Key.VideoFrameRate)
         if frame_rate:
             self._controller.set_frame_rate(float(frame_rate))
+
+    def _on_duration_changed(self, duration: int) -> None:
+        self.position_slider.setRange(0, duration)
+
+    def _on_position_changed(self, position: int) -> None:
+        if not self.position_slider.isSliderDown():
+            self.position_slider.blockSignals(True)
+            self.position_slider.setValue(position)
+            self.position_slider.blockSignals(False)
+
+    def _on_slider_moved(self, position: int) -> None:
+        self._controller.seek(position)
