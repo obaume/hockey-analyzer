@@ -2,19 +2,64 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
+from PySide6.QtWidgets import QDialog
 
-from hockey_analyzer.domain.enums import EventType
+from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
 from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.ui.keys import key_string
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
 
 
-def _make_panel(qtbot, tagging_session, *, position_ms: int = 0, shortcuts=None):
+class _FakeRinkClickDialog:
+    """Stands in for `RinkClickDialog` in tests: a real one's `exec()`
+    blocks on a modal event loop with nothing to click it, so every test
+    that logs/relocates a faceoff or shot_attempt injects one of these
+    (or `_FakeShotAttemptDialog`) instead, via the panel's dialog-factory
+    seams. `accepted=False` simulates the tagger dismissing the dialog
+    without clicking a location."""
+
+    def __init__(self, x: float = 40.0, y: float = 5.0, *, accepted: bool = True) -> None:
+        self.x = x if accepted else None
+        self.y = y if accepted else None
+        self._accepted = accepted
+
+    def exec(self) -> QDialog.DialogCode:
+        return QDialog.DialogCode.Accepted if self._accepted else QDialog.DialogCode.Rejected
+
+
+class _FakeShotAttemptDialog(_FakeRinkClickDialog):
+    def __init__(
+        self,
+        x: float = 85.0,
+        y: float = 0.0,
+        *,
+        accepted: bool = True,
+        shot_outcome: ShotOutcome = ShotOutcome.GOAL,
+        shot_type: ShotType = ShotType.WRIST,
+    ) -> None:
+        super().__init__(x, y, accepted=accepted)
+        self.shot_outcome = shot_outcome
+        self.shot_type = shot_type
+
+
+def _make_panel(
+    qtbot,
+    tagging_session,
+    *,
+    position_ms: int = 0,
+    shortcuts=None,
+    pause=None,
+    rink_click_dialog_factory=None,
+    shot_attempt_dialog_factory=None,
+):
     panel = TaggingPanel(
         tagging_session,
         current_position_ms=lambda: position_ms,
         shortcuts=shortcuts if shortcuts is not None else ShortcutRegistry(),
+        pause=pause,
+        rink_click_dialog_factory=rink_click_dialog_factory or _FakeRinkClickDialog,
+        shot_attempt_dialog_factory=shot_attempt_dialog_factory or _FakeShotAttemptDialog,
     )
     qtbot.addWidget(panel)
     # Shown so isVisible() (used to assert the edit panel appears/hides)
@@ -343,3 +388,243 @@ def test_event_log_stays_ordered_by_video_timestamp_after_edits(qtbot, tagging_s
 
     assert panel.event_table.item(0, 1).text() == "Period Start"
     assert panel.event_table.item(1, 1).text() == "Stoppage"
+
+
+# -- location-bearing capture: faceoff / shot_attempt (ticket 16) ---------
+
+
+def test_faceoff_button_pauses_playback_then_logs_the_clicked_location(qtbot, tagging_session):
+    pause_calls = []
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        position_ms=4200,
+        pause=lambda: pause_calls.append(True),
+        rink_click_dialog_factory=lambda: _FakeRinkClickDialog(x=40.0, y=-5.0),
+    )
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+
+    assert pause_calls == [True]
+    events = tagging_session.list_events()
+    assert len(events) == 1
+    assert events[0].event_type is EventType.FACEOFF
+    assert events[0].video_timestamp == 4200
+    assert events[0].faceoff_x == 40.0
+    assert events[0].faceoff_y == -5.0
+
+
+def test_shot_attempt_button_pauses_playback_and_captures_location_plus_outcome(qtbot, tagging_session):
+    pause_calls = []
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        pause=lambda: pause_calls.append(True),
+        shot_attempt_dialog_factory=lambda: _FakeShotAttemptDialog(
+            x=85.0, y=0.0, shot_outcome=ShotOutcome.GOAL, shot_type=ShotType.WRIST
+        ),
+    )
+
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+
+    assert pause_calls == [True]
+    events = tagging_session.list_events()
+    assert len(events) == 1
+    assert events[0].shot_x == 85.0
+    assert events[0].shot_outcome is ShotOutcome.GOAL
+    assert events[0].shot_type is ShotType.WRIST
+
+
+def test_logging_other_event_types_does_not_pause_playback(qtbot, tagging_session):
+    pause_calls = []
+    panel = _make_panel(qtbot, tagging_session, pause=lambda: pause_calls.append(True))
+
+    for event_type in (
+        EventType.PERIOD_START,
+        EventType.PERIOD_END,
+        EventType.STOPPAGE,
+        EventType.PENALTY,
+        EventType.SHIFT_CHANGE,
+    ):
+        qtbot.mouseClick(panel.log_buttons[event_type], Qt.MouseButton.LeftButton)
+
+    assert pause_calls == []
+
+
+def test_faceoff_pauses_even_with_no_pause_callable_injected(qtbot, tagging_session):
+    # pause=None (the default) must not raise -- MainWindow only wires a
+    # real one up once a Game exists to tag against.
+    panel = _make_panel(qtbot, tagging_session)
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+
+    assert len(tagging_session.list_events()) == 1
+
+
+def test_dismissing_the_rink_dialog_logs_no_event(qtbot, tagging_session):
+    panel = _make_panel(
+        qtbot, tagging_session, rink_click_dialog_factory=lambda: _FakeRinkClickDialog(accepted=False)
+    )
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+
+    assert tagging_session.list_events() == []
+
+
+def test_dismissing_the_shot_attempt_dialog_logs_no_event(qtbot, tagging_session):
+    panel = _make_panel(
+        qtbot, tagging_session, shot_attempt_dialog_factory=lambda: _FakeShotAttemptDialog(accepted=False)
+    )
+
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+
+    assert tagging_session.list_events() == []
+
+
+def test_faceoff_and_shot_attempt_appear_in_the_same_event_log(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+
+    assert panel.event_table.rowCount() == 2
+    labels = {panel.event_table.item(row, 1).text() for row in range(2)}
+    assert labels == {"Faceoff", "Shot Attempt"}
+
+
+# -- location-bearing inline edit: reference combo, outcome/type, context --
+
+
+def test_faceoff_reference_combo_lets_both_participants_be_resolved_independently(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    assert panel.edit_form.isRowVisible(panel.reference_combo) is True
+    assert panel.reference_combo.currentData() == "participant_a"
+
+    panel.jersey_field.setText("14")
+    qtbot.mouseClick(panel.home_button, Qt.MouseButton.LeftButton)
+
+    index = panel.reference_combo.findData("participant_b")
+    panel.reference_combo.setCurrentIndex(index)
+    panel.jersey_field.setText("9")
+    qtbot.mouseClick(panel.away_button, Qt.MouseButton.LeftButton)
+
+    event_id = tagging_session.list_events()[0].id
+    event = tagging_session.get_event(event_id)
+    assert event.faceoff_participant_a_unknown is False
+    assert event.faceoff_team_a_id == tagging_session.home_team_id
+    assert event.faceoff_participant_b_unknown is False
+    assert event.faceoff_team_b_id == tagging_session.away_team_id
+
+
+def test_shot_attempt_reference_combo_defaults_to_shooter(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    assert panel.reference_combo.currentData() == "shooter"
+
+    panel.jersey_field.setText("9")
+    qtbot.mouseClick(panel.home_button, Qt.MouseButton.LeftButton)
+
+    event_id = tagging_session.list_events()[0].id
+    event = tagging_session.get_event(event_id)
+    assert event.shooter_unknown is False
+    assert event.shot_team_id == tagging_session.home_team_id
+
+
+def test_shot_attempt_reference_combo_can_set_an_assist(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    index = panel.reference_combo.findData("assist1")
+    panel.reference_combo.setCurrentIndex(index)
+    panel.jersey_field.setText("14")
+    qtbot.mouseClick(panel.home_button, Qt.MouseButton.LeftButton)
+
+    event_id = tagging_session.list_events()[0].id
+    event = tagging_session.get_event(event_id)
+    assert event.assist1_unknown is False
+    assert event.assist1_id is not None
+
+
+def test_penalty_hides_the_reference_combo_since_it_has_only_one_reference(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    assert panel.edit_form.isRowVisible(panel.reference_combo) is False
+
+
+def test_shot_attempt_outcome_and_type_are_editable_inline(qtbot, tagging_session):
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        shot_attempt_dialog_factory=lambda: _FakeShotAttemptDialog(
+            shot_outcome=ShotOutcome.SAVED, shot_type=ShotType.SLAP
+        ),
+    )
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    outcome_index = panel.outcome_combo.findData(ShotOutcome.GOAL.value)
+    panel.outcome_combo.setCurrentIndex(outcome_index)
+    type_index = panel.shot_type_combo.findData(ShotType.WRIST.value)
+    panel.shot_type_combo.setCurrentIndex(type_index)
+
+    event_id = tagging_session.list_events()[0].id
+    event = tagging_session.get_event(event_id)
+    assert event.shot_outcome is ShotOutcome.GOAL
+    assert event.shot_type is ShotType.WRIST
+
+
+def test_shot_context_checkboxes_are_editable_inline(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    panel.shot_context_checkboxes["shot_rush"].setChecked(True)
+    panel.shot_context_checkboxes["shot_screened"].setChecked(True)
+
+    event_id = tagging_session.list_events()[0].id
+    event = tagging_session.get_event(event_id)
+    assert event.shot_rush is True
+    assert event.shot_screened is True
+    assert event.shot_rebound is False
+    assert event.shot_one_timer is False
+
+
+def test_relocate_button_updates_the_stored_location(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session, rink_click_dialog_factory=lambda: _FakeRinkClickDialog(x=1.0, y=1.0))
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    panel._rink_click_dialog_factory = lambda: _FakeRinkClickDialog(x=-60.0, y=20.0)
+    qtbot.mouseClick(panel.relocate_button, Qt.MouseButton.LeftButton)
+
+    event_id = tagging_session.list_events()[0].id
+    event = tagging_session.get_event(event_id)
+    assert event.faceoff_x == -60.0
+    assert event.faceoff_y == 20.0
+
+
+def test_location_row_hidden_for_event_types_without_a_location(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    assert panel.edit_form.isRowVisible(panel.location_row) is False
+
+
+def test_deleting_a_faceoff_removes_it_from_the_log(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
+
+    assert tagging_session.list_events() == []
+    assert panel.event_table.rowCount() == 0

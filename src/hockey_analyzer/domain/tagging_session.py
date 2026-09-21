@@ -17,54 +17,95 @@ restart with no data loss.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import EventType
+from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
 from hockey_analyzer.domain.models import (
     Event,
+    Faceoff,
     GameRosterEntry,
     Penalty,
     PeriodEnd,
     PeriodStart,
     Player,
     ShiftChange,
+    ShotAttempt,
     Stoppage,
     Team,
 )
 
-# The event types this ticket covers -- the ones that don't need a
-# rink-coordinate click. faceoff/shot_attempt are ticket 16's.
 _MODEL_BY_TYPE: dict[EventType, type[Event]] = {
     EventType.PERIOD_START: PeriodStart,
     EventType.PERIOD_END: PeriodEnd,
     EventType.STOPPAGE: Stoppage,
+    EventType.FACEOFF: Faceoff,
+    EventType.SHOT_ATTEMPT: ShotAttempt,
     EventType.PENALTY: Penalty,
     EventType.SHIFT_CHANGE: ShiftChange,
 }
 
-# Each in-scope subtype's required player-reference columns, as
-# (id_column, unknown_column) -- used both to default a fresh stub's
-# reference to explicit "unknown" (models.py's CHECK constraint demands
-# exactly one of the pair be set) and to resolve a jersey number into the
-# right columns later.
-_PLAYER_REFERENCE_FIELDS: dict[EventType, tuple[str, str]] = {
-    EventType.PENALTY: ("penalty_player_id", "penalty_player_unknown"),
-    EventType.SHIFT_CHANGE: ("shift_player_id", "shift_player_unknown"),
+
+class _ReferenceSpec(NamedTuple):
+    """One player reference on an event subtype: its id/unknown column
+    pair, plus the team column it resolves onto -- `None` for a reference
+    with no team column of its own (assist1/assist2, which record a
+    player but not an independently-tracked team; see models.py)."""
+
+    id_column: str
+    unknown_column: str
+    team_column: str | None
+
+
+# Every player reference an in-scope subtype carries, keyed by a
+# reference name the caller passes to `set_player_reference`. A subtype
+# with exactly one reference (penalty/shift_change) lets that name default
+# implicitly; faceoff/shot_attempt, which carry more than one, require it.
+_REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
+    EventType.PENALTY: {
+        "player": _ReferenceSpec("penalty_player_id", "penalty_player_unknown", "penalty_team_id"),
+    },
+    EventType.SHIFT_CHANGE: {
+        "player": _ReferenceSpec("shift_player_id", "shift_player_unknown", "shift_team_id"),
+    },
+    EventType.FACEOFF: {
+        "participant_a": _ReferenceSpec(
+            "faceoff_participant_a_id", "faceoff_participant_a_unknown", "faceoff_team_a_id"
+        ),
+        "participant_b": _ReferenceSpec(
+            "faceoff_participant_b_id", "faceoff_participant_b_unknown", "faceoff_team_b_id"
+        ),
+    },
+    EventType.SHOT_ATTEMPT: {
+        "shooter": _ReferenceSpec("shooter_id", "shooter_unknown", "shot_team_id"),
+        "assist1": _ReferenceSpec("assist1_id", "assist1_unknown", None),
+        "assist2": _ReferenceSpec("assist2_id", "assist2_unknown", None),
+    },
 }
 
-_TEAM_FIELD: dict[EventType, str] = {
-    EventType.PENALTY: "penalty_team_id",
-    EventType.SHIFT_CHANGE: "shift_team_id",
+# References that must be defaulted to explicit "unknown" the instant a
+# stub event is created, since models.py's CHECK constraint demands
+# exactly one of (id, unknown) be set at all times for them. Assist
+# references are excluded -- their constraint allows both columns null,
+# meaning "no assist", so a fresh stub leaves them alone.
+_REQUIRED_REFERENCES: dict[EventType, tuple[str, ...]] = {
+    EventType.PENALTY: ("player",),
+    EventType.SHIFT_CHANGE: ("player",),
+    EventType.FACEOFF: ("participant_a", "participant_b"),
+    EventType.SHOT_ATTEMPT: ("shooter",),
 }
 
 TeamSide = Literal["home", "away"]
 
-# Public: the widget layer needs the same set to decide which event types
-# show a player-reference field, without redeclaring it independently.
-EVENT_TYPES_WITH_PLAYER_REFERENCE = frozenset(_PLAYER_REFERENCE_FIELDS)
+# Public: the widget layer needs these to decide which event types show a
+# player-reference field (and, for faceoff/shot_attempt, which reference
+# names to show) without redeclaring the mapping independently.
+EVENT_TYPE_REFERENCE_NAMES: dict[EventType, tuple[str, ...]] = {
+    event_type: tuple(specs) for event_type, specs in _REFERENCE_SPECS.items()
+}
+EVENT_TYPES_WITH_PLAYER_REFERENCE = frozenset(EVENT_TYPE_REFERENCE_NAMES)
 
 
 class TaggingSession:
@@ -83,18 +124,36 @@ class TaggingSession:
     # -- event CRUD -------------------------------------------------
 
     def log_event(
-        self, event_type: EventType, video_timestamp: int, *, strength_state: str | None = None
+        self,
+        event_type: EventType,
+        video_timestamp: int,
+        *,
+        strength_state: str | None = None,
+        shot_outcome: ShotOutcome | None = None,
+        shot_type: ShotType | None = None,
     ) -> Event:
         """Instantly capture an event's timestamp -- see module docstring.
         `strength_state` defaults to the computed on-ice-count guess
         (`_infer_strength_state`) when omitted, but is always explicitly
-        overridable, including right here at capture time."""
+        overridable, including right here at capture time.
+
+        `shot_outcome`/`shot_type` are required for `shot_attempt` only:
+        unlike every other in-scope field, models.py's CHECK constraints
+        make them mandatory on every row of that subtype with no "unknown"
+        stand-in for outcome, so a bare stub can't be committed without
+        them -- the tagger supplies both the moment the shot is logged,
+        alongside the rink-coordinate click (see ticket 16)."""
         model = _MODEL_BY_TYPE[event_type]
         fields: dict[str, object] = {}
-        reference = _PLAYER_REFERENCE_FIELDS.get(event_type)
-        if reference is not None:
-            _, unknown_column = reference
-            fields[unknown_column] = True
+        specs = _REFERENCE_SPECS.get(event_type, {})
+        for reference_name in _REQUIRED_REFERENCES.get(event_type, ()):
+            fields[specs[reference_name].unknown_column] = True
+
+        if event_type is EventType.SHOT_ATTEMPT:
+            if shot_outcome is None or shot_type is None:
+                raise ValueError("shot_attempt requires shot_outcome and shot_type")
+            fields["shot_outcome"] = shot_outcome
+            fields["shot_type"] = shot_type
 
         event = model(
             game_id=self.game_id,
@@ -169,6 +228,18 @@ class TaggingSession:
             else:
                 state = "ON" if event.shift_on_ice else "OFF"
             return f"{who} {state}"
+        if event_type is EventType.FACEOFF:
+            participant_a = self._describe_player_reference(
+                event.faceoff_team_a_id, event.faceoff_participant_a_id, event.faceoff_participant_a_unknown
+            )
+            participant_b = self._describe_player_reference(
+                event.faceoff_team_b_id, event.faceoff_participant_b_id, event.faceoff_participant_b_unknown
+            )
+            return f"{participant_a} vs {participant_b}"
+        if event_type is EventType.SHOT_ATTEMPT:
+            shooter = self._describe_player_reference(event.shot_team_id, event.shooter_id, event.shooter_unknown)
+            outcome = event.shot_outcome.value if event.shot_outcome is not None else "outcome not set"
+            return f"{shooter} - {outcome}"
         return ""
 
     def _describe_player_reference(self, team_id: int | None, player_id: int | None, unknown: bool) -> str:
@@ -196,36 +267,53 @@ class TaggingSession:
         event_id: int,
         team_side: TeamSide,
         *,
+        reference: str | None = None,
         jersey_number: int | None = None,
         unknown: bool = False,
         full_name: str | None = None,
     ) -> Event:
         """Resolve `team_side` ("home"/"away") plus a jersey number into
-        this event's player-reference columns, per ticket 08's team-scoped
-        jersey workflow. A jersey with no existing `GameRosterEntry` for
-        that team in this game gets one created on the spot (and a new
-        `Player`, via `resolve_or_create_roster_entry`) without blocking
-        the tag. Pass `unknown=True` instead of a jersey number for an
-        illegible/obstructed number."""
-        event = self._get(event_id)
-        reference = _PLAYER_REFERENCE_FIELDS.get(EventType(event.event_type))
-        if reference is None:
-            raise ValueError(f"{event.event_type.value} events have no player reference to set")
-        id_column, unknown_column = reference
-        team_id = self._team_id_for_side(team_side)
+        one of this event's player-reference columns, per ticket 08's
+        team-scoped jersey workflow. A jersey with no existing
+        `GameRosterEntry` for that team in this game gets one created on
+        the spot (and a new `Player`, via `resolve_or_create_roster_entry`)
+        without blocking the tag. Pass `unknown=True` instead of a jersey
+        number for an illegible/obstructed number.
 
-        team_field = _TEAM_FIELD[EventType(event.event_type)]
-        setattr(event, team_field, team_id)
+        `reference` picks which of the event's player references to set
+        (e.g. "shooter"/"assist1"/"assist2" on a `shot_attempt`,
+        "participant_a"/"participant_b" on a `faceoff`) and may be omitted
+        for a subtype that carries only one, such as `penalty`/
+        `shift_change`."""
+        event = self._get(event_id)
+        event_type = EventType(event.event_type)
+        specs = _REFERENCE_SPECS.get(event_type)
+        if not specs:
+            raise ValueError(f"{event.event_type.value} events have no player reference to set")
+        if reference is None:
+            if len(specs) != 1:
+                raise ValueError(
+                    f"{event.event_type.value} events carry more than one player reference "
+                    f"({', '.join(specs)}); pass reference=<name>"
+                )
+            reference = next(iter(specs))
+        spec = specs.get(reference)
+        if spec is None:
+            raise ValueError(f"{event.event_type.value} events have no {reference!r} reference")
+
+        team_id = self._team_id_for_side(team_side)
+        if spec.team_column is not None:
+            setattr(event, spec.team_column, team_id)
 
         if unknown:
-            setattr(event, id_column, None)
-            setattr(event, unknown_column, True)
+            setattr(event, spec.id_column, None)
+            setattr(event, spec.unknown_column, True)
         else:
             if jersey_number is None:
                 raise ValueError("jersey_number is required unless unknown=True")
             entry = self.resolve_or_create_roster_entry(team_id, jersey_number, full_name=full_name)
-            setattr(event, id_column, entry.player_id)
-            setattr(event, unknown_column, False)
+            setattr(event, spec.id_column, entry.player_id)
+            setattr(event, spec.unknown_column, False)
 
         self._db.commit()
         return event

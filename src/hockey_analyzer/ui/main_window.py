@@ -106,6 +106,7 @@ class MainWindow(QMainWindow):
                 tagging_session,
                 current_position_ms=self._player.position,
                 shortcuts=self._shortcuts,
+                pause=self._controller.pause,
             )
 
         root_layout = QHBoxLayout()

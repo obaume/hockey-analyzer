@@ -67,6 +67,13 @@ class PlaybackController:
         else:
             self._player.play()
 
+    def pause(self) -> None:
+        """Unconditional pause, as opposed to `toggle_play_pause` -- used
+        by the tagging panel's faceoff/shot_attempt auto-pause (ticket
+        16), which needs to guarantee a paused state rather than flip
+        whatever state playback happened to already be in."""
+        self._player.pause()
+
     def jump(self, seconds: float) -> None:
         target = self._player.position() + round(seconds * 1000)
         self._player.setPosition(_clamp(target, 0, self._player.duration()))
