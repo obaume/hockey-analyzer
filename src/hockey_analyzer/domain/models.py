@@ -31,12 +31,13 @@ derived by later modules (TaggingSession/StatsEngine) from `Event` rows.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date as date_
+from datetime import date as date_, datetime, timedelta, timezone
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     Enum as SAEnum,
     Float,
     ForeignKey,
@@ -44,8 +45,9 @@ from sqlalchemy import (
     JSON,
     String,
     UniqueConstraint,
+    event,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, declared_attr, mapped_column, relationship
 
 from hockey_analyzer.domain.enums import (
     EventSource,
@@ -157,6 +159,16 @@ class Player(Base):
 
 class Game(Base):
     __tablename__ = "games"
+    __table_args__ = (
+        # A team can legitimately be both the home *and* away side across
+        # different games, just never within the same one -- mirrors the
+        # duplicate-jersey rejection precedent already in GameSetupService
+        # (see its SameTeamBothSidesError).
+        CheckConstraint(
+            "home_team_id IS NULL OR away_team_id IS NULL OR home_team_id != away_team_id",
+            name="ck_game_home_away_distinct",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     league_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
@@ -174,7 +186,28 @@ class Game(Base):
     # List of {"home": int, "away": int} dicts, one per period. Context only
     # (see CONTEXT.md's Game entry) — no stats-engine consumer.
     period_scores: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Nullable until GameSetupService.set_side_team picks each side (the
+    # same progressive-setup flow TeamRosterPanel already drives) --
+    # correctable at any time afterward, unlike rink_type: nothing is
+    # stored *relative to* home/away the way coordinates are stored
+    # relative to rink geometry, so there's no silent-reinterpretation
+    # risk in fixing a wrong pick later (see CONTEXT.md's Game entry).
+    home_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    away_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    # Attached on demand the first time footage is opened while this game
+    # is active (GameSetupService.set_video_path), not required at
+    # creation -- a game record can exist before footage is even
+    # exported. Stored as an absolute path as-is; a missing file at
+    # resume time is a relink, not a portability format (see CONTEXT.md's
+    # Game entry).
+    video_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Bumped by `_touch_game_updated_at` below on any tagging activity for
+    # this game, not just edits to this row -- drives "Select Game"'s
+    # most-recently-worked-on ordering (see CONTEXT.md's Game entry).
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    home_team: Mapped["Team | None"] = relationship(foreign_keys=[home_team_id])
+    away_team: Mapped["Team | None"] = relationship(foreign_keys=[away_team_id])
     roster_entries: Mapped[list["GameRosterEntry"]] = relationship(back_populates="game")
     unit_assignments: Mapped[list["GameUnitAssignment"]] = relationship(back_populates="game")
     events: Mapped[list["Event"]] = relationship(back_populates="game")
@@ -360,3 +393,48 @@ _add_constraints(
     ShiftChange,
     _required_reference_constraint("shift_player_id", "shift_player_unknown", "ck_shift_player_ref"),
 )
+
+
+_last_touch: datetime | None = None
+
+
+def _next_touch_timestamp() -> datetime:
+    """A wall-clock timestamp, nudged forward by a microsecond whenever it
+    would otherwise tie or go backwards relative to the previous call.
+    Plain `datetime.utcnow()` calls made in quick succession (e.g. two
+    `Game`s created back-to-back, well within a test or a fast tagging
+    burst) can land on the same value at some platforms' clock resolution
+    -- which would make `list_games`' ordering (see below) fall back on
+    arbitrary tie-breaking instead of "whichever actually happened more
+    recently"."""
+    global _last_touch
+    now = datetime.now(timezone.utc)
+    if _last_touch is not None and now <= _last_touch:
+        now = _last_touch + timedelta(microseconds=1)
+    _last_touch = now
+    return now
+
+
+@event.listens_for(Session, "before_flush")
+def _touch_game_updated_at(session: Session, flush_context, instances) -> None:
+    """Keeps `Game.updated_at` tracking "most recently worked on", not just
+    "most recently edited at the GameSetupService level" -- so the
+    "Select Game" picker (see CONTEXT.md's Game entry) can surface the
+    game a tagger was just actively logging events/roster entries against,
+    which is the overwhelmingly dominant activity once a game exists.
+    Registered globally on `Session` (matching db.py's engine-level
+    foreign-key-pragma listener) rather than touched manually at each
+    `TaggingSession`/`GameSetupService` call site, so no write path has to
+    remember to do it.
+    """
+    now = _next_touch_timestamp()
+    touched_game_ids: set[int] = set()
+    for obj in list(session.new) + list(session.dirty):
+        if isinstance(obj, Game):
+            obj.updated_at = now
+        elif isinstance(obj, (Event, GameRosterEntry)):
+            touched_game_ids.add(obj.game_id)
+    for game_id in touched_game_ids:
+        game = session.get(Game, game_id)
+        if game is not None:
+            game.updated_at = now

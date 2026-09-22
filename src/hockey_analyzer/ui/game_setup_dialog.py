@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from hockey_analyzer.domain.enums import Position, RinkType
-from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService
+from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService, SameTeamBothSidesError, Side
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
 # the full_name/position fields" rather than rostering an existing one.
@@ -46,9 +46,12 @@ class TeamRosterPanel(QWidget):
     `side_label` used only for the group box title -- nothing here reads
     or special-cases which side it is."""
 
-    def __init__(self, service: GameSetupService, side_label: str, *, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, service: GameSetupService, side_label: str, side: Side, *, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._service = service
+        self._side = side
         self._game_id: int | None = None
         self.team_id: int | None = None
 
@@ -148,7 +151,23 @@ class TeamRosterPanel(QWidget):
         self.team_combo.setCurrentIndex(self.team_combo.findData(team.id))
 
     def _on_team_selected(self, index: int) -> None:
-        self.team_id = self.team_combo.itemData(index)
+        team_id = self.team_combo.itemData(index)
+        if self._game_id is not None and team_id is not None:
+            try:
+                self._service.set_side_team(self._game_id, self._side, team_id)
+            except SameTeamBothSidesError as error:
+                # blockSignals: resetting the combo would otherwise
+                # re-enter this same slot before the error message below
+                # is set, clearing it immediately.
+                self.team_combo.blockSignals(True)
+                self.team_combo.setCurrentIndex(0)
+                self.team_combo.blockSignals(False)
+                self.team_id = None
+                self.error_label.setText(str(error))
+                self._refresh_roster_table()
+                return
+        self.error_label.setText("")
+        self.team_id = team_id
         self._refresh_roster_table()
 
     # -- adding to the roster ---------------------------------------------
@@ -284,8 +303,8 @@ class GameSetupDialog(QDialog):
         top_row.addWidget(self.new_game_button)
         top_row.addWidget(self.game_status_label)
 
-        self.home_panel = TeamRosterPanel(service, "Home")
-        self.away_panel = TeamRosterPanel(service, "Away")
+        self.home_panel = TeamRosterPanel(service, "Home", "home")
+        self.away_panel = TeamRosterPanel(service, "Away", "away")
         self.home_panel.setEnabled(False)
         self.away_panel.setEnabled(False)
 

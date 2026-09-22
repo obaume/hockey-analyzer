@@ -273,6 +273,42 @@ def test_full_name_is_backfillable_after_creation(qtbot, game_setup_service):
     assert roster[0].player.full_name == "Jordan Kim"
 
 
+# -- home/away team persists onto the Game -----------------------------
+
+
+def test_selecting_a_home_team_persists_it_on_the_game(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    _create_game(qtbot, dialog)
+
+    _create_team(qtbot, dialog.home_panel, "Icebreakers")
+
+    assert game_setup_service.get_game(dialog.game_id).home_team_id == dialog.home_panel.team_id
+
+
+def test_selecting_an_away_team_persists_it_on_the_game(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    _create_game(qtbot, dialog)
+
+    _create_team(qtbot, dialog.away_panel, "Rivals")
+
+    assert game_setup_service.get_game(dialog.game_id).away_team_id == dialog.away_panel.team_id
+
+
+def test_picking_the_same_team_on_both_sides_shows_an_error(qtbot, game_setup_service):
+    # Created via the service (not through one panel's own UI) so both
+    # panels' combos -- populated once, at construction -- already list it.
+    team = game_setup_service.create_team("Icebreakers")
+    dialog = _make_dialog(qtbot, game_setup_service)
+    _create_game(qtbot, dialog)
+    _select_team(dialog.home_panel, team.id)
+
+    _select_team(dialog.away_panel, team.id)
+
+    assert dialog.away_panel.error_label.text() != ""
+    assert dialog.away_panel.team_id is None
+    assert game_setup_service.get_game(dialog.game_id).away_team_id is None
+
+
 def test_position_can_be_set_after_creation(qtbot, game_setup_service):
     dialog = _make_dialog(qtbot, game_setup_service)
     _create_game(qtbot, dialog)

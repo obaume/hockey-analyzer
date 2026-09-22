@@ -4,11 +4,38 @@ from unittest.mock import Mock
 
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtWidgets import QDialog
 
 from hockey_analyzer.domain.enums import EventType
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
+
+
+class _FakeGameSetupDialog:
+    """Stands in for GameSetupDialog.exec()'s modal event loop, which a
+    headless test can't drive by clicking through -- see MainWindow's
+    game_setup_dialog_factory injection seam."""
+
+    def __init__(self, *, game_id=None, home_team_id=None, away_team_id=None, accepted=True) -> None:
+        self.game_id = game_id
+        self.home_team_id = home_team_id
+        self.away_team_id = away_team_id
+        self._accepted = accepted
+
+    def exec(self) -> QDialog.DialogCode:
+        return QDialog.DialogCode.Accepted if self._accepted else QDialog.DialogCode.Rejected
+
+
+class _FakeGameListDialog:
+    """Stands in for GameListDialog.exec() -- see _FakeGameSetupDialog."""
+
+    def __init__(self, *, selected_game_id=None, accepted=True) -> None:
+        self.selected_game_id = selected_game_id
+        self._accepted = accepted
+
+    def exec(self) -> QDialog.DialogCode:
+        return QDialog.DialogCode.Accepted if self._accepted else QDialog.DialogCode.Rejected
 
 
 class _FakeSignal:
@@ -171,11 +198,11 @@ def test_a_cancelled_file_dialog_does_not_open_anything(qtbot):
     assert player.play_called is False
 
 
-def test_open_button_click_opens_a_file(qtbot):
+def test_open_video_menu_action_opens_a_file(qtbot):
     player = FakePlayer()
     window = _make_window(qtbot, player=player, file_dialog=lambda: "C:/clips/game.mp4")
 
-    qtbot.mouseClick(window.open_button, Qt.MouseButton.LeftButton)
+    window.open_video_action.trigger()
 
     assert player.source == QUrl.fromLocalFile("C:/clips/game.mp4")
 
@@ -205,11 +232,10 @@ def test_buttons_and_combo_and_slider_opt_out_of_keyboard_focus(qtbot):
     # Regression: QAbstractButton/QComboBox/QSlider all intercept keys like
     # Space/arrows themselves when focused, before MainWindow.keyPressEvent
     # ever runs. If any of these can hold keyboard focus, a click on it
-    # (e.g. Open) silently breaks the Space hotkey instead of routing
-    # through the shortcut registry.
+    # silently breaks the Space hotkey instead of routing through the
+    # shortcut registry.
     window = _make_window(qtbot, controller=Mock(spec=PlaybackController))
 
-    assert window.open_button.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert window.play_pause_button.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert window.speed_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert window.position_slider.focusPolicy() == Qt.FocusPolicy.NoFocus
@@ -223,13 +249,13 @@ def test_window_holds_keyboard_focus_after_construction(qtbot):
     assert window.focusWidget() is window
 
 
-def test_space_still_toggles_play_pause_after_clicking_open_button(qtbot):
+def test_space_still_toggles_play_pause_after_opening_video(qtbot):
     controller = Mock(spec=PlaybackController)
     window = _make_window(qtbot, controller=controller, file_dialog=lambda: "")
     window.show()
     qtbot.waitExposed(window)
 
-    qtbot.mouseClick(window.open_button, Qt.MouseButton.LeftButton)
+    window.open_video_action.trigger()
     qtbot.keyClick(window, Qt.Key.Key_Space)
 
     controller.toggle_play_pause.assert_called_once()
@@ -323,3 +349,155 @@ def test_shortcuts_register_in_the_playback_scope_not_ad_hoc():
 
     assert handled is True
     window.deleteLater()
+
+
+# -- Game menu: disabled with no db_session, no way to persist a Game ------
+
+
+def test_game_menu_actions_disabled_without_db_session(qtbot):
+    window = _make_window(qtbot)
+    assert window.new_game_action.isEnabled() is False
+    assert window.select_game_action.isEnabled() is False
+
+
+def test_game_menu_actions_enabled_with_db_session(qtbot, session):
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController), player=FakePlayer(), shortcuts=ShortcutRegistry(), db_session=session
+    )
+    qtbot.addWidget(window)
+    assert window.new_game_action.isEnabled() is True
+    assert window.select_game_action.isEnabled() is True
+
+
+# -- New Game: wires a tagging panel once both sides' teams are known ------
+
+
+def test_new_game_action_installs_a_tagging_panel_once_home_and_away_are_set(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    home = game_setup_service.create_team("Icebreakers")
+    away = game_setup_service.create_team("Rivals")
+    fake_dialog = _FakeGameSetupDialog(game_id=game.id, home_team_id=home.id, away_team_id=away.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: fake_dialog,
+    )
+    qtbot.addWidget(window)
+    assert window.tagging_panel is None
+
+    window.new_game_action.trigger()
+
+    assert window.tagging_panel is not None
+
+
+def test_new_game_action_with_incomplete_rosters_leaves_no_tagging_panel(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    fake_dialog = _FakeGameSetupDialog(game_id=game.id, home_team_id=None, away_team_id=None)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: fake_dialog,
+    )
+    qtbot.addWidget(window)
+
+    window.new_game_action.trigger()
+
+    assert window.tagging_panel is None
+
+
+def test_cancelling_new_game_dialog_does_nothing(qtbot, session):
+    fake_dialog = _FakeGameSetupDialog(accepted=False)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: fake_dialog,
+    )
+    qtbot.addWidget(window)
+
+    window.new_game_action.trigger()
+
+    assert window.tagging_panel is None
+
+
+# -- Select Game: activates the game and auto-loads its stored video -------
+
+
+def test_select_game_action_auto_loads_the_stored_video(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    game_setup_service.set_video_path(game.id, "C:/clips/game.mp4")
+    player = FakePlayer()
+    fake_dialog = _FakeGameListDialog(selected_game_id=game.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=player,
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: fake_dialog,
+    )
+    qtbot.addWidget(window)
+
+    window.select_game_action.trigger()
+
+    assert player.source == QUrl.fromLocalFile("C:/clips/game.mp4")
+
+
+def test_select_game_action_with_no_stored_video_does_not_touch_the_player(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    player = FakePlayer()
+    fake_dialog = _FakeGameListDialog(selected_game_id=game.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=player,
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: fake_dialog,
+    )
+    qtbot.addWidget(window)
+
+    window.select_game_action.trigger()
+
+    assert player.source is None
+
+
+# -- Open Video: persists the path onto whichever game is active -----------
+
+
+def test_opening_video_while_a_game_is_active_persists_the_path(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    fake_dialog = _FakeGameListDialog(selected_game_id=game.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: fake_dialog,
+        file_dialog=lambda: "C:/clips/new.mp4",
+    )
+    qtbot.addWidget(window)
+    window.select_game_action.trigger()
+
+    window.open_video_action.trigger()
+
+    assert game_setup_service.get_game(game.id).video_path == "C:/clips/new.mp4"
+
+
+def test_opening_video_with_no_active_game_does_not_touch_any_game(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        file_dialog=lambda: "C:/clips/new.mp4",
+    )
+    qtbot.addWidget(window)
+
+    window.open_video_action.trigger()
+
+    assert game_setup_service.get_game(game.id).video_path is None
