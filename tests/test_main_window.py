@@ -6,7 +6,8 @@ from PySide6.QtCore import QUrl, Qt
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
 
-from hockey_analyzer.domain.enums import EventType
+from hockey_analyzer.domain.enums import EventType, Side
+from hockey_analyzer.domain.models import Event
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -15,12 +16,14 @@ from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 class _FakeGameSetupDialog:
     """Stands in for GameSetupDialog.exec()'s modal event loop, which a
     headless test can't drive by clicking through -- see MainWindow's
-    game_setup_dialog_factory injection seam."""
+    game_setup_dialog_factory injection seam. Only `game_id` is needed:
+    MainWindow re-fetches home/away/video_path itself (see
+    MainWindow._activate_game), matching what the real dialog's own
+    home/away already persisted via GameSetupService as the user picked
+    each side's team."""
 
-    def __init__(self, *, game_id=None, home_team_id=None, away_team_id=None, accepted=True) -> None:
+    def __init__(self, *, game_id=None, accepted=True) -> None:
         self.game_id = game_id
-        self.home_team_id = home_team_id
-        self.away_team_id = away_team_id
         self._accepted = accepted
 
     def exec(self) -> QDialog.DialogCode:
@@ -376,7 +379,9 @@ def test_new_game_action_installs_a_tagging_panel_once_home_and_away_are_set(qtb
     game = game_setup_service.create_game()
     home = game_setup_service.create_team("Icebreakers")
     away = game_setup_service.create_team("Rivals")
-    fake_dialog = _FakeGameSetupDialog(game_id=game.id, home_team_id=home.id, away_team_id=away.id)
+    game_setup_service.set_side_team(game.id, Side.HOME, home.id)
+    game_setup_service.set_side_team(game.id, Side.AWAY, away.id)
+    fake_dialog = _FakeGameSetupDialog(game_id=game.id)
     window = MainWindow(
         controller=Mock(spec=PlaybackController),
         player=FakePlayer(),
@@ -394,7 +399,7 @@ def test_new_game_action_installs_a_tagging_panel_once_home_and_away_are_set(qtb
 
 def test_new_game_action_with_incomplete_rosters_leaves_no_tagging_panel(qtbot, session, game_setup_service):
     game = game_setup_service.create_game()
-    fake_dialog = _FakeGameSetupDialog(game_id=game.id, home_team_id=None, away_team_id=None)
+    fake_dialog = _FakeGameSetupDialog(game_id=game.id)
     window = MainWindow(
         controller=Mock(spec=PlaybackController),
         player=FakePlayer(),
@@ -428,9 +433,11 @@ def test_cancelling_new_game_dialog_does_nothing(qtbot, session):
 # -- Select Game: activates the game and auto-loads its stored video -------
 
 
-def test_select_game_action_auto_loads_the_stored_video(qtbot, session, game_setup_service):
+def test_select_game_action_auto_loads_the_stored_video(qtbot, session, game_setup_service, tmp_path):
+    video_path = tmp_path / "game.mp4"
+    video_path.write_bytes(b"")
     game = game_setup_service.create_game()
-    game_setup_service.set_video_path(game.id, "C:/clips/game.mp4")
+    game_setup_service.set_video_path(game.id, str(video_path))
     player = FakePlayer()
     fake_dialog = _FakeGameListDialog(selected_game_id=game.id)
     window = MainWindow(
@@ -444,7 +451,7 @@ def test_select_game_action_auto_loads_the_stored_video(qtbot, session, game_set
 
     window.select_game_action.trigger()
 
-    assert player.source == QUrl.fromLocalFile("C:/clips/game.mp4")
+    assert player.source == QUrl.fromLocalFile(str(video_path))
 
 
 def test_select_game_action_with_no_stored_video_does_not_touch_the_player(qtbot, session, game_setup_service):
@@ -501,3 +508,98 @@ def test_opening_video_with_no_active_game_does_not_touch_any_game(qtbot, sessio
     window.open_video_action.trigger()
 
     assert game_setup_service.get_game(game.id).video_path is None
+
+
+# -- Select Game: a stored-but-missing video file relinks instead of crashing --
+
+
+def test_selecting_a_game_with_a_missing_video_file_shows_a_notice_instead_of_loading_it(
+    qtbot, session, game_setup_service
+):
+    game = game_setup_service.create_game()
+    game_setup_service.set_video_path(game.id, "C:/does/not/exist.mp4")
+    player = FakePlayer()
+    fake_dialog = _FakeGameListDialog(selected_game_id=game.id)
+    notices = []
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=player,
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: fake_dialog,
+        video_missing_notice=notices.append,
+    )
+    qtbot.addWidget(window)
+
+    window.select_game_action.trigger()
+
+    assert notices == ["C:/does/not/exist.mp4"]
+    assert player.source is None
+
+
+def test_relinking_after_a_missing_video_notice_persists_the_new_path(qtbot, session, game_setup_service):
+    # The notice doesn't open a second file-picker itself -- Open Video...
+    # (already wired to persist onto whichever game is active) is the one
+    # relink path, so a missing file doesn't leave the game un-relinkable.
+    game = game_setup_service.create_game()
+    game_setup_service.set_video_path(game.id, "C:/does/not/exist.mp4")
+    fake_dialog = _FakeGameListDialog(selected_game_id=game.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: fake_dialog,
+        video_missing_notice=lambda path: None,
+        file_dialog=lambda: "C:/clips/relinked.mp4",
+    )
+    qtbot.addWidget(window)
+    window.select_game_action.trigger()
+
+    window.open_video_action.trigger()
+
+    assert game_setup_service.get_game(game.id).video_path == "C:/clips/relinked.mp4"
+
+
+# -- Select Game: works while a different game is already active in the window --
+
+
+def test_selecting_a_different_game_while_one_is_already_active_swaps_the_tagging_panel(
+    qtbot, session, game_setup_service
+):
+    game_a = game_setup_service.create_game()
+    home_a = game_setup_service.create_team("A Home")
+    away_a = game_setup_service.create_team("A Away")
+    game_setup_service.set_side_team(game_a.id, Side.HOME, home_a.id)
+    game_setup_service.set_side_team(game_a.id, Side.AWAY, away_a.id)
+
+    game_b = game_setup_service.create_game()
+    home_b = game_setup_service.create_team("B Home")
+    away_b = game_setup_service.create_team("B Away")
+    game_setup_service.set_side_team(game_b.id, Side.HOME, home_b.id)
+    game_setup_service.set_side_team(game_b.id, Side.AWAY, away_b.id)
+
+    fake_dialog = _FakeGameListDialog(selected_game_id=game_a.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: fake_dialog,
+    )
+    qtbot.addWidget(window)
+    window.select_game_action.trigger()
+    first_panel = window.tagging_panel
+    assert first_panel is not None
+
+    fake_dialog.selected_game_id = game_b.id
+    window.select_game_action.trigger()
+    assert window.tagging_panel is not None
+    assert window.tagging_panel is not first_panel
+
+    # Prove the new panel is actually wired to game_b, not still game_a,
+    # by logging through it and checking which game the event landed on.
+    qtbot.mouseClick(window.tagging_panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+
+    assert session.query(Event).filter_by(game_id=game_b.id).count() == 1
+    assert session.query(Event).filter_by(game_id=game_a.id).count() == 0

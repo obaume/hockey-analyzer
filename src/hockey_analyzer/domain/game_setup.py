@@ -14,15 +14,11 @@ or special-cased fields -- see CONTEXT.md's Game roster entry entry
 
 from __future__ import annotations
 
-from typing import Literal
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import Position, RinkType
+from hockey_analyzer.domain.enums import Position, RinkType, Side
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
-
-Side = Literal["home", "away"]
 
 
 class SameTeamBothSidesError(Exception):

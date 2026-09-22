@@ -31,7 +31,7 @@ derived by later modules (TaggingSession/StatsEngine) from `Event` rows.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date as date_, datetime, timedelta, timezone
+from datetime import date as date_, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -45,9 +45,8 @@ from sqlalchemy import (
     JSON,
     String,
     UniqueConstraint,
-    event,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, declared_attr, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 
 from hockey_analyzer.domain.enums import (
     EventSource,
@@ -201,10 +200,13 @@ class Game(Base):
     # resume time is a relink, not a portability format (see CONTEXT.md's
     # Game entry).
     video_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Bumped by `_touch_game_updated_at` below on any tagging activity for
-    # this game, not just edits to this row -- drives "Select Game"'s
-    # most-recently-worked-on ordering (see CONTEXT.md's Game entry).
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Bumped by `domain.game_activity`'s session listener on any tagging
+    # activity for this game, not just edits to this row -- drives "Select
+    # Game"'s most-recently-worked-on ordering (see CONTEXT.md's Game
+    # entry). timezone=True: always populated with a tz-aware UTC value,
+    # never a naive one, so it's never at risk of a naive/aware comparison
+    # error against another datetime later.
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     home_team: Mapped["Team | None"] = relationship(foreign_keys=[home_team_id])
     away_team: Mapped["Team | None"] = relationship(foreign_keys=[away_team_id])
@@ -393,48 +395,3 @@ _add_constraints(
     ShiftChange,
     _required_reference_constraint("shift_player_id", "shift_player_unknown", "ck_shift_player_ref"),
 )
-
-
-_last_touch: datetime | None = None
-
-
-def _next_touch_timestamp() -> datetime:
-    """A wall-clock timestamp, nudged forward by a microsecond whenever it
-    would otherwise tie or go backwards relative to the previous call.
-    Plain `datetime.utcnow()` calls made in quick succession (e.g. two
-    `Game`s created back-to-back, well within a test or a fast tagging
-    burst) can land on the same value at some platforms' clock resolution
-    -- which would make `list_games`' ordering (see below) fall back on
-    arbitrary tie-breaking instead of "whichever actually happened more
-    recently"."""
-    global _last_touch
-    now = datetime.now(timezone.utc)
-    if _last_touch is not None and now <= _last_touch:
-        now = _last_touch + timedelta(microseconds=1)
-    _last_touch = now
-    return now
-
-
-@event.listens_for(Session, "before_flush")
-def _touch_game_updated_at(session: Session, flush_context, instances) -> None:
-    """Keeps `Game.updated_at` tracking "most recently worked on", not just
-    "most recently edited at the GameSetupService level" -- so the
-    "Select Game" picker (see CONTEXT.md's Game entry) can surface the
-    game a tagger was just actively logging events/roster entries against,
-    which is the overwhelmingly dominant activity once a game exists.
-    Registered globally on `Session` (matching db.py's engine-level
-    foreign-key-pragma listener) rather than touched manually at each
-    `TaggingSession`/`GameSetupService` call site, so no write path has to
-    remember to do it.
-    """
-    now = _next_touch_timestamp()
-    touched_game_ids: set[int] = set()
-    for obj in list(session.new) + list(session.dirty):
-        if isinstance(obj, Game):
-            obj.updated_at = now
-        elif isinstance(obj, (Event, GameRosterEntry)):
-            touched_game_ids.add(obj.game_id)
-    for game_id in touched_game_ids:
-        game = session.get(Game, game_id)
-        if game is not None:
-            game.updated_at = now

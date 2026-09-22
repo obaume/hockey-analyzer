@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -54,6 +55,7 @@ class MainWindow(QMainWindow):
         tagging_session: TaggingSession | None = None,
         game_setup_dialog_factory: Callable[[GameSetupService], GameSetupDialog] | None = None,
         game_list_dialog_factory: Callable[[GameSetupService], GameListDialog] | None = None,
+        video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -84,6 +86,9 @@ class MainWindow(QMainWindow):
         self._game_setup_service = GameSetupService(db_session) if db_session is not None else None
         self._game_setup_dialog_factory = game_setup_dialog_factory or GameSetupDialog
         self._game_list_dialog_factory = game_list_dialog_factory or GameListDialog
+        self._video_missing_notice = (
+            video_missing_notice if video_missing_notice is not None else self._show_video_missing_notice
+        )
         # The Game currently being tagged/played in this window, if any --
         # set by New Game/Select Game, and used to attach a video path to
         # the right Game when "Open Video…" is used afterward (see
@@ -155,6 +160,7 @@ class MainWindow(QMainWindow):
 
     def _install_tagging_panel(self, tagging_session: TaggingSession) -> None:
         if self.tagging_panel is not None:
+            self.tagging_panel.release_shortcuts()
             self._root_layout.removeWidget(self.tagging_panel)
             self.tagging_panel.deleteLater()
         self.tagging_panel = TaggingPanel(
@@ -165,17 +171,26 @@ class MainWindow(QMainWindow):
         )
         self._root_layout.addWidget(self.tagging_panel, stretch=1)
 
-    def _activate_game(self, game_id: int | None, home_team_id: int | None, away_team_id: int | None) -> None:
+    def _activate_game(self, game_id: int | None) -> None:
+        """Single path for both New Game and Select Game -- always
+        re-fetches home/away/video_path from the Game itself rather than
+        trusting values threaded in by the caller, so there's one source
+        of truth instead of each call site re-deriving and re-passing the
+        same three fields."""
         self._active_game_id = game_id
-        if game_id is None or home_team_id is None or away_team_id is None:
-            # Tagging needs both sides' teams (see TaggingSession); a game
-            # can still be "active" for video-attachment purposes before
-            # roster setup is finished -- see `_open_video`.
+        if game_id is None:
             return
-        tagging_session = TaggingSession(
-            self._db_session, game_id=game_id, home_team_id=home_team_id, away_team_id=away_team_id
-        )
-        self._install_tagging_panel(tagging_session)
+        game = self._game_setup_service.get_game(game_id)
+        if game.home_team_id is not None and game.away_team_id is not None:
+            tagging_session = TaggingSession(
+                self._db_session, game_id=game.id, home_team_id=game.home_team_id, away_team_id=game.away_team_id
+            )
+            self._install_tagging_panel(tagging_session)
+        # Tagging needs both sides' teams (see TaggingSession); a game can
+        # still be "active" for video-attachment purposes before roster
+        # setup is finished -- see `_open_video`.
+        if game.video_path:
+            self._open_stored_video(game.video_path)
 
     def _new_game(self) -> None:
         if self._game_setup_service is None:
@@ -183,7 +198,7 @@ class MainWindow(QMainWindow):
         dialog = self._game_setup_dialog_factory(self._game_setup_service)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._activate_game(dialog.game_id, dialog.home_team_id, dialog.away_team_id)
+        self._activate_game(dialog.game_id)
 
     def _select_game(self) -> None:
         if self._game_setup_service is None:
@@ -191,10 +206,17 @@ class MainWindow(QMainWindow):
         dialog = self._game_list_dialog_factory(self._game_setup_service)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_game_id is None:
             return
-        game = self._game_setup_service.get_game(dialog.selected_game_id)
-        self._activate_game(game.id, game.home_team_id, game.away_team_id)
-        if game.video_path:
-            self.open_video(Path(game.video_path))
+        self._activate_game(dialog.selected_game_id)
+
+    def _open_stored_video(self, path: str) -> None:
+        if not Path(path).exists():
+            # No silent failure and no crash on a moved/deleted file --
+            # tell the user, and leave `_active_game_id` set so "Open
+            # Video..." relinks (and persists) a replacement for this
+            # same game rather than a second, duplicate relink flow here.
+            self._video_missing_notice(path)
+            return
+        self.open_video(Path(path))
 
     def _register_shortcuts(self) -> None:
         bindings: dict[str, Callable[[], None]] = {
@@ -230,6 +252,13 @@ class MainWindow(QMainWindow):
     def _show_open_file_dialog(self) -> str:
         path, _ = QFileDialog.getOpenFileName(self, "Open video", "", VIDEO_FILE_FILTER)
         return path
+
+    def _show_video_missing_notice(self, path: str) -> None:
+        QMessageBox.warning(
+            self,
+            "Video not found",
+            f"This game's video file could not be found:\n{path}\n\nUse File → Open Video… to relink it.",
+        )
 
     def _toggle_play_pause(self) -> None:
         self._controller.toggle_play_pause()

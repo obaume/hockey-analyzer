@@ -32,8 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import Position, RinkType
-from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService, SameTeamBothSidesError, Side
+from hockey_analyzer.domain.enums import Position, RinkType, Side
+from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService, SameTeamBothSidesError
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
 # the full_name/position fields" rather than rostering an existing one.
@@ -303,8 +303,8 @@ class GameSetupDialog(QDialog):
         top_row.addWidget(self.new_game_button)
         top_row.addWidget(self.game_status_label)
 
-        self.home_panel = TeamRosterPanel(service, "Home", "home")
-        self.away_panel = TeamRosterPanel(service, "Away", "away")
+        self.home_panel = TeamRosterPanel(service, "Home", Side.HOME)
+        self.away_panel = TeamRosterPanel(service, "Away", Side.AWAY)
         self.home_panel.setEnabled(False)
         self.away_panel.setEnabled(False)
 

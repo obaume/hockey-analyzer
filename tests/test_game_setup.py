@@ -370,3 +370,21 @@ def test_list_games_ordering_bumps_on_event_activity(game_setup_service, session
     session.commit()
 
     assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
+
+
+def test_list_games_ordering_bumps_on_event_deletion_too(game_setup_service, session):
+    first = game_setup_service.create_game()
+    second = game_setup_service.create_game()
+    stoppage = Stoppage(game_id=first.id, video_timestamp=1000, source=EventSource.MANUAL, confirmed=False)
+    session.add(stoppage)
+    session.commit()
+    # Touch `second` more recently than the stoppage tagged against `first` above.
+    game_setup_service.set_video_path(second.id, "C:/clips/second.mp4")
+    assert [game.id for game in game_setup_service.list_games()] == [second.id, first.id]
+
+    # Deleting an event is still "activity" on its game -- should bump
+    # `first` back above `second`, which hasn't been touched since.
+    session.delete(stoppage)
+    session.commit()
+
+    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
