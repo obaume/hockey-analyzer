@@ -6,6 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
     "SQLAlchemy>=2.0",
     "PySide6>=6.7",
+    "matplotlib>=3.5",
+    # GPL-3.0 -- see docs/adr/0009-hockey-rink-for-rink-rendering.md for
+    # why that's an accepted trade-off here.
+    "hockey-rink>=1.1.4",
 ]
 
 [project.optional-dependencies]

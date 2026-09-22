@@ -52,6 +52,7 @@ from hockey_analyzer.domain.enums import (
     EventType,
     Handedness,
     Position,
+    RinkType,
     ShotOutcome,
     ShotType,
     UnitType,
@@ -161,6 +162,12 @@ class Game(Base):
     league_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     date: Mapped[date_ | None] = mapped_column(Date, nullable=True)
     venue: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Which physical rink-dimension standard this game's location-bearing
+    # events (faceoff/shot_attempt) derive zone/high_danger against (see
+    # domain/rink.py and CONTEXT.md's Rink type entry). Set once here and
+    # never edited afterward -- there is no setter for it anywhere in this
+    # codebase, deliberately (see ADR-0008).
+    rink_type: Mapped[RinkType] = mapped_column(_enum_column(RinkType), nullable=False, default=RinkType.IIHF)
     opponent_shifts_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
