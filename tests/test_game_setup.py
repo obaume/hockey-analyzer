@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from hockey_analyzer.domain.enums import Position
+from hockey_analyzer.domain.enums import Position, RinkType
 from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
 
@@ -24,6 +24,26 @@ def test_create_game_commits_immediately(game_setup_service, session):
     # extra commit call from the test itself.
     session.expire_all()
     assert session.get(Game, game.id) is not None
+
+
+# -- create_game: rink_type -------------------------------------------------
+
+
+def test_create_game_defaults_rink_type_to_iihf(game_setup_service):
+    game = game_setup_service.create_game()
+    assert game.rink_type is RinkType.IIHF
+
+
+def test_create_game_accepts_an_explicit_rink_type(game_setup_service):
+    game = game_setup_service.create_game(rink_type=RinkType.NHL)
+    assert game.rink_type is RinkType.NHL
+
+
+def test_game_setup_service_has_no_way_to_change_rink_type_after_creation(game_setup_service):
+    # Immutable by design (see ADR-0008/CONTEXT.md's Rink type entry) --
+    # there is deliberately no set_rink_type or equivalent update path.
+    assert not hasattr(game_setup_service, "set_rink_type")
+    assert not hasattr(game_setup_service, "update_rink_type")
 
 
 # -- teams: create new or pick existing, symmetric for either side --------

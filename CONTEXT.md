@@ -32,7 +32,11 @@ The unified event type for anything Corsi/Fenwick/PDO count: a single `shot_atte
 
 ### Rink coordinates
 
-Every event with a physical location on the ice (currently: `faceoff`, `shot_attempt`) stores an (x, y) coordinate on a standardized rink, rather than a coarse zone enum. `zone` (defensive/neutral/offensive, relative to a given team) is always derivable from coordinates via fixed rink geometry — it is never stored independently. Chosen for tagging consistency (the tagger always clicks a point) and so a future event type can become coordinate-aware without a modeling change.
+Every event with a physical location on the ice (currently: `faceoff`, `shot_attempt`) stores an (x, y) coordinate on a standardized rink, rather than a coarse zone enum. `zone` (defensive/neutral/offensive, relative to a given team) is always derivable from coordinates via fixed rink geometry — it is never stored independently. Chosen for tagging consistency (the tagger always clicks a point) and so a future event type can become coordinate-aware without a modeling change. "Standardized" means standardized *per the game's* **Rink type** — there is no single implicit rink shape; `zone`/`high_danger` resolve their geometry against whichever standard that game was tagged under.
+
+### Rink type
+
+A closed choice (`IIHF` / `NHL`) on `Game`, fixing which physical rink-dimension standard **Rink coordinates** derives every one of that game's location-bearing events against. Set once at game creation and immutable afterward — unlike every other manually-tagged field in this app, which is correctable at any time, changing it later would silently reinterpret every already-clicked (x, y) coordinate against a different-shaped rink, with nothing re-clicked and no warning; the correct fix for a wrong choice is deleting the game and starting over. Distinct from `Team.league_id` (an external league-API identifier used to prefill data on import): a team's league doesn't determine which physical rink a specific game was played on.
 
 ### Shot type
 

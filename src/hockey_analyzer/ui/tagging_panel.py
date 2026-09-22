@@ -156,8 +156,12 @@ class TaggingPanel(QWidget):
         # this panel simply never pauses anything, same as every other
         # event type never does.
         self._pause = pause
-        self._rink_click_dialog_factory = rink_click_dialog_factory or (lambda: RinkClickDialog(self))
-        self._shot_attempt_dialog_factory = shot_attempt_dialog_factory or (lambda: ShotAttemptCaptureDialog(self))
+        self._rink_click_dialog_factory = rink_click_dialog_factory or (
+            lambda: RinkClickDialog(self._session.rink_type, self)
+        )
+        self._shot_attempt_dialog_factory = shot_attempt_dialog_factory or (
+            lambda: ShotAttemptCaptureDialog(self._session.rink_type, self)
+        )
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}

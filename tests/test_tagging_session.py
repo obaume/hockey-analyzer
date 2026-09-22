@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from hockey_analyzer.db import create_sqlite_engine, init_db, make_session_factory
-from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
 from hockey_analyzer.domain.models import Event, Game, GameRosterEntry, Player, Stoppage, Team
 from hockey_analyzer.domain.rink import high_danger, zone
 from hockey_analyzer.domain.tagging_session import TaggingSession
@@ -124,6 +124,32 @@ def test_list_events_only_returns_this_games_events(session, game_and_teams):
     other_session.log_event(EventType.STOPPAGE, 20)
 
     assert [event.video_timestamp for event in this_session.list_events()] == [10]
+
+
+# -- rink_type: the tagged game's rink standard, exposed read-only ---------
+
+
+def test_rink_type_reflects_the_games_rink_type(session, game_and_teams):
+    game, team_a, team_b = game_and_teams
+    game.rink_type = RinkType.NHL
+    session.commit()
+
+    tagging_session = TaggingSession(session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id)
+
+    assert tagging_session.rink_type is RinkType.NHL
+
+
+def test_rink_type_defaults_to_iihf_for_a_game_created_via_game_setup_service(session, game_and_teams):
+    game, team_a, team_b = game_and_teams
+    tagging_session = TaggingSession(session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id)
+
+    assert tagging_session.rink_type is RinkType.IIHF
+
+
+def test_tagging_session_has_no_way_to_change_rink_type(tagging_session):
+    # Read-only by design -- immutable once the game is created (see
+    # ADR-0008/CONTEXT.md's Rink type entry).
+    assert not hasattr(tagging_session, "set_rink_type")
 
 
 # -- on-the-fly roster creation / player identification --------------------
@@ -371,7 +397,7 @@ def test_update_event_stores_faceoff_location_and_zone_is_derivable_at_read_time
 
     assert updated.faceoff_x == 40.0
     assert updated.faceoff_y == 0.0
-    assert zone(updated.faceoff_x, attacking_direction=1) == "offensive"
+    assert zone(updated.faceoff_x, attacking_direction=1, rink_type=RinkType.IIHF) == "offensive"
 
 
 def test_update_event_stores_shot_location_and_high_danger_is_derivable_at_read_time(tagging_session):
@@ -382,7 +408,7 @@ def test_update_event_stores_shot_location_and_high_danger_is_derivable_at_read_
     updated = tagging_session.update_event(shot.id, shot_x=85.0, shot_y=0.0)
 
     assert updated.shot_x == 85.0
-    assert high_danger(updated.shot_x, updated.shot_y) is True
+    assert high_danger(updated.shot_x, updated.shot_y, rink_type=RinkType.IIHF) is True
 
 
 def test_update_event_can_revise_shot_type_outcome_and_set_shot_context_flags(tagging_session):

@@ -17,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import Position
+from hockey_analyzer.domain.enums import Position, RinkType
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
 
 
@@ -45,10 +45,14 @@ class GameSetupService:
 
     # -- game -----------------------------------------------------------
 
-    def create_game(self) -> Game:
+    def create_game(self, *, rink_type: RinkType = RinkType.IIHF) -> Game:
         """No pre-existing data required -- a bare `Game` row, ready for
-        `add_roster_entry` calls against it."""
-        game = Game()
+        `add_roster_entry` calls against it. `rink_type` is set here and
+        only here: there is deliberately no method to change it afterward
+        (see CONTEXT.md's Rink type entry and ADR-0008) -- picking the
+        wrong one means deleting the game and starting over, not editing
+        it in place."""
+        game = Game(rink_type=rink_type)
         self._db.add(game)
         self._db.commit()
         return game

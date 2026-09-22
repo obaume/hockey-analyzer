@@ -1,92 +1,89 @@
-"""Rink-click capture (ticket 16): a rendered rink diagram the tagger
-clicks a point on to record a `faceoff`/`shot_attempt`'s (x, y) location,
-plus the two modal prompts `TaggingPanel` opens for it. Rendering and
-pixel-to-coordinate math only -- no domain logic lives here, matching
-`tagging_panel.py`'s split.
+"""Rink-click capture (ticket 16, rebuilt on `hockey_rink` per ADR-0009): a
+rendered rink diagram the tagger clicks a point on to record a
+`faceoff`/`shot_attempt`'s (x, y) location, plus the two modal prompts
+`TaggingPanel` opens for it. Rendering is delegated to `hockey_rink`'s
+`IIHFRink`/`NHLRink` templates, drawn onto a matplotlib `FigureCanvasQTAgg`
+embedded here -- `domain/rink.py` remains the sole source of truth for the
+geometry `zone`/`high_danger` derive from (ADR-0008); this module never
+computes or asserts any rink geometry of its own beyond picking which
+`hockey_rink` template to draw, by the tagged game's `RinkType`.
 
 Coordinate system matches `hockey_analyzer.domain.rink`: origin at center
-ice, x along the long axis in feet (+/-100), y across the width
-(+/-42.5), on a standard 200x85 ft rink.
+ice, x along the long axis in feet, y across the width -- `hockey_rink`'s
+own convention already agrees with ours for both supported standards, so
+no coordinate translation happens here.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QMouseEvent, QPainter, QPaintEvent, QPen
+import numpy as np
+from hockey_rink import IIHFRink, NHLRink
+from matplotlib.backend_bases import MouseEvent
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QComboBox, QDialog, QFormLayout, QVBoxLayout, QWidget
 
-from hockey_analyzer.domain.enums import ShotOutcome, ShotType
-from hockey_analyzer.domain.rink import BLUE_LINE_X, GOAL_LINE_X
+from hockey_analyzer.domain.enums import RinkType, ShotOutcome, ShotType
 
-RINK_HALF_LENGTH = 100.0
-RINK_HALF_WIDTH = 42.5
+# hockey_rink's default "ice" feature (invisible by default -- it's a
+# textured background image, not a line marking) eagerly fetches an image
+# over the network the instant a rink is constructed, regardless of
+# whether it's ever drawn, and a bug in its own except-fallback
+# (`urllib.request`/`urllib.error` referenced but never imported) makes
+# that crash outright rather than degrade gracefully -- unacceptable for
+# this "local, offline" app (see ADR-0009). Passing a 1x1 in-memory
+# placeholder skips the network/file path entirely in hockey_rink's own
+# `RinkImage.__init__`; since the feature isn't drawn anyway, nothing is
+# visually lost.
+_DUMMY_ICE_IMAGE = np.zeros((1, 1, 3), dtype=np.uint8)
+
+_RINK_CLASSES: dict[RinkType, type] = {
+    RinkType.IIHF: IIHFRink,
+    RinkType.NHL: NHLRink,
+}
 
 
-class RinkDiagramWidget(QWidget):
+def _build_rink(rink_type: RinkType):
+    return _RINK_CLASSES[rink_type](ice={"image": _DUMMY_ICE_IMAGE})
+
+
+class RinkDiagramWidget(FigureCanvasQTAgg):
     """Emits `location_clicked(x, y)`, in rink-coordinate feet, for a
-    click landing inside the drawn rink. The rink is letterboxed to the
-    widget's actual size (its 200:85 aspect ratio is fixed regardless of
-    how the widget is resized), so a click outside that drawn area is
-    silently ignored rather than clamped to the nearest edge."""
+    click landing on the drawn rink. A click outside the rink's aspect-
+    locked drawing area (the letterboxed margin `matplotlib` leaves when
+    this widget's own aspect ratio doesn't match the rink's) lands outside
+    the `Axes` box entirely and is silently ignored."""
 
     location_clicked = Signal(float, float)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self, rink_type: RinkType, parent: QWidget | None = None) -> None:
+        figure = Figure()
+        super().__init__(figure)
+        if parent is not None:
+            self.setParent(parent)
         self.setMinimumSize(320, 136)
 
-    def _rink_rect(self) -> QRectF:
-        aspect = (RINK_HALF_LENGTH * 2) / (RINK_HALF_WIDTH * 2)
-        width, height = float(self.width()), float(self.height())
-        if height <= 0 or width <= 0:
-            return QRectF(0, 0, 0, 0)
-        if width / height > aspect:
-            rect_height = height
-            rect_width = height * aspect
-        else:
-            rect_width = width
-            rect_height = width / aspect
-        x0 = (width - rect_width) / 2
-        y0 = (height - rect_height) / 2
-        return QRectF(x0, y0, rect_width, rect_height)
+        figure.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        self._ax = figure.add_subplot(111)
+        _build_rink(rink_type).draw(ax=self._ax, display_range="full")
 
-    def _pixel_to_rink(self, pos: QPointF) -> tuple[float, float] | None:
-        rect = self._rink_rect()
-        if rect.width() <= 0 or not rect.contains(pos):
-            return None
-        fraction_x = (pos.x() - rect.left()) / rect.width()
-        fraction_y = (pos.y() - rect.top()) / rect.height()
-        x = (fraction_x * 2 - 1) * RINK_HALF_LENGTH
-        y = (fraction_y * 2 - 1) * RINK_HALF_WIDTH
-        return x, y
+        self.mpl_connect("button_press_event", self._on_click)
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        result = self._pixel_to_rink(event.position())
-        if result is not None:
-            self.location_clicked.emit(*result)
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        painter = QPainter(self)
-        rect = self._rink_rect()
-        painter.fillRect(self.rect(), Qt.GlobalColor.darkGray)
-        if rect.width() <= 0:
+    def _on_click(self, event: MouseEvent) -> None:
+        if event.xdata is None or event.ydata is None:
             return
-        painter.fillRect(rect, Qt.GlobalColor.white)
-
-        def x_to_px(x: float) -> float:
-            return rect.left() + (x + RINK_HALF_LENGTH) / (RINK_HALF_LENGTH * 2) * rect.width()
-
-        painter.setPen(QPen(Qt.GlobalColor.red))
-        painter.drawLine(QPointF(x_to_px(0.0), rect.top()), QPointF(x_to_px(0.0), rect.bottom()))
-        for goal_line_x in (-GOAL_LINE_X, GOAL_LINE_X):
-            painter.drawLine(QPointF(x_to_px(goal_line_x), rect.top()), QPointF(x_to_px(goal_line_x), rect.bottom()))
-
-        painter.setPen(QPen(Qt.GlobalColor.blue))
-        for blue_line_x in (-BLUE_LINE_X, BLUE_LINE_X):
-            painter.drawLine(QPointF(x_to_px(blue_line_x), rect.top()), QPointF(x_to_px(blue_line_x), rect.bottom()))
-
-        painter.setPen(QPen(Qt.GlobalColor.black))
-        painter.drawRect(rect)
+        # `event.inaxes` alone isn't a reliable "was this click actually
+        # inside the drawn rink" check on HiDPI displays (matplotlib's Qt
+        # backend can mis-hit-test at fractional devicePixelRatio scales),
+        # so the click is also bounds-checked against the Axes' own data
+        # limits -- an equivalent, DPI-independent test, since xdata/ydata
+        # already come from the same data transform those limits define.
+        x_min, x_max = self._ax.get_xlim()
+        y_min, y_max = self._ax.get_ylim()
+        if not (x_min <= event.xdata <= x_max and y_min <= event.ydata <= y_max):
+            return
+        self.location_clicked.emit(float(event.xdata), float(event.ydata))
 
 
 class RinkClickDialog(QDialog):
@@ -95,10 +92,10 @@ class RinkClickDialog(QDialog):
     no separate confirm step, matching the log buttons' single-click-to-
     act feel elsewhere in the tagging panel."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, rink_type: RinkType, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Click a location")
-        self.rink = RinkDiagramWidget(self)
+        self.rink = RinkDiagramWidget(rink_type, self)
         self.rink.location_clicked.connect(self._on_location_clicked)
         layout = QVBoxLayout(self)
         layout.addWidget(self.rink)
@@ -118,10 +115,10 @@ class ShotAttemptCaptureDialog(QDialog):
     `TaggingSession.log_event`), so both must be captured here rather than
     left to a later inline edit."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, rink_type: RinkType, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Shot attempt")
-        self.rink = RinkDiagramWidget(self)
+        self.rink = RinkDiagramWidget(rink_type, self)
         self.rink.location_clicked.connect(self._on_location_clicked)
 
         # Item data is each member's plain `.value` string, not the enum

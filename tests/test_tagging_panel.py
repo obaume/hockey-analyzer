@@ -4,9 +4,10 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QDialog
 
-from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
 from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.ui.keys import key_string
+from hockey_analyzer.ui.rink_view import RinkClickDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
 
@@ -490,6 +491,24 @@ def test_faceoff_and_shot_attempt_appear_in_the_same_event_log(qtbot, tagging_se
     assert panel.event_table.rowCount() == 2
     labels = {panel.event_table.item(row, 1).text() for row in range(2)}
     assert labels == {"Faceoff", "Shot Attempt"}
+
+
+def test_default_rink_click_dialog_factory_uses_the_sessions_rink_type(qtbot, tagging_session, session, game_and_teams):
+    # Every other test injects a fake dialog factory (a real one's exec()
+    # blocks with nothing to click); this test exercises the panel's own
+    # default factory instead, without ever calling exec(), to confirm it
+    # threads the tagged game's rink_type through to RinkClickDialog.
+    game, _, _ = game_and_teams
+    game.rink_type = RinkType.NHL
+    session.commit()
+    panel = TaggingPanel(tagging_session, current_position_ms=lambda: 0, shortcuts=ShortcutRegistry())
+    qtbot.addWidget(panel)
+
+    dialog = panel._rink_click_dialog_factory()
+    qtbot.addWidget(dialog)
+
+    assert isinstance(dialog, RinkClickDialog)
+    assert dialog.rink._ax.get_xlim() != RinkClickDialog(RinkType.IIHF).rink._ax.get_xlim()
 
 
 # -- location-bearing inline edit: reference combo, outcome/type, context --

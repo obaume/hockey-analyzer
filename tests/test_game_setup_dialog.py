@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 
-from hockey_analyzer.domain.enums import Position
+from hockey_analyzer.domain.enums import Position, RinkType
+from hockey_analyzer.domain.models import Game
 from hockey_analyzer.ui.game_setup_dialog import GameSetupDialog, TeamRosterPanel
 
 
@@ -54,6 +55,32 @@ def test_new_game_button_creates_a_game_with_no_other_input(qtbot, game_setup_se
     assert dialog.game_id is not None
     assert dialog.home_panel.isEnabled() is True
     assert dialog.away_panel.isEnabled() is True
+
+
+# -- rink type: picked before creation, immutable after ---------------------
+
+
+def test_rink_type_combo_defaults_to_iihf(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    assert dialog.rink_type is RinkType.IIHF
+
+
+def test_new_game_button_creates_a_game_with_the_selected_rink_type(qtbot, game_setup_service, session):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    dialog.rink_type_combo.setCurrentIndex(dialog.rink_type_combo.findData(RinkType.NHL.value))
+
+    _create_game(qtbot, dialog)
+
+    assert session.get(Game, dialog.game_id).rink_type is RinkType.NHL
+
+
+def test_rink_type_combo_is_disabled_once_a_game_exists(qtbot, game_setup_service):
+    dialog = _make_dialog(qtbot, game_setup_service)
+    assert dialog.rink_type_combo.isEnabled() is True
+
+    _create_game(qtbot, dialog)
+
+    assert dialog.rink_type_combo.isEnabled() is False
 
 
 # -- teams: create new or select existing, symmetric for either side -------

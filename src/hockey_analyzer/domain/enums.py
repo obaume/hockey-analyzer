@@ -55,3 +55,8 @@ class UnitType(str, enum.Enum):
     DEFENSE_PAIR = "defense-pair"
     POWER_PLAY = "power-play"
     PENALTY_KILL = "penalty-kill"
+
+
+class RinkType(str, enum.Enum):
+    IIHF = "iihf"
+    NHL = "nhl"

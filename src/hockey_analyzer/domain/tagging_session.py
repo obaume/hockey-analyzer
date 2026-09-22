@@ -22,10 +22,11 @@ from typing import Literal, NamedTuple
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
 from hockey_analyzer.domain.models import (
     Event,
     Faceoff,
+    Game,
     GameRosterEntry,
     Penalty,
     PeriodEnd,
@@ -120,6 +121,14 @@ class TaggingSession:
         self.game_id = game_id
         self.home_team_id = home_team_id
         self.away_team_id = away_team_id
+
+    @property
+    def rink_type(self) -> RinkType:
+        """The tagged game's rink standard (see CONTEXT.md's Rink type
+        entry) -- read-only, matching `Game.rink_type` being immutable
+        after creation (ADR-0008). The UI layer reads this to pick which
+        rink template to render, without a separate DB query of its own."""
+        return self._db.get(Game, self.game_id).rink_type
 
     # -- event CRUD -------------------------------------------------
 

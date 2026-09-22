@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
 from hockey_analyzer.domain.models import Faceoff, Penalty, Player, PeriodEnd, PeriodStart, ShiftChange, ShotAttempt, Stoppage
 from hockey_analyzer.domain.rink import high_danger, zone
 
@@ -126,7 +126,7 @@ def test_faceoff_zone_and_high_danger_are_derived_not_persisted(session, game_an
     assert not hasattr(Faceoff, "high_danger")
 
     fetched = session.get(Faceoff, event.id)
-    assert zone(fetched.faceoff_x, attacking_direction=1) == "offensive"
+    assert zone(fetched.faceoff_x, attacking_direction=1, rink_type=RinkType.IIHF) == "offensive"
 
 
 def test_shot_attempt_round_trip_full_fields(session, game_and_teams):
@@ -168,7 +168,7 @@ def test_shot_attempt_round_trip_full_fields(session, game_and_teams):
     assert fetched.assist1_id == assist1.id
     assert fetched.assist2_id is None
     assert fetched.assist2_unknown is False
-    assert high_danger(fetched.shot_x, fetched.shot_y) is True
+    assert high_danger(fetched.shot_x, fetched.shot_y, rink_type=RinkType.IIHF) is True
 
 
 def test_shot_attempt_missed_has_null_xg_and_no_assists(session, game_and_teams):

@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import Position
+from hockey_analyzer.domain.enums import Position, RinkType
 from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
@@ -263,11 +263,24 @@ class GameSetupDialog(QDialog):
         self._service = service
         self.game_id: int | None = None
 
+        # Picked before creation, immutable afterward (see CONTEXT.md's
+        # Rink type entry and ADR-0008) -- there is deliberately no way to
+        # change it once a game exists, so the combo is disabled the
+        # instant _create_game runs. Item data is each member's plain
+        # `.value` string, not the enum member itself -- PySide6's
+        # QVariant round-trip through a QComboBox's userData silently
+        # drops a str-subclassed Enum back to a bare `str` (see
+        # rink_view.ShotAttemptCaptureDialog for the same pattern).
+        self.rink_type_combo = QComboBox()
+        for rink_type in RinkType:
+            self.rink_type_combo.addItem(rink_type.value.upper(), rink_type.value)
+
         self.new_game_button = QPushButton("New Game")
         self.new_game_button.clicked.connect(self._create_game)
         self.game_status_label = QLabel("No game yet")
 
         top_row = QHBoxLayout()
+        top_row.addWidget(self.rink_type_combo)
         top_row.addWidget(self.new_game_button)
         top_row.addWidget(self.game_status_label)
 
@@ -289,14 +302,19 @@ class GameSetupDialog(QDialog):
         layout.addWidget(self.done_button)
         self.setLayout(layout)
 
+    @property
+    def rink_type(self) -> RinkType:
+        return RinkType(self.rink_type_combo.currentData())
+
     def _create_game(self) -> None:
-        game = self._service.create_game()
+        game = self._service.create_game(rink_type=self.rink_type)
         self.game_id = game.id
         self.game_status_label.setText(f"Game #{game.id}")
         self.home_panel.set_game_id(game.id)
         self.away_panel.set_game_id(game.id)
         self.home_panel.setEnabled(True)
         self.away_panel.setEnabled(True)
+        self.rink_type_combo.setEnabled(False)
 
     @property
     def home_team_id(self) -> int | None:
