@@ -1,5 +1,5 @@
-"""Text form of a video timestamp (see CONTEXT.md's Video timestamp entry):
-an offset into the footage in ms, shown as `H:MM:SS`.
+"""Text form of a video timestamp (see CONTEXT.md's Video timestamp entry).
+Timestamps are held in milliseconds and displayed as `H:MM:SS`.
 
 Parsing reads the typed fields right to left -- the last field is seconds,
 then minutes, then hours -- so partial input like `"45"` or `"12:34"`
