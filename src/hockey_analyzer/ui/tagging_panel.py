@@ -149,6 +149,10 @@ class TaggingPanel(QWidget):
         self._current_position_ms = current_position_ms
         self._shortcuts = shortcuts if shortcuts is not None else ShortcutRegistry()
         self._shortcuts.enter_scope(TAGGING_SCOPE)
+        # (key, scope) pairs this panel itself registered -- tracked so
+        # `release_shortcuts` can free exactly these bindings, not touch
+        # anything another panel/widget shares the registry with.
+        self._registered_keys: list[tuple[str, str]] = []
         self._selected_event_id: int | None = None
         self._row_event_ids: list[int] = []
         # `pause` is the only interface this panel has to playback (ticket
@@ -172,13 +176,13 @@ class TaggingPanel(QWidget):
             button.clicked.connect(action)
             log_row.addWidget(button)
             self.log_buttons[event_type] = button
-            self._shortcuts.register(key_string(key), TAGGING_SCOPE, action)
+            self._register_shortcut(key_string(key), TAGGING_SCOPE, action)
 
         # Registered up front (see _JerseyEntry) but suspended until the
         # jersey field actually has focus.
         self._shortcuts.enter_scope(JERSEY_ENTRY_SCOPE)
-        self._shortcuts.register(key_string(Qt.Key.Key_H), JERSEY_ENTRY_SCOPE, self._side_action("home"))
-        self._shortcuts.register(key_string(Qt.Key.Key_A), JERSEY_ENTRY_SCOPE, self._side_action("away"))
+        self._register_shortcut(key_string(Qt.Key.Key_H), JERSEY_ENTRY_SCOPE, self._side_action("home"))
+        self._register_shortcut(key_string(Qt.Key.Key_A), JERSEY_ENTRY_SCOPE, self._side_action("away"))
         self._shortcuts.suspend_scope(JERSEY_ENTRY_SCOPE)
 
         self.event_table = QTableWidget(0, 3)
@@ -198,6 +202,25 @@ class TaggingPanel(QWidget):
 
         self.edit_group.setVisible(False)
         self.refresh()
+
+    def _register_shortcut(self, key: str, scope: str, action: Callable[[], None]) -> None:
+        self._shortcuts.register(key, scope, action)
+        self._registered_keys.append((key, scope))
+
+    def release_shortcuts(self) -> None:
+        """Frees every ShortcutRegistry binding this panel registered, and
+        exits the scopes it entered. `ShortcutRegistry.register` rejects a
+        key already present in a scope's bindings regardless of whether
+        that scope is currently active (see shortcuts.py), so a caller
+        replacing this panel with another one (e.g. MainWindow switching
+        to a different Game) must call this first -- Qt's own
+        `deleteLater()` doesn't free these synchronously, and nothing else
+        does either."""
+        for key, scope in self._registered_keys:
+            self._shortcuts.unregister(key, scope)
+        self._registered_keys.clear()
+        self._shortcuts.exit_scope(TAGGING_SCOPE)
+        self._shortcuts.exit_scope(JERSEY_ENTRY_SCOPE)
 
     def _log_action(self, event_type: EventType) -> Callable[[], None]:
         return lambda: self._log(event_type)

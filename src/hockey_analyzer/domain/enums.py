@@ -60,3 +60,13 @@ class UnitType(str, enum.Enum):
 class RinkType(str, enum.Enum):
     IIHF = "iihf"
     NHL = "nhl"
+
+
+class Side(str, enum.Enum):
+    """Which side of a Game a Team is on -- shared by TaggingSession
+    (event-level team references) and GameSetupService (persisting
+    Game.home_team_id/away_team_id), so there is exactly one closed
+    vocabulary for this concept rather than one per module."""
+
+    HOME = "home"
+    AWAY = "away"

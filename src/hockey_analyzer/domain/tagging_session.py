@@ -17,12 +17,12 @@ restart with no data loss.
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType, Side
 from hockey_analyzer.domain.models import (
     Event,
     Faceoff,
@@ -98,7 +98,11 @@ _REQUIRED_REFERENCES: dict[EventType, tuple[str, ...]] = {
     EventType.SHOT_ATTEMPT: ("shooter",),
 }
 
-TeamSide = Literal["home", "away"]
+# Backed by the same closed vocabulary GameSetupService persists
+# Game.home_team_id/away_team_id against (see enums.Side) -- kept under
+# this file's existing public name since tagging_panel.py already
+# imports it as such.
+TeamSide = Side
 
 # Public: the widget layer needs these to decide which event types show a
 # player-reference field (and, for faceoff/shot_attempt, which reference

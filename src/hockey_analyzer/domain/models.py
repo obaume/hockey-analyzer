@@ -31,12 +31,13 @@ derived by later modules (TaggingSession/StatsEngine) from `Event` rows.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date as date_
+from datetime import date as date_, datetime
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     Enum as SAEnum,
     Float,
     ForeignKey,
@@ -157,6 +158,16 @@ class Player(Base):
 
 class Game(Base):
     __tablename__ = "games"
+    __table_args__ = (
+        # A team can legitimately be both the home *and* away side across
+        # different games, just never within the same one -- mirrors the
+        # duplicate-jersey rejection precedent already in GameSetupService
+        # (see its SameTeamBothSidesError).
+        CheckConstraint(
+            "home_team_id IS NULL OR away_team_id IS NULL OR home_team_id != away_team_id",
+            name="ck_game_home_away_distinct",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     league_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
@@ -174,7 +185,31 @@ class Game(Base):
     # List of {"home": int, "away": int} dicts, one per period. Context only
     # (see CONTEXT.md's Game entry) — no stats-engine consumer.
     period_scores: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Nullable until GameSetupService.set_side_team picks each side (the
+    # same progressive-setup flow TeamRosterPanel already drives) --
+    # correctable at any time afterward, unlike rink_type: nothing is
+    # stored *relative to* home/away the way coordinates are stored
+    # relative to rink geometry, so there's no silent-reinterpretation
+    # risk in fixing a wrong pick later (see CONTEXT.md's Game entry).
+    home_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    away_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    # Attached on demand the first time footage is opened while this game
+    # is active (GameSetupService.set_video_path), not required at
+    # creation -- a game record can exist before footage is even
+    # exported. Stored as an absolute path as-is; a missing file at
+    # resume time is a relink, not a portability format (see CONTEXT.md's
+    # Game entry).
+    video_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Bumped by `domain.game_activity`'s session listener on any tagging
+    # activity for this game, not just edits to this row -- drives "Select
+    # Game"'s most-recently-worked-on ordering (see CONTEXT.md's Game
+    # entry). timezone=True: always populated with a tz-aware UTC value,
+    # never a naive one, so it's never at risk of a naive/aware comparison
+    # error against another datetime later.
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    home_team: Mapped["Team | None"] = relationship(foreign_keys=[home_team_id])
+    away_team: Mapped["Team | None"] = relationship(foreign_keys=[away_team_id])
     roster_entries: Mapped[list["GameRosterEntry"]] = relationship(back_populates="game")
     unit_assignments: Mapped[list["GameUnitAssignment"]] = relationship(back_populates="game")
     events: Mapped[list["Event"]] = relationship(back_populates="game")

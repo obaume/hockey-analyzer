@@ -83,6 +83,43 @@ def test_game_opponent_shifts_complete_defaults_false(session):
     assert session.get(Game, game.id).opponent_shifts_complete is False
 
 
+def test_game_home_and_away_team_round_trip(session, game_and_teams):
+    game, team_a, team_b = game_and_teams
+    game.home_team_id = team_a.id
+    game.away_team_id = team_b.id
+    session.commit()
+
+    fetched = session.get(Game, game.id)
+    assert fetched.home_team.name == team_a.name
+    assert fetched.away_team.name == team_b.name
+
+
+def test_game_rejects_the_same_team_as_home_and_away(session, game_and_teams):
+    game, team_a, _ = game_and_teams
+    game.home_team_id = team_a.id
+    game.away_team_id = team_a.id
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_game_video_path_round_trip(session):
+    game = Game(video_path="C:/clips/game.mp4")
+    session.add(game)
+    session.commit()
+
+    assert session.get(Game, game.id).video_path == "C:/clips/game.mp4"
+
+
+def test_game_updated_at_is_set_on_creation(session):
+    game = Game()
+    session.add(game)
+    session.commit()
+
+    assert session.get(Game, game.id).updated_at is not None
+
+
 def test_game_roster_entry_round_trip(session, game_and_teams):
     game, team, _ = game_and_teams
     player = Player(full_name="Jordan Kim")

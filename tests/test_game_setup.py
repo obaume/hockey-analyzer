@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from hockey_analyzer.domain.enums import Position, RinkType
-from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError
-from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
+from hockey_analyzer.domain.enums import EventSource, Position, RinkType
+from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, SameTeamBothSidesError
+from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Stoppage, Team
 
 
 # -- create_game: no pre-existing data required ---------------------------
@@ -255,3 +255,136 @@ def test_list_roster_is_ordered_by_jersey_number(game_setup_service):
     roster = game_setup_service.list_roster(game.id, team.id)
 
     assert [entry.jersey_number for entry in roster] == [4, 27]
+
+
+# -- get_game ---------------------------------------------------------------
+
+
+def test_get_game_returns_the_game(game_setup_service):
+    game = game_setup_service.create_game()
+    assert game_setup_service.get_game(game.id).id == game.id
+
+
+def test_get_game_raises_for_a_missing_game(game_setup_service):
+    with pytest.raises(KeyError):
+        game_setup_service.get_game(999999)
+
+
+# -- home/away team: nullable until picked, correctable afterward -----------
+
+
+def test_a_new_game_has_no_home_or_away_team(game_setup_service):
+    game = game_setup_service.create_game()
+    assert game.home_team_id is None
+    assert game.away_team_id is None
+
+
+def test_set_side_team_sets_home(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+
+    game_setup_service.set_side_team(game.id, "home", team.id)
+
+    assert game_setup_service.get_game(game.id).home_team_id == team.id
+
+
+def test_set_side_team_sets_away(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Rivals")
+
+    game_setup_service.set_side_team(game.id, "away", team.id)
+
+    assert game_setup_service.get_game(game.id).away_team_id == team.id
+
+
+def test_set_side_team_rejects_the_same_team_on_both_sides(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    game_setup_service.set_side_team(game.id, "home", team.id)
+
+    with pytest.raises(SameTeamBothSidesError):
+        game_setup_service.set_side_team(game.id, "away", team.id)
+
+    assert game_setup_service.get_game(game.id).away_team_id is None
+
+
+def test_set_side_team_is_correctable_afterward_unlike_rink_type(game_setup_service):
+    # No freeze-after-creation treatment for home/away (see CONTEXT.md's
+    # Game entry) -- fixing a wrong pick is a plain update, any time.
+    game = game_setup_service.create_game()
+    first_choice = game_setup_service.create_team("Icebreakers")
+    corrected_choice = game_setup_service.create_team("Real Home Team")
+    game_setup_service.set_side_team(game.id, "home", first_choice.id)
+
+    game_setup_service.set_side_team(game.id, "home", corrected_choice.id)
+
+    assert game_setup_service.get_game(game.id).home_team_id == corrected_choice.id
+
+
+# -- video_path: attached on demand, not required at creation ---------------
+
+
+def test_a_new_game_has_no_video_path(game_setup_service):
+    game = game_setup_service.create_game()
+    assert game.video_path is None
+
+
+def test_set_video_path_attaches_the_path(game_setup_service):
+    game = game_setup_service.create_game()
+
+    game_setup_service.set_video_path(game.id, "C:/clips/game.mp4")
+
+    assert game_setup_service.get_game(game.id).video_path == "C:/clips/game.mp4"
+
+
+# -- list_games: most-recently-worked-on first -------------------------------
+
+
+def test_list_games_orders_by_most_recently_updated_first(game_setup_service):
+    older = game_setup_service.create_game()
+    newer = game_setup_service.create_game()
+
+    assert [game.id for game in game_setup_service.list_games()] == [newer.id, older.id]
+
+
+def test_list_games_ordering_bumps_on_roster_activity_not_just_game_row_edits(game_setup_service):
+    first = game_setup_service.create_game()
+    second = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    assert [game.id for game in game_setup_service.list_games()] == [second.id, first.id]
+
+    # Touching the older game (roster activity, not a Game-row edit) should
+    # bump it back to the top.
+    game_setup_service.add_roster_entry(game_id=first.id, team_id=team.id, jersey_number=9, full_name="Player")
+
+    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
+
+
+def test_list_games_ordering_bumps_on_event_activity(game_setup_service, session):
+    first = game_setup_service.create_game()
+    second = game_setup_service.create_game()
+
+    session.add(
+        Stoppage(game_id=first.id, video_timestamp=1000, source=EventSource.MANUAL, confirmed=False)
+    )
+    session.commit()
+
+    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
+
+
+def test_list_games_ordering_bumps_on_event_deletion_too(game_setup_service, session):
+    first = game_setup_service.create_game()
+    second = game_setup_service.create_game()
+    stoppage = Stoppage(game_id=first.id, video_timestamp=1000, source=EventSource.MANUAL, confirmed=False)
+    session.add(stoppage)
+    session.commit()
+    # Touch `second` more recently than the stoppage tagged against `first` above.
+    game_setup_service.set_video_path(second.id, "C:/clips/second.mp4")
+    assert [game.id for game in game_setup_service.list_games()] == [second.id, first.id]
+
+    # Deleting an event is still "activity" on its game -- should bump
+    # `first` back above `second`, which hasn't been touched since.
+    session.delete(stoppage)
+    session.commit()
+
+    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]

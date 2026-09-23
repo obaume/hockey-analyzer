@@ -17,8 +17,20 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import Position, RinkType
+from hockey_analyzer.domain.enums import Position, RinkType, Side
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
+
+
+class SameTeamBothSidesError(Exception):
+    """Raised instead of setting a `Game`'s home and away sides to the same
+    `Team` -- pre-validated in Python, the same treatment
+    `DuplicateJerseyNumberError` already gets, so the UI gets a catchable
+    error instead of a raw `IntegrityError` from the
+    `ck_game_home_away_distinct` constraint in models.py."""
+
+    def __init__(self, team_id: int) -> None:
+        super().__init__(f"team {team_id} cannot be both the home and away side of the same game")
+        self.team_id = team_id
 
 
 class DuplicateJerseyNumberError(Exception):
@@ -54,6 +66,43 @@ class GameSetupService:
         it in place."""
         game = Game(rink_type=rink_type)
         self._db.add(game)
+        self._db.commit()
+        return game
+
+    def get_game(self, game_id: int) -> Game:
+        game = self._db.get(Game, game_id)
+        if game is None:
+            raise KeyError(f"no game with id {game_id}")
+        return game
+
+    def list_games(self) -> list[Game]:
+        """Most-recently-worked-on first (see `Game.updated_at` in
+        models.py) -- the axis someone picking "which game am I resuming"
+        is almost always scanning by."""
+        return list(self._db.scalars(select(Game).order_by(Game.updated_at.desc())))
+
+    def set_side_team(self, game_id: int, side: Side, team_id: int) -> Game:
+        """Sets `game_id`'s home or away team -- side-symmetric like
+        `add_roster_entry`, no separate "opponent" method (see CONTEXT.md's
+        Game roster entry entry). Correctable at any time, unlike
+        `rink_type` (see models.py's `Game.home_team_id` comment)."""
+        game = self.get_game(game_id)
+        other_team_id = game.away_team_id if side == "home" else game.home_team_id
+        if other_team_id is not None and other_team_id == team_id:
+            raise SameTeamBothSidesError(team_id)
+        if side == "home":
+            game.home_team_id = team_id
+        else:
+            game.away_team_id = team_id
+        self._db.commit()
+        return game
+
+    def set_video_path(self, game_id: int, path: str) -> Game:
+        """Attached on demand the first time footage is opened while this
+        game is active, not required at game creation (see models.py's
+        `Game.video_path` comment)."""
+        game = self.get_game(game_id)
+        game.video_path = path
         self._db.commit()
         return game
 

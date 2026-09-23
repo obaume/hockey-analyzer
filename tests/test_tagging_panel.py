@@ -647,3 +647,32 @@ def test_deleting_a_faceoff_removes_it_from_the_log(qtbot, tagging_session):
 
     assert tagging_session.list_events() == []
     assert panel.event_table.rowCount() == 0
+
+
+# -- release_shortcuts: lets a replacement panel reuse the same registry ---
+
+
+def test_release_shortcuts_frees_every_key_this_panel_registered(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+
+    panel.release_shortcuts()
+
+    # None of this panel's hotkeys still dispatch through the registry.
+    assert registry.dispatch(key_string(Qt.Key.Key_1)) is False
+    assert registry.dispatch(key_string(Qt.Key.Key_H)) is False
+
+
+def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(qtbot, tagging_session):
+    # Regression: without release_shortcuts, a second TaggingPanel sharing
+    # the same registry (e.g. MainWindow switching to a different Game)
+    # would raise ShortcutConflictError on construction -- Qt's own
+    # deleteLater() doesn't free these bindings synchronously.
+    registry = ShortcutRegistry()
+    first = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    first.release_shortcuts()
+
+    second = _make_panel(qtbot, tagging_session, shortcuts=registry)
+
+    assert registry.dispatch(key_string(Qt.Key.Key_1)) is True
+    assert len(tagging_session.list_events()) == 1
