@@ -42,6 +42,7 @@ from hockey_analyzer.domain.tagging_session import (
     TaggingSession,
     TeamSide,
 )
+from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
 from hockey_analyzer.ui.rink_view import RinkClickDialog, ShotAttemptCaptureDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -94,12 +95,6 @@ _SHOT_CONTEXT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("shot_screened", "Screened"),
     ("shot_one_timer", "One-timer"),
 )
-
-
-def _format_timestamp(video_timestamp_ms: int) -> str:
-    total_seconds = video_timestamp_ms // 1000
-    minutes, seconds = divmod(total_seconds, 60)
-    return f"{minutes:02d}:{seconds:02d}"
 
 
 class _JerseyEntry(QLineEdit):
@@ -400,7 +395,7 @@ class TaggingPanel(QWidget):
         self.event_table.setRowCount(len(events))
         self._row_event_ids = [event.id for event in events]
         for row, event in enumerate(events):
-            self.event_table.setItem(row, 0, QTableWidgetItem(_format_timestamp(event.video_timestamp)))
+            self.event_table.setItem(row, 0, QTableWidgetItem(format_video_timestamp(event.video_timestamp)))
             self.event_table.setItem(row, 1, QTableWidgetItem(_TYPE_LABELS[EventType(event.event_type)]))
             self.event_table.setItem(row, 2, QTableWidgetItem(self._session.describe_event(event)))
 
