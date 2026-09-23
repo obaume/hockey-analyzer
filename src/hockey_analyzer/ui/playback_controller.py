@@ -14,7 +14,7 @@ from typing import Protocol, Sequence
 from PySide6.QtMultimedia import QMediaPlayer
 
 DEFAULT_FRAME_RATE = 30.0
-DEFAULT_SPEED_STEPS: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+DEFAULT_SPEED_STEPS: tuple[float, ...] = (0.25, 0.5, 1.0, 1.25, 1.5, 2.0, 4.0, 8.0)
 
 
 class MediaPlayerLike(Protocol):

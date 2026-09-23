@@ -23,9 +23,6 @@ def _default_db_path() -> Path:
 
 def main() -> int:
     app = QApplication(sys.argv)
-    # No setOrganizationName: leaving it unset avoids Qt nesting the
-    # app-data path under both an organization and application folder of
-    # the same name (there's no separate "org" here).
     app.setApplicationName("Hockey Analyzer")
 
     engine = create_sqlite_engine(_default_db_path())

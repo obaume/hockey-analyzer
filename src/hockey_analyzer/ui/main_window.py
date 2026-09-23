@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
+    QLineEdit,
+    QLabel
 )
 from sqlalchemy.orm import Session
 
@@ -110,8 +112,16 @@ class MainWindow(QMainWindow):
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.sliderMoved.connect(self._on_slider_moved)
         self.position_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        
+        self.time = QLineEdit()
+        self.time.setFixedWidth(80)
+        # self.time.editingFinished.connect(self._on_time_updated)
+        self.duration = QLabel()
+        self.duration.setFixedWidth(80)
 
         controls = QHBoxLayout()
+        controls.addWidget(self.time)
+        controls.addWidget(self.duration)
         controls.addWidget(self.play_pause_button)
         controls.addWidget(self.speed_combo)
 
@@ -121,7 +131,7 @@ class MainWindow(QMainWindow):
         playback_layout.addLayout(controls)
 
         self.tagging_panel: TaggingPanel | None = None
-        self._root_layout = QHBoxLayout()
+        self._root_layout = QVBoxLayout()
         self._root_layout.addLayout(playback_layout, stretch=2)
         if tagging_session is not None:
             self._install_tagging_panel(tagging_session)
@@ -290,6 +300,10 @@ class MainWindow(QMainWindow):
 
     def _on_duration_changed(self, duration: int) -> None:
         self.position_slider.setRange(0, duration)
+        # self.duration.setText()
+
+    # def _on_timer_changed(self) -> None:
+    #     self.
 
     def _on_position_changed(self, position: int) -> None:
         if not self.position_slider.isSliderDown():

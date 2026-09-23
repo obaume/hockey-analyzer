@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import Position, RinkType, Side
+from hockey_analyzer.domain.enums import Position, Handedness, RinkType, Side
 from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService, SameTeamBothSidesError
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
@@ -85,6 +85,8 @@ class TeamRosterPanel(QWidget):
         self.full_name_field.setPlaceholderText("Full name (optional)")
 
         self.position_combo = _build_position_combo()
+        
+        self.handedness_combo = _build_handedness_combo()
 
         self.add_player_button = QPushButton("Add to roster")
         self.add_player_button.clicked.connect(self._add_roster_entry)
@@ -96,17 +98,20 @@ class TeamRosterPanel(QWidget):
         add_form.addRow("Player", self.player_combo)
         add_form.addRow("Full name", self.full_name_field)
         add_form.addRow("Position", self.position_combo)
+        add_form.addRow("Handedness", self.handedness_combo)
         add_form.addRow("", self.add_player_button)
         add_form.addRow("", self.error_label)
 
         self.edit_full_name_field = QLineEdit()
         self.edit_position_combo = _build_position_combo()
+        self.edit_handedness_combo = _build_handedness_combo()
         self.edit_save_button = QPushButton("Save")
         self.edit_save_button.clicked.connect(self._save_selected_player)
 
         edit_form = QFormLayout()
         edit_form.addRow("Full name", self.edit_full_name_field)
         edit_form.addRow("Position", self.edit_position_combo)
+        edit_form.addRow("Handedness", self.edit_handedness_combo)        
         edit_form.addRow("", self.edit_save_button)
         self.edit_group = QGroupBox("Selected player")
         self.edit_group.setLayout(edit_form)
@@ -272,6 +277,13 @@ def _build_position_combo() -> QComboBox:
     combo.addItem("", None)
     for position in Position:
         combo.addItem(position.value, position)
+    return combo
+
+def _build_handedness_combo() -> QComboBox:
+    combo = QComboBox()
+    combo.addItem("", None)
+    for handedness in Handedness:
+        combo.addItem(handedness.value, handedness)
     return combo
 
 
