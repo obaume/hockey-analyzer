@@ -40,6 +40,8 @@ from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
 
+from hockey_analyzer.domain.video_timestamp import parse_video_timestamp, format_video_timestamp
+
 PLAYBACK_SCOPE = "playback"
 JUMP_SECONDS = 5
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
@@ -115,15 +117,17 @@ class MainWindow(QMainWindow):
         
         self.time = QLineEdit()
         self.time.setFixedWidth(80)
-        # self.time.editingFinished.connect(self._on_time_updated)
+        self.time.editingFinished.connect(self._on_time_changed)
         self.duration = QLabel()
         self.duration.setFixedWidth(80)
 
         controls = QHBoxLayout()
+        controls.addStretch()
         controls.addWidget(self.time)
         controls.addWidget(self.duration)
         controls.addWidget(self.play_pause_button)
         controls.addWidget(self.speed_combo)
+        controls.addStretch()
 
         playback_layout = QVBoxLayout()
         playback_layout.addWidget(self.video_view, stretch=1)
@@ -300,12 +304,10 @@ class MainWindow(QMainWindow):
 
     def _on_duration_changed(self, duration: int) -> None:
         self.position_slider.setRange(0, duration)
-        # self.duration.setText()
-
-    # def _on_timer_changed(self) -> None:
-    #     self.
+        self.duration.setText(format_video_timestamp(duration))
 
     def _on_position_changed(self, position: int) -> None:
+        self.time.setText(format_video_timestamp(position))
         if not self.position_slider.isSliderDown():
             self.position_slider.blockSignals(True)
             self.position_slider.setValue(position)
@@ -313,3 +315,8 @@ class MainWindow(QMainWindow):
 
     def _on_slider_moved(self, position: int) -> None:
         self._controller.seek(position)
+        
+    def _on_time_changed(self) -> None:
+        ms = parse_video_timestamp(self.time.text())
+        if ms:
+            self._controller.seek(ms)
