@@ -40,7 +40,7 @@ _AD_HOC = -1
 class LineChangeDialog(QDialog):
     """`units` maps each side to its declared units, and `roster` each
     side to its rostered jersey numbers, each paired with the label to
-    show for it (`TaggingSession.describe_unit`/`describe_roster_entry`).
+    show for it (`TaggingSession.describe_unit`/`roster_entry_label`).
     A side with no units offers only the ad-hoc choice: tick players off
     its roster, and/or type the numbers of players not rostered yet.
     After an accepted `exec()`, read `team_side`, `on_ice`, and either

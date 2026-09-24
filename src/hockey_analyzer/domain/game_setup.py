@@ -330,18 +330,22 @@ class GameSetupService:
             for assignment in self._db.scalars(stmt)
         }
 
-    def unit_members(
-        self, *, game_id: int, team_id: int, unit_type: UnitType, unit_number: int
-    ) -> list[int]:
-        """The player ids on one team's unit (e.g. Forward line 1) in
-        `game_id` -- empty for a unit nobody has been put on yet."""
-        stmt = select(GameUnitAssignment.player_id).where(
+    def unit_numbers(
+        self, *, game_id: int, team_id: int, unit_type: UnitType
+    ) -> dict[int, int]:
+        """player id -> unit number, for every one of `team_id`'s players
+        holding a `unit_type` unit in `game_id`. One query answers both
+        "who is on Forward line 1" and "which line is everyone else on"."""
+        stmt = select(
+            GameUnitAssignment.player_id, GameUnitAssignment.unit_number
+        ).where(
             GameUnitAssignment.game_id == game_id,
             GameUnitAssignment.team_id == team_id,
             GameUnitAssignment.unit_type == unit_type,
-            GameUnitAssignment.unit_number == unit_number,
         )
-        return list(self._db.scalars(stmt))
+        return {
+            player_id: unit_number for player_id, unit_number in self._db.execute(stmt)
+        }
 
     def _unit_assignment(
         self, game_id: int, player_id: int, unit_type: UnitType

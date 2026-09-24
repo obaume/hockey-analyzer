@@ -699,7 +699,9 @@ def test_set_player_units_assigns_moves_and_unassigns_in_one_call(game_setup_ser
     }
 
 
-def test_unit_members_lists_one_units_players(game_setup_service):
+def test_unit_numbers_maps_each_player_on_a_unit_type_to_their_number(
+    game_setup_service,
+):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
     line_1 = [_rostered_player(game_setup_service, game, team, n) for n in (14, 17)]
@@ -713,26 +715,37 @@ def test_unit_members_lists_one_units_players(game_setup_service):
             unit_number=number,
         )
 
-    members = game_setup_service.unit_members(
+    game_setup_service.assign_unit(
         game_id=game.id,
         team_id=team.id,
+        player_id=line_2,
+        unit_type=UnitType.POWER_PLAY,
+        unit_number=1,
+    )
+
+    numbers = game_setup_service.unit_numbers(
+        game_id=game.id, team_id=team.id, unit_type=UnitType.FORWARD_LINE
+    )
+
+    assert numbers == {line_1[0]: 1, line_1[1]: 1, line_2: 2}
+
+
+def test_unit_numbers_is_scoped_to_one_team(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    other = game_setup_service.create_team("Rivals")
+    player_id = _rostered_player(game_setup_service, game, other, 14)
+    game_setup_service.assign_unit(
+        game_id=game.id,
+        team_id=other.id,
+        player_id=player_id,
         unit_type=UnitType.FORWARD_LINE,
         unit_number=1,
     )
 
-    assert sorted(members) == sorted(line_1)
-
-
-def test_unit_members_is_empty_for_an_undeclared_unit(game_setup_service):
-    game = game_setup_service.create_game()
-    team = game_setup_service.create_team("Icebreakers")
-
     assert (
-        game_setup_service.unit_members(
-            game_id=game.id,
-            team_id=team.id,
-            unit_type=UnitType.PENALTY_KILL,
-            unit_number=1,
+        game_setup_service.unit_numbers(
+            game_id=game.id, team_id=team.id, unit_type=UnitType.FORWARD_LINE
         )
-        == []
+        == {}
     )

@@ -643,8 +643,15 @@ class _FakeUnitsDialog:
     """Stands in for UnitsDialog.exec() -- see _FakeGameSetupDialog.
     Records what the window opened it for."""
 
-    def __init__(self, service, **game_ids) -> None:
-        self.game_ids = game_ids
+    def __init__(
+        self, service, *, game_id, home_team_id, away_team_id, parent=None
+    ) -> None:
+        self.opened_for = {
+            "game_id": game_id,
+            "home_team_id": home_team_id,
+            "away_team_id": away_team_id,
+        }
+        self.parent = parent
         self.executed = False
 
     def exec(self) -> QDialog.DialogCode:
@@ -653,8 +660,8 @@ class _FakeUnitsDialog:
 
 
 def _window_with_units_dialog(qtbot, session, opened, *, setup_dialog=None):
-    def factory(service, **game_ids):
-        dialog = _FakeUnitsDialog(service, **game_ids)
+    def factory(service, **kwargs):
+        dialog = _FakeUnitsDialog(service, **kwargs)
         opened.append(dialog)
         return dialog
 
@@ -700,7 +707,8 @@ def test_units_action_opens_the_units_dialog_for_the_active_game(
     window.units_action.trigger()
 
     assert opened[0].executed is True
-    assert opened[0].game_ids == {
+    assert opened[0].parent is window
+    assert opened[0].opened_for == {
         "game_id": game.id,
         "home_team_id": home.id,
         "away_team_id": away.id,
@@ -714,6 +722,32 @@ def test_units_action_stays_disabled_until_both_sides_are_set(
     window = _window_with_units_dialog(
         qtbot, session, [], setup_dialog=_FakeGameSetupDialog(game_id=game.id)
     )
+
+    window.new_game_action.trigger()
+
+    assert window.units_action.isEnabled() is False
+
+
+def test_units_action_is_disabled_again_when_no_game_ends_up_active(
+    qtbot, session, game_setup_service
+):
+    # New Game accepted without ever creating a game leaves nothing
+    # active -- Units... must not keep the previous game's enabled state.
+    game, _home, _away = _game_with_sides(game_setup_service)
+    setup_dialogs = [
+        _FakeGameSetupDialog(game_id=game.id),
+        _FakeGameSetupDialog(game_id=None),
+    ]
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: setup_dialogs.pop(0),
+    )
+    qtbot.addWidget(window)
+    window.new_game_action.trigger()
+    assert window.units_action.isEnabled() is True
 
     window.new_game_action.trigger()
 

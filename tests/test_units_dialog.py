@@ -103,15 +103,12 @@ def test_ticking_players_puts_them_on_the_selected_unit(
     _check(dialog, 14)
     _check(dialog, 17)
 
-    members = game_setup_service.unit_members(
-        game_id=game_row.id,
-        team_id=home.id,
-        unit_type=UnitType.FORWARD_LINE,
-        unit_number=2,
+    numbers = game_setup_service.unit_numbers(
+        game_id=game_row.id, team_id=home.id, unit_type=UnitType.FORWARD_LINE
     )
-    assert sorted(members) == sorted(
-        _player_id(game_setup_service, game, home, jersey) for jersey in (14, 17)
-    )
+    assert numbers == {
+        _player_id(game_setup_service, game, home, jersey): 2 for jersey in (14, 17)
+    }
 
 
 def test_unticking_a_player_takes_them_off_the_unit(qtbot, game_setup_service, game):
@@ -199,3 +196,13 @@ def test_unticking_after_a_move_does_not_touch_the_other_unit(
     assert game_setup_service.player_unit_assignments(
         game_row.id, _player_id(game_setup_service, game, home, 17)
     ) == {UnitType.FORWARD_LINE: 2}
+
+
+def test_members_header_names_the_side_and_unit(qtbot, game_setup_service, game):
+    dialog = _make_dialog(qtbot, game_setup_service, game)
+    assert dialog.members_label.text() == "Members of Home - Forward line 1:"
+
+    dialog.side_combo.setCurrentIndex(dialog.side_combo.findData("away"))
+    _select_unit(dialog, UnitType.PENALTY_KILL, 2)
+
+    assert dialog.members_label.text() == "Members of Away - Penalty kill 2:"

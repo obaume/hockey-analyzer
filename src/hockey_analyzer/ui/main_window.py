@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QKeyEvent
@@ -49,6 +50,24 @@ from hockey_analyzer.ui.units_dialog import UnitsDialog
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
 
 PLAYBACK_SCOPE = "playback"
+
+
+class UnitsDialogFactory(Protocol):
+    """`UnitsDialog`'s constructor shape -- spelled out (rather than
+    `Callable[..., UnitsDialog]`) so a test fake is checked against the
+    same keyword arguments `_edit_units` passes."""
+
+    def __call__(
+        self,
+        service: GameSetupService,
+        *,
+        game_id: int,
+        home_team_id: int,
+        away_team_id: int,
+        parent: QWidget | None = None,
+    ) -> UnitsDialog: ...
+
+
 JUMP_SECONDS = 5
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
 
@@ -67,7 +86,7 @@ class MainWindow(QMainWindow):
         | None = None,
         game_list_dialog_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
-        units_dialog_factory: Callable[..., UnitsDialog] | None = None,
+        units_dialog_factory: UnitsDialogFactory | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -213,6 +232,7 @@ class MainWindow(QMainWindow):
         same three fields."""
         self._active_game_id = game_id
         if game_id is None:
+            self.units_action.setEnabled(False)
             return
         game = self._game_setup_service.get_game(game_id)
         has_both_sides = game.home_team_id is not None and game.away_team_id is not None
@@ -243,11 +263,14 @@ class MainWindow(QMainWindow):
         if self._game_setup_service is None or self._active_game_id is None:
             return
         game = self._game_setup_service.get_game(self._active_game_id)
+        if game.home_team_id is None or game.away_team_id is None:
+            return
         dialog = self._units_dialog_factory(
             self._game_setup_service,
             game_id=game.id,
             home_team_id=game.home_team_id,
             away_team_id=game.away_team_id,
+            parent=self,
         )
         dialog.exec()
 

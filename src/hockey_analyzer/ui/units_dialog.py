@@ -11,7 +11,7 @@ type is annotated with it, and ticking them here moves them.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -71,6 +71,7 @@ class UnitsDialog(QDialog):
         self.unit_number_field.setRange(1, 9)
         self.unit_number_field.valueChanged.connect(self._refresh_members)
 
+        self.members_label = QLabel()
         self.members_list = QListWidget()
         self.members_list.itemChanged.connect(self._on_member_toggled)
 
@@ -90,7 +91,7 @@ class UnitsDialog(QDialog):
 
         layout = QVBoxLayout()
         layout.addLayout(selector)
-        layout.addWidget(QLabel("Members"))
+        layout.addWidget(self.members_label)
         layout.addWidget(self.members_list)
         layout.addLayout(buttons)
         self.setLayout(layout)
@@ -106,25 +107,22 @@ class UnitsDialog(QDialog):
     def _refresh_members(self) -> None:
         unit_type = self._unit_type()
         unit_number = self.unit_number_field.value()
-        members = set(
-            self._service.unit_members(
-                game_id=self._game_id,
-                team_id=self._team_id(),
-                unit_type=unit_type,
-                unit_number=unit_number,
-            )
+        self.members_label.setText(
+            f"Members of {self.side_combo.currentText()} - "
+            f"{unit_label(unit_type, unit_number)}:"
+        )
+        numbers = self._service.unit_numbers(
+            game_id=self._game_id, team_id=self._team_id(), unit_type=unit_type
         )
 
-        # blockSignals: populating check states would otherwise fire
+        # Blocked: populating check states would otherwise fire
         # itemChanged and write every row straight back.
-        self.members_list.blockSignals(True)
+        blocker = QSignalBlocker(self.members_list)
         self.members_list.clear()
         for entry in self._service.list_roster(self._game_id, self._team_id()):
             base_label = roster_entry_label(entry)
             label = base_label
-            current = self._service.player_unit_assignments(
-                self._game_id, entry.player_id
-            ).get(unit_type)
+            current = numbers.get(entry.player_id)
             if current is not None and current != unit_number:
                 label = f"{base_label} ({unit_label(unit_type, current)})"
             item = QListWidgetItem(label)
@@ -133,11 +131,11 @@ class UnitsDialog(QDialog):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(
                 Qt.CheckState.Checked
-                if entry.player_id in members
+                if current == unit_number
                 else Qt.CheckState.Unchecked
             )
             self.members_list.addItem(item)
-        self.members_list.blockSignals(False)
+        blocker.unblock()
 
     def _on_member_toggled(self, item: QListWidgetItem) -> None:
         player_id = item.data(Qt.ItemDataRole.UserRole)
@@ -159,6 +157,6 @@ class UnitsDialog(QDialog):
         # type, so any "(Forward line 2)" annotation is stale. Only this
         # row is updated -- rebuilding the list here would delete `item`
         # from inside its own itemChanged signal.
-        self.members_list.blockSignals(True)
+        blocker = QSignalBlocker(self.members_list)
         item.setText(item.data(_BASE_LABEL_ROLE))
-        self.members_list.blockSignals(False)
+        blocker.unblock()
