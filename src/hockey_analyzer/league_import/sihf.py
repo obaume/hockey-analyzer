@@ -297,7 +297,7 @@ def _find(fragments: list[_Fragment], text: str) -> _Fragment:
 _SITE = "https://www.sihf.ch"
 
 
-def game_page_url(game_id: str) -> str:
+def _game_page_url(game_id: str) -> str:
     return f"{_SITE}/de/game-center/game/{game_id}"
 
 
@@ -314,11 +314,11 @@ class SihfHttpSource:
         return self._get(
             f"{_SITE}/umbraco/GameCenter/GameDetail/ExportGameTimeline"
             f"?gameId={game_id}",
-            referer=game_page_url(game_id),
+            referer=_game_page_url(game_id),
         )
 
     def fetch_game_page(self, game_id: str) -> str:
-        return self._get(game_page_url(game_id)).decode("utf-8", errors="replace")
+        return self._get(_game_page_url(game_id)).decode("utf-8", errors="replace")
 
     def _get(self, url: str, *, referer: str | None = None) -> bytes:
         headers = {"User-Agent": "hockey-analyzer"}

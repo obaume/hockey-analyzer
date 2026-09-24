@@ -40,8 +40,9 @@ class LeagueSource(Protocol):
     def fetch_game_page(self, game_id: str) -> str: ...
 
 
-class ManualEntryFallback(Exception):
-    """The game's PDF export couldn't be fetched or parsed. Nearly all of an
+class ManualEntryFallbackError(Exception):
+    """Raised instead of returning a proposal when the game's PDF export
+    couldn't be fetched or parsed. Nearly all of an
     import comes from it (ADR-0005), so there's nothing worth proposing:
     the caller should fall back to blank manual game/roster entry
     (ticket 14's `GameSetupService` path) rather than block game
@@ -60,6 +61,8 @@ class TeamMatchStatus(enum.StrEnum):
 
 @dataclass(frozen=True)
 class TeamCandidate:
+    """An existing `Team` the user may confirm a name match against."""
+
     team_id: int
     name: str
     is_user_team: bool
@@ -95,6 +98,9 @@ class PlayerMatchStatus(enum.StrEnum):
 
 @dataclass(frozen=True)
 class PlayerCandidate:
+    """An existing `Player` the user may link a new-player row to instead,
+    closest match first."""
+
     player_id: int
     full_name: str
 
@@ -107,6 +113,8 @@ class RosterRowProposal:
 
     side: Side
     jersey_number: int
+    # As the export prints it -- "Last First" -- and as a new Player would
+    # be created; matching is word-order tolerant only for candidates.
     full_name: str
     position: Position
     status: PlayerMatchStatus
@@ -146,6 +154,11 @@ class ImportProposal:
 
 
 class LeagueImportService:
+    """Takes an already-open SQLAlchemy `Session` and a `LeagueSource`.
+    Unlike `GameSetupService`, it never writes or commits: `propose` only
+    reads, and writing a confirmed proposal is the review screen's job
+    (ticket 22)."""
+
     def __init__(self, db_session: Session, source: LeagueSource) -> None:
         self._db = db_session
         self._source = source
@@ -155,9 +168,9 @@ class LeagueImportService:
         try:
             scraped = parse_game_pdf(self._source.fetch_game_pdf(game_id))
         except LeagueSourceError as error:
-            raise ManualEntryFallback(str(error)) from error
+            raise ManualEntryFallbackError(str(error)) from error
         if scraped.league_id != game_id:
-            raise ManualEntryFallback(
+            raise ManualEntryFallbackError(
                 f"export is for game {scraped.league_id}, not {game_id}"
             )
         league_ids = self._fetch_team_league_ids(game_id)
@@ -166,7 +179,7 @@ class LeagueImportService:
             for side in (Side.HOME, Side.AWAY)
         )
         known_players = [
-            (normalize_name(player.full_name), player)
+            (_normalize_name(player.full_name), player)
             for player in self._db.scalars(select(Player).order_by(Player.id))
             if player.full_name
         ]
@@ -214,11 +227,11 @@ class LeagueImportService:
                     team_id=team.id,
                     is_user_team=team.is_user_team,
                 )
-        key = normalize_name(name)
+        key = _normalize_name(name)
         candidates = tuple(
             TeamCandidate(team.id, team.name, team.is_user_team)
             for team in self._db.scalars(select(Team).order_by(Team.id))
-            if normalize_name(team.name) == key
+            if _normalize_name(team.name) == key
             # With the scraped league_id known, a team already carrying a
             # different one is provably a different league team, whatever
             # its name.
@@ -236,6 +249,9 @@ _MAX_PLAYER_CANDIDATES = 5
 # difflib ratio above which two normalized names count as a near miss
 # (a typo or a dropped/doubled letter, e.g. "Mathias"/"Matthias").
 _NEAR_MISS_RATIO = 0.85
+# A reordering of the same words ("First Last" vs the export's "Last First")
+# ranks just below an exact match.
+_REORDERED_NAME_SIMILARITY = 0.99
 
 
 def _resolve_player(
@@ -246,9 +262,9 @@ def _resolve_player(
     closest existing ones as alternates -- matching players is a manual
     judgment call, never automated identity resolution (CONTEXT.md's
     Player entry)."""
-    key = normalize_name(scraped.full_name)
+    key = _normalize_name(scraped.full_name)
     exact = [player for known_key, player in known_players if known_key == key]
-    row = partial(
+    proposed_row = partial(
         RosterRowProposal,
         side,
         scraped.jersey_number,
@@ -256,25 +272,23 @@ def _resolve_player(
         scraped.position,
     )
     if len(exact) == 1:
-        return row(PlayerMatchStatus.LINKED, player_id=exact[0].id)
+        return proposed_row(PlayerMatchStatus.LINKED, player_id=exact[0].id)
 
     scored = []
     for known_key, player in known_players:
         similarity = SequenceMatcher(None, key, known_key).ratio()
-        # The same words in another order ("First Last" vs the export's
-        # "Last First") is as close as a near miss gets short of exact.
         if sorted(known_key.split()) == sorted(key.split()):
-            similarity = max(similarity, 0.99)
+            similarity = max(similarity, _REORDERED_NAME_SIMILARITY)
         if similarity >= _NEAR_MISS_RATIO:
             scored.append((-similarity, player.id, player))
     candidates = tuple(
         PlayerCandidate(player.id, player.full_name)
         for _, _, player in sorted(scored)[:_MAX_PLAYER_CANDIDATES]
     )
-    return row(PlayerMatchStatus.NEW, candidates=candidates)
+    return proposed_row(PlayerMatchStatus.NEW, candidates=candidates)
 
 
-def normalize_name(name: str) -> str:
+def _normalize_name(name: str) -> str:
     """Case-, accent- and spacing-insensitive form of a team or player
     name, the key both kinds of name matching compare on."""
     decomposed = unicodedata.normalize("NFKD", name)

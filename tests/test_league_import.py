@@ -18,7 +18,7 @@ from hockey_analyzer.league_import import (
     InvalidGameLinkError,
     LeagueImportService,
     LeagueSourceError,
-    ManualEntryFallback,
+    ManualEntryFallbackError,
     PlayerMatchStatus,
     TeamMatchStatus,
 )
@@ -392,5 +392,5 @@ def _row_counts(session):
 def test_pdf_failure_signals_fallback_to_manual_entry(session, pdf):
     service = LeagueImportService(session, FakeLeagueSource(pdf=pdf))
 
-    with pytest.raises(ManualEntryFallback):
+    with pytest.raises(ManualEntryFallbackError):
         service.propose(GAME_LINK)
