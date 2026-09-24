@@ -935,6 +935,8 @@ def test_cancelling_the_import_dialog_does_nothing(qtbot, session):
     window.import_game_action.trigger()
 
     assert window.tagging_panel is None
+
+
 class _FakeGamePicker(_FakeGameListDialog):
     def __init__(self, *, selected_game_ids=(), accepted=True) -> None:
         super().__init__(accepted=accepted)
