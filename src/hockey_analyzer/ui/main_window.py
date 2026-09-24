@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy.orm import Session
 
+from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.domain.video_timestamp import (
@@ -45,6 +46,7 @@ from hockey_analyzer.ui.playback_controller import (
     PlaybackController,
 )
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
+from hockey_analyzer.ui.stats_dialog import StatsDialog
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
 from hockey_analyzer.ui.units_dialog import UnitsDialog
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
@@ -87,6 +89,7 @@ class MainWindow(QMainWindow):
         game_list_dialog_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
         units_dialog_factory: UnitsDialogFactory | None = None,
+        stats_dialog_factory: Callable[[GameData, QWidget], StatsDialog] | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -121,6 +124,7 @@ class MainWindow(QMainWindow):
         self._game_setup_dialog_factory = game_setup_dialog_factory or GameSetupDialog
         self._game_list_dialog_factory = game_list_dialog_factory or GameListDialog
         self._units_dialog_factory = units_dialog_factory or UnitsDialog
+        self._stats_dialog_factory = stats_dialog_factory or StatsDialog
         self._video_missing_notice = (
             video_missing_notice
             if video_missing_notice is not None
@@ -204,6 +208,11 @@ class MainWindow(QMainWindow):
         self.units_action = game_menu.addAction("Units…")
         self.units_action.triggered.connect(self._edit_units)
         self.units_action.setEnabled(False)
+        # Stats (ticket 18) are for/against one side vs. the other, so
+        # they need both sides too -- same enabling rule as Units.
+        self.stats_action = game_menu.addAction("Stats…")
+        self.stats_action.triggered.connect(self._show_stats)
+        self.stats_action.setEnabled(False)
         # No db_session means there's nowhere to persist a Game -- keep
         # this window in its ticket-13 video-only mode rather than
         # offering actions that would have nothing to write to.
@@ -233,10 +242,12 @@ class MainWindow(QMainWindow):
         self._active_game_id = game_id
         if game_id is None:
             self.units_action.setEnabled(False)
+            self.stats_action.setEnabled(False)
             return
         game = self._game_setup_service.get_game(game_id)
         has_both_sides = game.home_team_id is not None and game.away_team_id is not None
         self.units_action.setEnabled(has_both_sides)
+        self.stats_action.setEnabled(has_both_sides)
         if has_both_sides:
             tagging_session = TaggingSession(
                 self._db_session,
@@ -273,6 +284,12 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+
+    def _show_stats(self) -> None:
+        if self._db_session is None or self._active_game_id is None:
+            return
+        data = load_game_data(self._db_session, self._active_game_id)
+        self._stats_dialog_factory(data, self).exec()
 
     def _select_game(self) -> None:
         if self._game_setup_service is None:
