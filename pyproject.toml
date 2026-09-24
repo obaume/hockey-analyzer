@@ -10,6 +10,9 @@ dependencies = [
     # GPL-3.0 -- see docs/adr/0009-hockey-rink-for-rink-rendering.md for
     # why that's an accepted trade-off here.
     "hockey-rink>=1.1.4",
+    # Reads the league site's game PDF export -- see
+    # docs/adr/0005-pdf-export-as-primary-league-import-source.md.
+    "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]
