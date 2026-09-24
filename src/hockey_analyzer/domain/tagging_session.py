@@ -139,12 +139,18 @@ UNIT_TYPE_LABELS: dict[UnitType, str] = {
 }
 
 
+def unit_label(unit_type: UnitType, unit_number: int) -> str:
+    """e.g. "Forward line 1" -- the one spelling of a unit's name."""
+    return f"{UNIT_TYPE_LABELS[unit_type]} {unit_number}"
+
+
 class Unit(NamedTuple):
     """One declared unit on one side of the game (e.g. that side's
     Forward-Line 1), with every player holding a `GameUnitAssignment` to
     it -- never stored as its own row, just grouped from those
     assignments (see CONTEXT.md's Game unit assignment entry)."""
 
+    team_side: Side
     unit_type: UnitType
     unit_number: int
     player_ids: tuple[int, ...]
@@ -450,7 +456,7 @@ class TaggingSession:
         """Every unit declared for `team_side` in this game, ordered by
         unit type (lines, pairs, power play, penalty kill) then number --
         empty for a side with no unit assignments, e.g. an opponent, which
-        falls back on `log_line_change`'s ad-hoc selection instead."""
+        falls back on `log_ad_hoc_line_change` instead."""
         stmt = select(GameUnitAssignment).where(
             GameUnitAssignment.game_id == self.game_id,
             GameUnitAssignment.team_id == self._team_id_for_side(team_side),
@@ -461,7 +467,7 @@ class TaggingSession:
             members.setdefault(key, []).append(assignment.player_id)
         type_order = list(UnitType)
         return [
-            Unit(unit_type, unit_number, tuple(player_ids))
+            Unit(Side(team_side), unit_type, unit_number, tuple(player_ids))
             for (unit_type, unit_number), player_ids in sorted(
                 members.items(),
                 key=lambda item: (type_order.index(item[0][0]), item[0][1]),
@@ -474,46 +480,51 @@ class TaggingSession:
         "widgets only render" reason."""
         stmt = select(GameRosterEntry.jersey_number).where(
             GameRosterEntry.game_id == self.game_id,
+            GameRosterEntry.team_id == self._team_id_for_side(unit.team_side),
             GameRosterEntry.player_id.in_(unit.player_ids),
         )
         jerseys = ", ".join(f"#{number}" for number in sorted(self._db.scalars(stmt)))
-        return f"{UNIT_TYPE_LABELS[unit.unit_type]} {unit.unit_number} ({jerseys})"
+        return f"{unit_label(unit.unit_type, unit.unit_number)} ({jerseys})"
+
+    def list_roster(self, team_side: TeamSide) -> list[GameRosterEntry]:
+        """`team_side`'s roster for this game, by jersey number -- what the
+        ad-hoc line change lets a tagger multi-select from."""
+        stmt = (
+            select(GameRosterEntry)
+            .where(
+                GameRosterEntry.game_id == self.game_id,
+                GameRosterEntry.team_id == self._team_id_for_side(team_side),
+            )
+            .order_by(GameRosterEntry.jersey_number)
+        )
+        return list(self._db.scalars(stmt))
+
+    def describe_roster_entry(self, entry: GameRosterEntry) -> str:
+        """e.g. "#14 Jordan Kim", or just "#14" for a nameless player."""
+        name = entry.player.full_name
+        return f"#{entry.jersey_number} {name}" if name else f"#{entry.jersey_number}"
 
     def log_unit_change(
-        self,
-        team_side: TeamSide,
-        unit_type: UnitType,
-        unit_number: int,
-        video_timestamp: int,
-        *,
-        on_ice: bool,
+        self, unit: Unit, video_timestamp: int, *, on_ice: bool
     ) -> list[ShiftChange]:
         """Bring a whole declared unit on (or off) the ice at once: one
         ordinary `shift_change` per member, all at `video_timestamp`. A
         line change is a tagging convenience only -- nothing groups the
         resulting events afterward, so each is edited or deleted in the
         event log exactly like a hand-tagged one (see CONTEXT.md's Game
-        unit assignment entry)."""
-        unit = next(
-            (
-                unit
-                for unit in self.list_units(team_side)
-                if unit.unit_type is unit_type and unit.unit_number == unit_number
-            ),
-            None,
-        )
-        if unit is None:
+        unit assignment entry). `unit` comes from `list_units`."""
+        if not unit.player_ids:
             raise ValueError(
-                f"{team_side} has no {UNIT_TYPE_LABELS[unit_type]} {unit_number}"
+                f"{unit_label(unit.unit_type, unit.unit_number)} has no members"
             )
         return self._log_shift_changes(
-            self._team_id_for_side(team_side),
+            self._team_id_for_side(unit.team_side),
             unit.player_ids,
             video_timestamp,
             on_ice=on_ice,
         )
 
-    def log_line_change(
+    def log_ad_hoc_line_change(
         self,
         team_side: TeamSide,
         jersey_numbers: Iterable[int],
@@ -523,8 +534,9 @@ class TaggingSession:
     ) -> list[ShiftChange]:
         """The ad-hoc fallback to `log_unit_change` for a side with no
         declared units: the same bulk action over an arbitrary multi-select
-        of jersey numbers, each resolved (or rostered on the fly) exactly
-        as `set_player_reference` would."""
+        of jersey numbers (picked from `list_roster`, or typed for a player
+        not rostered yet), each resolved -- or rostered on the fly --
+        exactly as `set_player_reference` would."""
         unique_jerseys = list(dict.fromkeys(jersey_numbers))
         if not unique_jerseys:
             raise ValueError("a line change needs at least one jersey number")

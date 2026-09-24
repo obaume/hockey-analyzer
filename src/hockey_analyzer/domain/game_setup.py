@@ -14,6 +14,8 @@ or special-cased fields -- see CONTEXT.md's Game roster entry entry
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -288,6 +290,31 @@ class GameSetupService:
             return
         self._db.delete(assignment)
         self._db.commit()
+
+    def set_player_units(
+        self,
+        *,
+        game_id: int,
+        team_id: int,
+        player_id: int,
+        units: Mapping[UnitType, int | None],
+    ) -> None:
+        """Set several of `player_id`'s units in one go: a number assigns
+        (or moves) them, `None` takes them off that unit type. Unit types
+        absent from `units` are left as they are."""
+        for unit_type, unit_number in units.items():
+            if unit_number is None:
+                self.unassign_unit(
+                    game_id=game_id, player_id=player_id, unit_type=unit_type
+                )
+            else:
+                self.assign_unit(
+                    game_id=game_id,
+                    team_id=team_id,
+                    player_id=player_id,
+                    unit_type=unit_type,
+                    unit_number=unit_number,
+                )
 
     def player_unit_assignments(
         self, game_id: int, player_id: int

@@ -673,3 +673,27 @@ def test_list_games_ordering_bumps_on_unit_assignment_activity(game_setup_servic
     )
 
     assert game_setup_service.list_games()[0].id == first.id
+
+
+def test_set_player_units_assigns_moves_and_unassigns_in_one_call(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+    kwargs = {"game_id": game.id, "team_id": team.id, "player_id": player_id}
+    game_setup_service.set_player_units(
+        **kwargs, units={UnitType.FORWARD_LINE: 1, UnitType.PENALTY_KILL: 1}
+    )
+
+    game_setup_service.set_player_units(
+        **kwargs,
+        units={
+            UnitType.FORWARD_LINE: 2,
+            UnitType.POWER_PLAY: 1,
+            UnitType.PENALTY_KILL: None,
+        },
+    )
+
+    assert game_setup_service.player_unit_assignments(game.id, player_id) == {
+        UnitType.FORWARD_LINE: 2,
+        UnitType.POWER_PLAY: 1,
+    }

@@ -96,7 +96,7 @@ A `Game` also carries `home_team_id`/`away_team_id` — nullable until each side
 
 `video_path` is the absolute path to the game's footage file. It's attached on demand — the first time footage is opened while that game is active — rather than required at game creation, since a game record can exist before footage is even exported; once attached, it's what lets reopening a game later load its footage automatically instead of re-browsing for the file. A missing file at resume time is a relink, not something this field tries to solve portably (e.g. across machines or moved drives).
 
-`updated_at` tracks the most recent tagging activity for the game, not just edits to the `Game` row itself — it's bumped by any `Event` or **Game roster entry** logged against it too, since that's the overwhelmingly dominant activity once a game exists. It drives the "resume a game" picker's default ordering (most recently worked on first), on the premise that recency is the axis someone hunting for "the game I was just tagging" is almost always scanning by.
+`updated_at` tracks the most recent tagging activity for the game, not just edits to the `Game` row itself — it's bumped by any `Event`, **Game roster entry**, or **Game unit assignment** logged against it too, since that's the overwhelmingly dominant activity once a game exists. It drives the "resume a game" picker's default ordering (most recently worked on first), on the premise that recency is the axis someone hunting for "the game I was just tagging" is almost always scanning by.
 
 ### Opponent shifts complete
 

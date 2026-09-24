@@ -59,11 +59,13 @@ class _FakeShotAttemptDialog(_FakeRinkClickDialog):
 class _FakeLineChangeDialog:
     """Stands in for `LineChangeDialog`, for the same modal-`exec()`
     reason as `_FakeRinkClickDialog`. Built via `_line_change_factory`,
-    which records the `units` the panel offered so tests can pick one."""
+    which records the `units`/`roster` the panel offered so tests can
+    assert on them and pick a unit."""
 
     def __init__(
         self,
         units,
+        roster=None,
         *,
         accepted=True,
         team_side="home",
@@ -72,6 +74,7 @@ class _FakeLineChangeDialog:
         jersey_numbers=(),
     ):
         self.offered_units = units
+        self.offered_roster = roster
         self._accepted = accepted
         self.team_side = team_side
         self.on_ice = on_ice
@@ -89,8 +92,8 @@ class _FakeLineChangeDialog:
 def _line_change_factory(**choice):
     opened = []
 
-    def factory(units):
-        dialog = _FakeLineChangeDialog(units, **choice)
+    def factory(units, roster):
+        dialog = _FakeLineChangeDialog(units, roster, **choice)
         opened.append(dialog)
         return dialog
 
@@ -874,7 +877,7 @@ def test_line_change_timestamp_is_captured_before_the_dialog_opens(
     # keeps playing -- the change belongs at the instant the key was hit.
     position = {"ms": 1000}
 
-    def factory(units):
+    def factory(units, roster):
         position["ms"] = 9000
         return _FakeLineChangeDialog(units, jersey_numbers=[14])
 
@@ -926,3 +929,20 @@ def test_bulk_logged_rows_are_individually_selectable_and_deletable(
     qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
 
     assert panel.event_table.rowCount() == 1
+
+
+def test_line_change_offers_each_sides_roster_for_ad_hoc_picking(
+    qtbot, tagging_session
+):
+    tagging_session.resolve_or_create_roster_entry(
+        tagging_session.away_team_id, 12, full_name="Sam Diaz"
+    )
+    factory = _line_change_factory(accepted=False)
+    panel = _make_panel(qtbot, tagging_session, line_change_dialog_factory=factory)
+
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    assert factory.opened[0].offered_roster == {
+        "home": [],
+        "away": [("#12 Sam Diaz", 12)],
+    }

@@ -39,7 +39,7 @@ from hockey_analyzer.domain.game_setup import (
     GameSetupService,
     SameTeamBothSidesError,
 )
-from hockey_analyzer.domain.tagging_session import UNIT_TYPE_LABELS
+from hockey_analyzer.domain.tagging_session import UNIT_TYPE_LABELS, unit_label
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
 # the full_name/position fields" rather than rostering an existing one.
@@ -286,7 +286,7 @@ class TeamRosterPanel(QWidget):
     def _describe_units(self, player_id: int) -> str:
         assignments = self._service.player_unit_assignments(self._game_id, player_id)
         return ", ".join(
-            f"{UNIT_TYPE_LABELS[unit_type]} {assignments[unit_type]}"
+            unit_label(unit_type, assignments[unit_type])
             for unit_type in UnitType
             if unit_type in assignments
         )
@@ -321,19 +321,15 @@ class TeamRosterPanel(QWidget):
         self._service.set_player_position(
             player_id, self.edit_position_combo.currentData()
         )
-        for unit_type, field in self.edit_unit_fields.items():
-            if field.value():
-                self._service.assign_unit(
-                    game_id=self._game_id,
-                    team_id=self.team_id,
-                    player_id=player_id,
-                    unit_type=unit_type,
-                    unit_number=field.value(),
-                )
-            else:
-                self._service.unassign_unit(
-                    game_id=self._game_id, player_id=player_id, unit_type=unit_type
-                )
+        self._service.set_player_units(
+            game_id=self._game_id,
+            team_id=self.team_id,
+            player_id=player_id,
+            units={
+                unit_type: field.value() or None
+                for unit_type, field in self.edit_unit_fields.items()
+            },
+        )
         self._refresh_roster_table()
         self._refresh_player_combo()
 

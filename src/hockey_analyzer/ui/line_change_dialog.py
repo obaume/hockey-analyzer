@@ -1,9 +1,10 @@
 """Bulk line-change entry (ticket 17): pick a side, on/off, and either one
-of that side's declared units or an ad-hoc set of jersey numbers. The
-dialog only collects the choice -- `TaggingPanel` hands it to
-`TaggingSession.log_unit_change`/`log_line_change`, which create the
-individual `shift_change` events (see CONTEXT.md's Game unit assignment
-entry: a line change is a tagging convenience, not a stored entity).
+of that side's declared units or an ad-hoc multi-select of its players.
+The dialog only collects the choice -- `TaggingPanel` hands it to
+`TaggingSession.log_unit_change`/`log_ad_hoc_line_change`, which create
+the individual `shift_change` events (see CONTEXT.md's Game unit
+assignment entry: a line change is a tagging convenience, not a stored
+entity).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -18,11 +20,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from hockey_analyzer.domain.enums import Side
 from hockey_analyzer.domain.tagging_session import TeamSide, Unit
 
 # `unit_combo` item data for the ad-hoc choice. Declared units are stored
@@ -33,30 +38,36 @@ _AD_HOC = -1
 
 
 class LineChangeDialog(QDialog):
-    """`units` maps each side to its declared units, each paired with the
-    label to show for it (`TaggingSession.describe_unit`). A side with no
-    units offers only the ad-hoc jersey-number choice. After an accepted
-    `exec()`, read `team_side`, `on_ice`, and either `unit` (a declared
-    unit) or `jersey_numbers` (ad-hoc, `unit` is `None`)."""
+    """`units` maps each side to its declared units, and `roster` each
+    side to its rostered jersey numbers, each paired with the label to
+    show for it (`TaggingSession.describe_unit`/`describe_roster_entry`).
+    A side with no units offers only the ad-hoc choice: tick players off
+    its roster, and/or type the numbers of players not rostered yet.
+    After an accepted `exec()`, read `team_side`, `on_ice`, and either
+    `unit` (a declared unit) or `jersey_numbers` (ad hoc, `unit` is
+    `None`)."""
 
     def __init__(
         self,
         units: Mapping[TeamSide, Sequence[tuple[str, Unit]]],
+        roster: Mapping[TeamSide, Sequence[tuple[str, int]]],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Line Change")
         self._units_by_side = units
-        self.team_side: TeamSide = "home"
+        self._roster_by_side = roster
+        self.team_side: TeamSide = Side.HOME
         self.on_ice = True
         self.unit: Unit | None = None
         self.jersey_numbers: list[int] = []
 
-        # Plain strings as item data -- see _AD_HOC's comment.
+        # Each side's plain `.value` string as item data, not the Side
+        # member -- see _AD_HOC's comment.
         self.side_combo = QComboBox()
-        self.side_combo.addItem("Home", "home")
-        self.side_combo.addItem("Away", "away")
-        self.side_combo.currentIndexChanged.connect(self._refresh_unit_combo)
+        for side in Side:
+            self.side_combo.addItem(side.value.capitalize(), side.value)
+        self.side_combo.currentIndexChanged.connect(self._on_side_changed)
 
         self.direction_combo = QComboBox()
         self.direction_combo.addItem("On ice", True)
@@ -65,8 +76,10 @@ class LineChangeDialog(QDialog):
         self.unit_combo = QComboBox()
         self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
 
+        self.roster_list = QListWidget()
+
         self.jersey_field = QLineEdit()
-        self.jersey_field.setPlaceholderText("e.g. 14 17 23")
+        self.jersey_field.setPlaceholderText("not rostered yet, e.g. 14 17")
 
         self.error_label = QLabel("")
 
@@ -80,7 +93,8 @@ class LineChangeDialog(QDialog):
         form.addRow("Side", self.side_combo)
         form.addRow("Direction", self.direction_combo)
         form.addRow("Unit", self.unit_combo)
-        form.addRow("Jersey #s", self.jersey_field)
+        form.addRow("Players", self.roster_list)
+        form.addRow("Other #s", self.jersey_field)
         form.addRow("", self.error_label)
 
         buttons = QHBoxLayout()
@@ -93,28 +107,38 @@ class LineChangeDialog(QDialog):
         layout.addLayout(buttons)
         self.setLayout(layout)
 
-        self._refresh_unit_combo()
+        self._on_side_changed()
 
-    def _current_side(self) -> TeamSide:
-        return self.side_combo.currentData()
+    def _current_side(self) -> Side:
+        return Side(self.side_combo.currentData())
 
-    def _refresh_unit_combo(self) -> None:
+    def _on_side_changed(self) -> None:
+        side = self._current_side()
+
+        self.roster_list.clear()
+        for label, jersey_number in self._roster_by_side.get(side, ()):
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, jersey_number)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.roster_list.addItem(item)
+        self.jersey_field.clear()
+
         self.unit_combo.blockSignals(True)
         self.unit_combo.clear()
-        for index, (label, _unit) in enumerate(
-            self._units_by_side.get(self._current_side(), ())
-        ):
+        for index, (label, _unit) in enumerate(self._units_by_side.get(side, ())):
             self.unit_combo.addItem(label, index)
-        self.unit_combo.addItem("Ad hoc (jersey numbers)", _AD_HOC)
+        self.unit_combo.addItem("Ad hoc (pick players)", _AD_HOC)
         self.unit_combo.setCurrentIndex(0)
         self.unit_combo.blockSignals(False)
         self._on_unit_changed()
 
     def _on_unit_changed(self) -> None:
         is_ad_hoc = self.unit_combo.currentData() == _AD_HOC
+        self.roster_list.setEnabled(is_ad_hoc)
         self.jersey_field.setEnabled(is_ad_hoc)
         if is_ad_hoc:
-            self.jersey_field.setFocus()
+            self.roster_list.setFocus()
 
     def _accept_if_valid(self) -> None:
         self.error_label.setText("")
@@ -123,11 +147,20 @@ class LineChangeDialog(QDialog):
         if choice == _AD_HOC:
             tokens = re.split(r"[\s,]+", self.jersey_field.text().strip())
             tokens = [token for token in tokens if token]
-            if not tokens or not all(token.isdigit() for token in tokens):
-                self.error_label.setText("Enter one or more jersey numbers.")
+            if not all(token.isdigit() for token in tokens):
+                self.error_label.setText("Other #s must be jersey numbers.")
+                return
+            picked = [
+                self.roster_list.item(row).data(Qt.ItemDataRole.UserRole)
+                for row in range(self.roster_list.count())
+                if self.roster_list.item(row).checkState() == Qt.CheckState.Checked
+            ]
+            jersey_numbers = picked + [int(token) for token in tokens]
+            if not jersey_numbers:
+                self.error_label.setText("Pick or type at least one player.")
                 return
             self.unit = None
-            self.jersey_numbers = [int(token) for token in tokens]
+            self.jersey_numbers = jersey_numbers
         else:
             self.unit = self._units_by_side[side][choice][1]
             self.jersey_numbers = []

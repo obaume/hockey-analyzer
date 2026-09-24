@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType, Side
 from hockey_analyzer.domain.tagging_session import (
     EVENT_TYPE_REFERENCE_NAMES,
     EVENT_TYPES_WITH_PLAYER_REFERENCE,
@@ -148,7 +148,11 @@ class TaggingPanel(QWidget):
         shot_attempt_dialog_factory: Callable[[], ShotAttemptCaptureDialog]
         | None = None,
         line_change_dialog_factory: Callable[
-            [dict[TeamSide, list[tuple[str, Unit]]]], LineChangeDialog
+            [
+                dict[TeamSide, list[tuple[str, Unit]]],
+                dict[TeamSide, list[tuple[str, int]]],
+            ],
+            LineChangeDialog,
         ]
         | None = None,
         parent: QWidget | None = None,
@@ -176,7 +180,7 @@ class TaggingPanel(QWidget):
             lambda: ShotAttemptCaptureDialog(self._session.rink_type, self)
         )
         self._line_change_dialog_factory = line_change_dialog_factory or (
-            lambda units: LineChangeDialog(units, self)
+            lambda units, roster: LineChangeDialog(units, roster, self)
         )
 
         log_row = QHBoxLayout()
@@ -453,21 +457,24 @@ class TaggingPanel(QWidget):
                 (self._session.describe_unit(unit), unit)
                 for unit in self._session.list_units(side)
             ]
-            for side in ("home", "away")
+            for side in Side
         }
-        dialog = self._line_change_dialog_factory(units)
+        roster: dict[TeamSide, list[tuple[str, int]]] = {
+            side: [
+                (self._session.describe_roster_entry(entry), entry.jersey_number)
+                for entry in self._session.list_roster(side)
+            ]
+            for side in Side
+        }
+        dialog = self._line_change_dialog_factory(units, roster)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if dialog.unit is not None:
             self._session.log_unit_change(
-                dialog.team_side,
-                dialog.unit.unit_type,
-                dialog.unit.unit_number,
-                video_timestamp,
-                on_ice=dialog.on_ice,
+                dialog.unit, video_timestamp, on_ice=dialog.on_ice
             )
         else:
-            self._session.log_line_change(
+            self._session.log_ad_hoc_line_change(
                 dialog.team_side,
                 dialog.jersey_numbers,
                 video_timestamp,

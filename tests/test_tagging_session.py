@@ -8,6 +8,7 @@ from hockey_analyzer.domain.enums import (
     RinkType,
     ShotOutcome,
     ShotType,
+    Side,
     UnitType,
 )
 from hockey_analyzer.domain.game_setup import GameSetupService
@@ -21,7 +22,7 @@ from hockey_analyzer.domain.models import (
     Team,
 )
 from hockey_analyzer.domain.rink import high_danger, zone
-from hockey_analyzer.domain.tagging_session import TaggingSession
+from hockey_analyzer.domain.tagging_session import TaggingSession, Unit
 
 # -- log_event: instant capture -------------------------------------------
 
@@ -740,6 +741,14 @@ def _assign(
     return entry.player_id
 
 
+def _unit(tagging_session, side, unit_type, unit_number):
+    return next(
+        unit
+        for unit in tagging_session.list_units(side)
+        if unit.unit_type is unit_type and unit.unit_number == unit_number
+    )
+
+
 def test_log_unit_change_creates_one_shift_change_per_unit_member(
     tagging_session, session
 ):
@@ -750,7 +759,7 @@ def test_log_unit_change_creates_one_shift_change_per_unit_member(
     _assign(session, tagging_session, 9, UnitType.FORWARD_LINE, 2)
 
     events = tagging_session.log_unit_change(
-        "home", UnitType.FORWARD_LINE, 1, 4200, on_ice=True
+        _unit(tagging_session, "home", UnitType.FORWARD_LINE, 1), 4200, on_ice=True
     )
 
     assert sorted(event.shift_player_id for event in events) == sorted(members)
@@ -768,7 +777,7 @@ def test_log_unit_change_can_bring_a_unit_off_the_ice(tagging_session, session):
         _assign(session, tagging_session, jersey, UnitType.DEFENSE_PAIR, 1)
 
     events = tagging_session.log_unit_change(
-        "home", UnitType.DEFENSE_PAIR, 1, 900, on_ice=False
+        _unit(tagging_session, "home", UnitType.DEFENSE_PAIR, 1), 900, on_ice=False
     )
 
     assert [event.shift_on_ice for event in events] == [False, False]
@@ -781,7 +790,7 @@ def test_log_unit_change_is_scoped_to_the_given_side(tagging_session, session):
     )
 
     events = tagging_session.log_unit_change(
-        "away", UnitType.FORWARD_LINE, 1, 100, on_ice=True
+        _unit(tagging_session, "away", UnitType.FORWARD_LINE, 1), 100, on_ice=True
     )
 
     assert [event.shift_player_id for event in events] == [away_player]
@@ -794,10 +803,10 @@ def test_a_player_on_several_units_is_included_by_each(tagging_session, session)
     pp_only = _assign(session, tagging_session, 44, UnitType.POWER_PLAY, 1)
 
     line = tagging_session.log_unit_change(
-        "home", UnitType.FORWARD_LINE, 1, 100, on_ice=True
+        _unit(tagging_session, "home", UnitType.FORWARD_LINE, 1), 100, on_ice=True
     )
     power_play = tagging_session.log_unit_change(
-        "home", UnitType.POWER_PLAY, 1, 500, on_ice=True
+        _unit(tagging_session, "home", UnitType.POWER_PLAY, 1), 500, on_ice=True
     )
 
     assert [event.shift_player_id for event in line] == [both]
@@ -807,14 +816,13 @@ def test_a_player_on_several_units_is_included_by_each(tagging_session, session)
 
 
 def test_log_unit_change_rejects_a_unit_with_no_members(tagging_session):
+    empty = Unit(Side.HOME, UnitType.PENALTY_KILL, 1, ())
     with pytest.raises(ValueError):
-        tagging_session.log_unit_change(
-            "home", UnitType.PENALTY_KILL, 1, 100, on_ice=True
-        )
+        tagging_session.log_unit_change(empty, 100, on_ice=True)
     assert tagging_session.list_events() == []
 
 
-def test_log_line_change_ad_hoc_resolves_jerseys_creating_players_on_the_fly(
+def test_log_ad_hoc_line_change_ad_hoc_resolves_jerseys_creating_players_on_the_fly(
     tagging_session, session
 ):
     # No unit assignments at all (e.g. an opponent) -- the jersey numbers
@@ -823,7 +831,9 @@ def test_log_line_change_ad_hoc_resolves_jerseys_creating_players_on_the_fly(
         tagging_session.away_team_id, 7
     )
 
-    events = tagging_session.log_line_change("away", [7, 12, 30], 3000, on_ice=True)
+    events = tagging_session.log_ad_hoc_line_change(
+        "away", [7, 12, 30], 3000, on_ice=True
+    )
 
     assert len(events) == 3
     assert events[0].shift_player_id == existing.player_id
@@ -838,15 +848,17 @@ def test_log_line_change_ad_hoc_resolves_jerseys_creating_players_on_the_fly(
     assert roster_jerseys == [7, 12, 30]
 
 
-def test_log_line_change_ignores_a_repeated_jersey_number(tagging_session):
-    events = tagging_session.log_line_change("home", [14, 14, 17], 100, on_ice=True)
+def test_log_ad_hoc_line_change_ignores_a_repeated_jersey_number(tagging_session):
+    events = tagging_session.log_ad_hoc_line_change(
+        "home", [14, 14, 17], 100, on_ice=True
+    )
 
     assert len(events) == 2
 
 
-def test_log_line_change_rejects_an_empty_selection(tagging_session):
+def test_log_ad_hoc_line_change_rejects_an_empty_selection(tagging_session):
     with pytest.raises(ValueError):
-        tagging_session.log_line_change("home", [], 100, on_ice=True)
+        tagging_session.log_ad_hoc_line_change("home", [], 100, on_ice=True)
 
 
 def test_bulk_events_share_one_strength_state_computed_before_the_change(
@@ -855,10 +867,10 @@ def test_bulk_events_share_one_strength_state_computed_before_the_change(
     # Every member of one line change is one moment of play -- they all
     # get the same pre-change strength guess, not a count that creeps up
     # as each sibling is inserted.
-    tagging_session.log_line_change("home", [1, 2], 0, on_ice=True)
-    tagging_session.log_line_change("away", [1], 0, on_ice=True)
+    tagging_session.log_ad_hoc_line_change("home", [1, 2], 0, on_ice=True)
+    tagging_session.log_ad_hoc_line_change("away", [1], 0, on_ice=True)
 
-    events = tagging_session.log_line_change("home", [3, 4, 5], 100, on_ice=True)
+    events = tagging_session.log_ad_hoc_line_change("home", [3, 4, 5], 100, on_ice=True)
 
     assert [event.strength_state for event in events] == ["2v1"] * 3
 
@@ -866,7 +878,9 @@ def test_bulk_events_share_one_strength_state_computed_before_the_change(
 def test_bulk_created_events_are_individually_editable_and_deletable(
     tagging_session,
 ):
-    events = tagging_session.log_line_change("home", [14, 17, 23], 100, on_ice=True)
+    events = tagging_session.log_ad_hoc_line_change(
+        "home", [14, 17, 23], 100, on_ice=True
+    )
 
     tagging_session.update_event(events[0].id, video_timestamp=90)
     tagging_session.set_player_reference(events[1].id, "home", unknown=True)
@@ -908,3 +922,53 @@ def test_describe_unit_names_the_unit_and_its_jerseys(tagging_session, session):
     (unit,) = tagging_session.list_units("home")
 
     assert tagging_session.describe_unit(unit) == "Forward line 1 (#14, #17)"
+
+
+def test_list_units_carries_the_side_each_unit_belongs_to(tagging_session, session):
+    _assign(session, tagging_session, 91, UnitType.FORWARD_LINE, 1, side="away")
+
+    (unit,) = tagging_session.list_units("away")
+
+    assert unit.team_side is Side.AWAY
+
+
+def test_describe_unit_only_reads_jerseys_from_the_units_own_side(
+    tagging_session, session
+):
+    # One player rostered on both sides under different numbers (a
+    # tagging slip, but representable) must show the unit's side's jersey.
+    player_id = _assign(session, tagging_session, 14, UnitType.FORWARD_LINE, 1)
+    GameSetupService(session).add_roster_entry(
+        game_id=tagging_session.game_id,
+        team_id=tagging_session.away_team_id,
+        jersey_number=99,
+        player_id=player_id,
+    )
+
+    (unit,) = tagging_session.list_units("home")
+
+    assert tagging_session.describe_unit(unit) == "Forward line 1 (#14)"
+
+
+def test_list_roster_returns_one_sides_roster_by_jersey_number(tagging_session):
+    for jersey in (23, 7):
+        tagging_session.resolve_or_create_roster_entry(
+            tagging_session.home_team_id, jersey
+        )
+    tagging_session.resolve_or_create_roster_entry(tagging_session.away_team_id, 1)
+
+    roster = tagging_session.list_roster("home")
+
+    assert [entry.jersey_number for entry in roster] == [7, 23]
+
+
+def test_describe_roster_entry_includes_the_name_when_known(tagging_session):
+    named = tagging_session.resolve_or_create_roster_entry(
+        tagging_session.home_team_id, 14, full_name="Jordan Kim"
+    )
+    nameless = tagging_session.resolve_or_create_roster_entry(
+        tagging_session.home_team_id, 9
+    )
+
+    assert tagging_session.describe_roster_entry(named) == "#14 Jordan Kim"
+    assert tagging_session.describe_roster_entry(nameless) == "#9"
