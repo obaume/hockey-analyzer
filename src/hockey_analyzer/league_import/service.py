@@ -13,6 +13,7 @@ from __future__ import annotations
 import enum
 import unicodedata
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date as date_
 from difflib import SequenceMatcher
@@ -177,6 +178,23 @@ class ImportProposal:
     def roster_for(self, side: Side) -> list[RosterRowProposal]:
         return [row for row in self.roster if row.side == side]
 
+    def prefilled_user_team(self, team_ids: Mapping[Side, int | None]) -> Side | None:
+        """The review screen's pre-filled answer to "which team is yours",
+        given the team each side is currently set to link (`team_ids`):
+        the side whose existing team is already flagged as the user's --
+        a league_id link, or a name-match candidate the user confirmed --
+        when exactly one is. Never a side creating a new team (ticket 11)."""
+        flagged = [
+            side
+            for side in (Side.HOME, Side.AWAY)
+            if (self.team(side).team_id is not None and self.team(side).is_user_team)
+            or any(
+                candidate.team_id == team_ids.get(side) and candidate.is_user_team
+                for candidate in self.team(side).candidates
+            )
+        ]
+        return flagged[0] if len(flagged) == 1 else None
+
 
 @dataclass(frozen=True)
 class ImportResolution:
@@ -188,9 +206,10 @@ class ImportResolution:
     home_team_id: int | None
     away_team_id: int | None
     # Which side's team is the user's own -- always an explicit answer,
-    # never inferred from home/away (ticket 11). Applied to both teams:
-    # the chosen side's gets `is_user_team` set, the other's cleared.
-    # None means neither.
+    # never inferred from home/away (ticket 11); None means neither. Only
+    # ever sets the chosen team's `is_user_team`, never clears another's:
+    # several teams may be flagged (CONTEXT.md's Team), so a per-game
+    # answer is no reason to un-flag one.
     user_team: Side | None
     # One per `ImportProposal.roster` row, same order: the existing
     # `Player` to link, or None to create a new one from the row's name.
@@ -204,16 +223,11 @@ class ImportResolution:
         """Every proposed link taken as-is, anything unmatched created
         new, and `user_team` pre-filled from whichever linked team is
         already flagged as the user's -- only when that's unambiguous."""
-        flagged = [
-            side
-            for side in (Side.HOME, Side.AWAY)
-            if proposal.team(side).status == TeamMatchStatus.LINKED
-            and proposal.team(side).is_user_team
-        ]
+        team_ids = {side: proposal.team(side).team_id for side in Side}
         return cls(
-            home_team_id=proposal.home.team_id,
-            away_team_id=proposal.away.team_id,
-            user_team=flagged[0] if len(flagged) == 1 else None,
+            home_team_id=team_ids[Side.HOME],
+            away_team_id=team_ids[Side.AWAY],
+            user_team=proposal.prefilled_user_team(team_ids),
             player_ids=tuple(row.player_id for row in proposal.roster),
         )
 
@@ -392,10 +406,11 @@ class LeagueImportService:
                     f"team {team_id} is league team {team.league_id}, "
                     f"not {proposed.league_id}"
                 )
-        team.is_user_team = is_user_team
+        if is_user_team:
+            team.is_user_team = True
         return team
 
-    def _existing(self, model: type[Team] | type[Player], id_: int):
+    def _existing(self, model: type[Team] | type[Player], id_: int) -> Team | Player:
         row = self._db.get(model, id_)
         if row is None:
             raise KeyError(f"no {model.__name__} with id {id_}")

@@ -45,6 +45,7 @@ from hockey_analyzer.league_import import (
     InvalidGameLinkError,
     LeagueImportService,
     ManualEntryFallbackError,
+    PlayerCandidate,
     PlayerMatchStatus,
     PlayerRosteredTwiceError,
     RosterRowProposal,
@@ -84,6 +85,11 @@ class LeagueImportDialog(QDialog):
         self._service = service
         self._proposal: ImportProposal | None = None
         self._existing_game_id: int | None = None
+        # One per `ImportProposal.roster` row, same order.
+        self._player_combos: list[QComboBox] = []
+        # Set once the user picks an answer themselves; from then on the
+        # pre-fill never overrides it.
+        self._user_team_answered = False
         self.game_id: int | None = None
         self.fall_back_to_manual = False
 
@@ -254,7 +260,7 @@ class LeagueImportDialog(QDialog):
     def _clear(self) -> None:
         self._proposal = None
         self._existing_game_id = None
-        self._player_combos: list[QComboBox] = []
+        self._player_combos = []
         self._user_team_answered = False
         self.error_label.setText("")
         self.manual_entry_button.hide()
@@ -324,7 +330,10 @@ class LeagueImportDialog(QDialog):
         combo.blockSignals(False)
 
     def _fill_roster_table(
-        self, side: Side, rows: list[RosterRowProposal], known_players
+        self,
+        side: Side,
+        rows: list[RosterRowProposal],
+        known_players: tuple[PlayerCandidate, ...],
     ) -> None:
         table = self._roster_tables[side]
         table.setRowCount(len(rows))
@@ -353,23 +362,15 @@ class LeagueImportDialog(QDialog):
         change, so swapping a flagged team for a new one withdraws it."""
         if self._user_team_answered:
             return
-        flagged = [side for side in _SIDES if self._chosen_team_is_flagged(side)]
+        prefill = self._proposal.prefilled_user_team(
+            {side: _chosen_id(self._team_combos[side]) for side in _SIDES}
+        )
         self._user_team_group.setExclusive(False)
         for button in self._user_team_buttons.values():
             button.setChecked(False)
         self._user_team_group.setExclusive(True)
-        if len(flagged) == 1:
-            self._user_team_buttons[flagged[0]].setChecked(True)
-
-    def _chosen_team_is_flagged(self, side: Side) -> bool:
-        team = self._proposal.team(side)
-        if team.status == TeamMatchStatus.LINKED:
-            return team.is_user_team
-        choice = self._team_combos[side].currentData()
-        return any(
-            candidate.team_id == choice and candidate.is_user_team
-            for candidate in team.candidates
-        )
+        if prefill is not None:
+            self._user_team_buttons[prefill].setChecked(True)
 
     def _update_team_status(self) -> None:
         for side in _SIDES:
@@ -459,7 +460,9 @@ def _row_status(row: RosterRowProposal) -> str:
     return "New"
 
 
-def _player_combo(row: RosterRowProposal, known_players) -> QComboBox:
+def _player_combo(
+    row: RosterRowProposal, known_players: tuple[PlayerCandidate, ...]
+) -> QComboBox:
     """Defaults to the proposal's choice; offers the row's candidates
     first, then every other known player, searchable by typing -- the
     override ticket 11 asks for, since player matching is always the

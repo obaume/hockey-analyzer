@@ -533,16 +533,26 @@ def test_user_team_is_not_prefilled_when_both_linked_teams_are_flagged(
     assert resolution.user_team is None
 
 
-def test_the_user_team_answer_is_applied_to_both_teams(service, session):
-    was_mine = Team(name="Château", league_id="10-4-103010", is_user_team=True)
-    session.add(was_mine)
-    session.commit()
+def test_the_user_team_answer_flags_the_chosen_team(service, session):
     proposal = service.propose(GAME_LINK)
 
     game = service.confirm(proposal, _as_proposed(proposal, user_team=Side.AWAY))
 
-    assert session.get(Team, was_mine.id).is_user_team is False
     assert game.away_team.is_user_team is True
+
+
+@pytest.mark.parametrize("answer", [Side.AWAY, None], ids=["other side", "neither"])
+def test_the_user_team_answer_never_unflags_a_team(service, session, answer):
+    # Several teams may be the user's (CONTEXT.md's Team): a per-game
+    # answer isn't a reason to take the flag off one.
+    mine = Team(name="Château", league_id="10-4-103010", is_user_team=True)
+    session.add(mine)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+
+    service.confirm(proposal, _as_proposed(proposal, user_team=answer))
+
+    assert session.get(Team, mine.id).is_user_team is True
 
 
 def test_answering_neither_team_flags_no_new_team(service, session):
