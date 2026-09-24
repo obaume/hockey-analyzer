@@ -17,8 +17,14 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import Position, RinkType, Side
-from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
+from hockey_analyzer.domain.enums import Position, RinkType, Side, UnitType
+from hockey_analyzer.domain.models import (
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+    Player,
+    Team,
+)
 
 
 class SameTeamBothSidesError(Exception):
@@ -49,6 +55,22 @@ class DuplicateJerseyNumberError(Exception):
         )
         self.team_id = team_id
         self.jersey_number = jersey_number
+
+
+class PlayerNotRosteredError(Exception):
+    """Raised instead of assigning a `Player` to a unit of a team whose
+    roster for that game doesn't include them -- a unit is a subset of one
+    team's game roster (see CONTEXT.md's Game unit assignment entry), so
+    an assignment pointing outside it would be silently unreachable from
+    that team's line changes."""
+
+    def __init__(self, game_id: int, team_id: int, player_id: int) -> None:
+        super().__init__(
+            f"player {player_id} is not on team {team_id}'s roster for game {game_id}"
+        )
+        self.game_id = game_id
+        self.team_id = team_id
+        self.player_id = player_id
 
 
 class GameSetupService:
@@ -216,5 +238,77 @@ class GameSetupService:
             GameRosterEntry.game_id == game_id,
             GameRosterEntry.team_id == team_id,
             GameRosterEntry.jersey_number == jersey_number,
+        )
+        return self._db.scalars(stmt).one_or_none()
+
+    # -- unit assignments -------------------------------------------------
+
+    def assign_unit(
+        self,
+        *,
+        game_id: int,
+        team_id: int,
+        player_id: int,
+        unit_type: UnitType,
+        unit_number: int,
+    ) -> GameUnitAssignment:
+        """Put `player_id` on `unit_type` #`unit_number` for the whole of
+        `game_id` (see CONTEXT.md's Game unit assignment entry). A player
+        holds at most one unit per `unit_type` but may hold several unit
+        types at once, so assigning a type they already hold moves them to
+        the new number rather than adding a second row."""
+        if unit_number < 1:
+            raise ValueError(f"unit_number must be 1 or greater, got {unit_number}")
+        roster_stmt = select(GameRosterEntry).where(
+            GameRosterEntry.game_id == game_id,
+            GameRosterEntry.team_id == team_id,
+            GameRosterEntry.player_id == player_id,
+        )
+        if self._db.scalars(roster_stmt).first() is None:
+            raise PlayerNotRosteredError(game_id, team_id, player_id)
+
+        assignment = self._unit_assignment(game_id, player_id, unit_type)
+        if assignment is None:
+            assignment = GameUnitAssignment(
+                game_id=game_id, player_id=player_id, unit_type=unit_type
+            )
+            self._db.add(assignment)
+        assignment.team_id = team_id
+        assignment.unit_number = unit_number
+        self._db.commit()
+        return assignment
+
+    def unassign_unit(
+        self, *, game_id: int, player_id: int, unit_type: UnitType
+    ) -> None:
+        """Take `player_id` off whichever `unit_type` unit they hold in
+        `game_id`, if any -- a no-op when they hold none."""
+        assignment = self._unit_assignment(game_id, player_id, unit_type)
+        if assignment is None:
+            return
+        self._db.delete(assignment)
+        self._db.commit()
+
+    def player_unit_assignments(
+        self, game_id: int, player_id: int
+    ) -> dict[UnitType, int]:
+        """Every unit `player_id` holds in `game_id`, as unit_type -> unit
+        number."""
+        stmt = select(GameUnitAssignment).where(
+            GameUnitAssignment.game_id == game_id,
+            GameUnitAssignment.player_id == player_id,
+        )
+        return {
+            UnitType(assignment.unit_type): assignment.unit_number
+            for assignment in self._db.scalars(stmt)
+        }
+
+    def _unit_assignment(
+        self, game_id: int, player_id: int, unit_type: UnitType
+    ) -> GameUnitAssignment | None:
+        stmt = select(GameUnitAssignment).where(
+            GameUnitAssignment.game_id == game_id,
+            GameUnitAssignment.player_id == player_id,
+            GameUnitAssignment.unit_type == unit_type,
         )
         return self._db.scalars(stmt).one_or_none()

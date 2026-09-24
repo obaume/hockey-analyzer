@@ -26,18 +26,20 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import Handedness, Position, RinkType, Side
+from hockey_analyzer.domain.enums import Handedness, Position, RinkType, Side, UnitType
 from hockey_analyzer.domain.game_setup import (
     DuplicateJerseyNumberError,
     GameSetupService,
     SameTeamBothSidesError,
 )
+from hockey_analyzer.domain.tagging_session import UNIT_TYPE_LABELS
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
 # the full_name/position fields" rather than rostering an existing one.
@@ -79,8 +81,8 @@ class TeamRosterPanel(QWidget):
         team_row.addWidget(self.is_user_team_checkbox)
         team_row.addWidget(self.create_team_button)
 
-        self.roster_table = QTableWidget(0, 3)
-        self.roster_table.setHorizontalHeaderLabels(["#", "Name", "Position"])
+        self.roster_table = QTableWidget(0, 4)
+        self.roster_table.setHorizontalHeaderLabels(["#", "Name", "Position", "Units"])
         self.roster_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.roster_table.itemSelectionChanged.connect(
             self._on_roster_selection_changed
@@ -123,6 +125,16 @@ class TeamRosterPanel(QWidget):
         edit_form.addRow("Full name", self.edit_full_name_field)
         edit_form.addRow("Position", self.edit_position_combo)
         edit_form.addRow("Handedness", self.edit_handedness_combo)
+        # Ticket 17: one number per unit type, 0 meaning "not on one" --
+        # a player may hold several types at once, but only one number
+        # of each (see CONTEXT.md's Game unit assignment entry).
+        self.edit_unit_fields: dict[UnitType, QSpinBox] = {}
+        for unit_type in UnitType:
+            field = QSpinBox()
+            field.setRange(0, 9)
+            field.setSpecialValueText("none")
+            edit_form.addRow(UNIT_TYPE_LABELS[unit_type], field)
+            self.edit_unit_fields[unit_type] = field
         edit_form.addRow("", self.edit_save_button)
         self.edit_group = QGroupBox("Selected player")
         self.edit_group.setLayout(edit_form)
@@ -267,6 +279,17 @@ class TeamRosterPanel(QWidget):
                 2,
                 QTableWidgetItem(player.position.value if player.position else ""),
             )
+            self.roster_table.setItem(
+                row, 3, QTableWidgetItem(self._describe_units(entry.player_id))
+            )
+
+    def _describe_units(self, player_id: int) -> str:
+        assignments = self._service.player_unit_assignments(self._game_id, player_id)
+        return ", ".join(
+            f"{UNIT_TYPE_LABELS[unit_type]} {assignments[unit_type]}"
+            for unit_type in UnitType
+            if unit_type in assignments
+        )
 
     def _on_roster_selection_changed(self) -> None:
         rows = self.roster_table.selectionModel().selectedRows()
@@ -283,6 +306,9 @@ class TeamRosterPanel(QWidget):
             if player.position is not None
             else 0
         )
+        assignments = self._service.player_unit_assignments(self._game_id, player_id)
+        for unit_type, field in self.edit_unit_fields.items():
+            field.setValue(assignments.get(unit_type, 0))
 
     def _save_selected_player(self) -> None:
         rows = self.roster_table.selectionModel().selectedRows()
@@ -295,6 +321,19 @@ class TeamRosterPanel(QWidget):
         self._service.set_player_position(
             player_id, self.edit_position_combo.currentData()
         )
+        for unit_type, field in self.edit_unit_fields.items():
+            if field.value():
+                self._service.assign_unit(
+                    game_id=self._game_id,
+                    team_id=self.team_id,
+                    player_id=player_id,
+                    unit_type=unit_type,
+                    unit_number=field.value(),
+                )
+            else:
+                self._service.unassign_unit(
+                    game_id=self._game_id, player_id=player_id, unit_type=unit_type
+                )
         self._refresh_roster_table()
         self._refresh_player_combo()
 

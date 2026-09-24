@@ -41,9 +41,11 @@ from hockey_analyzer.domain.tagging_session import (
     EVENT_TYPES_WITH_PLAYER_REFERENCE,
     TaggingSession,
     TeamSide,
+    Unit,
 )
 from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
+from hockey_analyzer.ui.line_change_dialog import LineChangeDialog
 from hockey_analyzer.ui.rink_view import RinkClickDialog, ShotAttemptCaptureDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 
@@ -69,6 +71,11 @@ _LOG_BUTTONS: tuple[tuple[EventType, str, Qt.Key], ...] = (
 # rows and log buttons both read from this rather than keeping a second,
 # hand-synced mapping.
 _TYPE_LABELS = {event_type: label for event_type, label, _ in _LOG_BUTTONS}
+
+# Ticket 17's bulk line change: not an event type of its own (it creates
+# ordinary shift_change events), so it sits outside _LOG_BUTTONS/
+# _TYPE_LABELS, on the next free digit after them.
+_LINE_CHANGE_KEY = Qt.Key.Key_8
 
 _TYPES_WITH_PERIOD_NUMBER = {EventType.PERIOD_START, EventType.PERIOD_END}
 
@@ -140,6 +147,10 @@ class TaggingPanel(QWidget):
         rink_click_dialog_factory: Callable[[], RinkClickDialog] | None = None,
         shot_attempt_dialog_factory: Callable[[], ShotAttemptCaptureDialog]
         | None = None,
+        line_change_dialog_factory: Callable[
+            [dict[TeamSide, list[tuple[str, Unit]]]], LineChangeDialog
+        ]
+        | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -164,6 +175,9 @@ class TaggingPanel(QWidget):
         self._shot_attempt_dialog_factory = shot_attempt_dialog_factory or (
             lambda: ShotAttemptCaptureDialog(self._session.rink_type, self)
         )
+        self._line_change_dialog_factory = line_change_dialog_factory or (
+            lambda units: LineChangeDialog(units, self)
+        )
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}
@@ -175,6 +189,14 @@ class TaggingPanel(QWidget):
             log_row.addWidget(button)
             self.log_buttons[event_type] = button
             self._register_shortcut(key_string(key), TAGGING_SCOPE, action)
+
+        self.line_change_button = QPushButton("Line Change")
+        self.line_change_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.line_change_button.clicked.connect(self._log_line_change)
+        log_row.addWidget(self.line_change_button)
+        self._register_shortcut(
+            key_string(_LINE_CHANGE_KEY), TAGGING_SCOPE, self._log_line_change
+        )
 
         # Registered up front (see _JerseyEntry) but suspended until the
         # jersey field actually has focus.
@@ -418,6 +440,40 @@ class TaggingPanel(QWidget):
             event = self._session.log_event(event_type, self._current_position_ms())
 
         self._session.update_event(event.id, **{x_column: dialog.x, y_column: dialog.y})
+
+    def _log_line_change(self) -> None:
+        """Ticket 17: bulk-create one shift_change per member of a
+        declared unit, or of an ad-hoc jersey selection. The timestamp is
+        read before the dialog opens -- unlike faceoff/shot_attempt this
+        doesn't pause playback, so the footage keeps moving while the
+        tagger picks, and the change belongs at the moment they reacted."""
+        video_timestamp = self._current_position_ms()
+        units: dict[TeamSide, list[tuple[str, Unit]]] = {
+            side: [
+                (self._session.describe_unit(unit), unit)
+                for unit in self._session.list_units(side)
+            ]
+            for side in ("home", "away")
+        }
+        dialog = self._line_change_dialog_factory(units)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.unit is not None:
+            self._session.log_unit_change(
+                dialog.team_side,
+                dialog.unit.unit_type,
+                dialog.unit.unit_number,
+                video_timestamp,
+                on_ice=dialog.on_ice,
+            )
+        else:
+            self._session.log_line_change(
+                dialog.team_side,
+                dialog.jersey_numbers,
+                video_timestamp,
+                on_ice=dialog.on_ice,
+            )
+        self.refresh()
 
     # -- event log -----------------------------------------------------
 

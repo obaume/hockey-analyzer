@@ -17,6 +17,7 @@ restart with no data loss.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import NamedTuple
 
 from sqlalchemy import inspect, select
@@ -28,12 +29,14 @@ from hockey_analyzer.domain.enums import (
     ShotOutcome,
     ShotType,
     Side,
+    UnitType,
 )
 from hockey_analyzer.domain.models import (
     Event,
     Faceoff,
     Game,
     GameRosterEntry,
+    GameUnitAssignment,
     Penalty,
     PeriodEnd,
     PeriodStart,
@@ -125,6 +128,26 @@ EVENT_TYPE_REFERENCE_NAMES: dict[EventType, tuple[str, ...]] = {
     event_type: tuple(specs) for event_type, specs in _REFERENCE_SPECS.items()
 }
 EVENT_TYPES_WITH_PLAYER_REFERENCE = frozenset(EVENT_TYPE_REFERENCE_NAMES)
+
+# Public for the same reason: the setup dialog and the line-change dialog
+# both label units, and share this rather than each spelling them out.
+UNIT_TYPE_LABELS: dict[UnitType, str] = {
+    UnitType.FORWARD_LINE: "Forward line",
+    UnitType.DEFENSE_PAIR: "Defense pair",
+    UnitType.POWER_PLAY: "Power play",
+    UnitType.PENALTY_KILL: "Penalty kill",
+}
+
+
+class Unit(NamedTuple):
+    """One declared unit on one side of the game (e.g. that side's
+    Forward-Line 1), with every player holding a `GameUnitAssignment` to
+    it -- never stored as its own row, just grouped from those
+    assignments (see CONTEXT.md's Game unit assignment entry)."""
+
+    unit_type: UnitType
+    unit_number: int
+    player_ids: tuple[int, ...]
 
 
 class TaggingSession:
@@ -420,6 +443,126 @@ class TaggingSession:
         if team_side == "away":
             return self.away_team_id
         raise ValueError(f"team_side must be 'home' or 'away', got {team_side!r}")
+
+    # -- bulk line change (ticket 17) --------------------------------------
+
+    def list_units(self, team_side: TeamSide) -> list[Unit]:
+        """Every unit declared for `team_side` in this game, ordered by
+        unit type (lines, pairs, power play, penalty kill) then number --
+        empty for a side with no unit assignments, e.g. an opponent, which
+        falls back on `log_line_change`'s ad-hoc selection instead."""
+        stmt = select(GameUnitAssignment).where(
+            GameUnitAssignment.game_id == self.game_id,
+            GameUnitAssignment.team_id == self._team_id_for_side(team_side),
+        )
+        members: dict[tuple[UnitType, int], list[int]] = {}
+        for assignment in self._db.scalars(stmt):
+            key = (UnitType(assignment.unit_type), assignment.unit_number)
+            members.setdefault(key, []).append(assignment.player_id)
+        type_order = list(UnitType)
+        return [
+            Unit(unit_type, unit_number, tuple(player_ids))
+            for (unit_type, unit_number), player_ids in sorted(
+                members.items(),
+                key=lambda item: (type_order.index(item[0][0]), item[0][1]),
+            )
+        ]
+
+    def describe_unit(self, unit: Unit) -> str:
+        """e.g. "Forward line 1 (#14, #17, #23)" -- the label a tagger
+        picks a unit by, kept here next to `describe_event` for the same
+        "widgets only render" reason."""
+        stmt = select(GameRosterEntry.jersey_number).where(
+            GameRosterEntry.game_id == self.game_id,
+            GameRosterEntry.player_id.in_(unit.player_ids),
+        )
+        jerseys = ", ".join(f"#{number}" for number in sorted(self._db.scalars(stmt)))
+        return f"{UNIT_TYPE_LABELS[unit.unit_type]} {unit.unit_number} ({jerseys})"
+
+    def log_unit_change(
+        self,
+        team_side: TeamSide,
+        unit_type: UnitType,
+        unit_number: int,
+        video_timestamp: int,
+        *,
+        on_ice: bool,
+    ) -> list[ShiftChange]:
+        """Bring a whole declared unit on (or off) the ice at once: one
+        ordinary `shift_change` per member, all at `video_timestamp`. A
+        line change is a tagging convenience only -- nothing groups the
+        resulting events afterward, so each is edited or deleted in the
+        event log exactly like a hand-tagged one (see CONTEXT.md's Game
+        unit assignment entry)."""
+        unit = next(
+            (
+                unit
+                for unit in self.list_units(team_side)
+                if unit.unit_type is unit_type and unit.unit_number == unit_number
+            ),
+            None,
+        )
+        if unit is None:
+            raise ValueError(
+                f"{team_side} has no {UNIT_TYPE_LABELS[unit_type]} {unit_number}"
+            )
+        return self._log_shift_changes(
+            self._team_id_for_side(team_side),
+            unit.player_ids,
+            video_timestamp,
+            on_ice=on_ice,
+        )
+
+    def log_line_change(
+        self,
+        team_side: TeamSide,
+        jersey_numbers: Iterable[int],
+        video_timestamp: int,
+        *,
+        on_ice: bool,
+    ) -> list[ShiftChange]:
+        """The ad-hoc fallback to `log_unit_change` for a side with no
+        declared units: the same bulk action over an arbitrary multi-select
+        of jersey numbers, each resolved (or rostered on the fly) exactly
+        as `set_player_reference` would."""
+        unique_jerseys = list(dict.fromkeys(jersey_numbers))
+        if not unique_jerseys:
+            raise ValueError("a line change needs at least one jersey number")
+        team_id = self._team_id_for_side(team_side)
+        player_ids = [
+            self.resolve_or_create_roster_entry(team_id, jersey).player_id
+            for jersey in unique_jerseys
+        ]
+        return self._log_shift_changes(
+            team_id, player_ids, video_timestamp, on_ice=on_ice
+        )
+
+    def _log_shift_changes(
+        self,
+        team_id: int,
+        player_ids: Iterable[int],
+        video_timestamp: int,
+        *,
+        on_ice: bool,
+    ) -> list[ShiftChange]:
+        # Inferred once, before any sibling exists: the whole change is one
+        # moment of play, so every member shares the pre-change guess.
+        strength_state = self._infer_strength_state(video_timestamp)
+        events = [
+            ShiftChange(
+                game_id=self.game_id,
+                video_timestamp=video_timestamp,
+                strength_state=strength_state,
+                shift_team_id=team_id,
+                shift_player_id=player_id,
+                shift_player_unknown=False,
+                shift_on_ice=on_ice,
+            )
+            for player_id in player_ids
+        ]
+        self._db.add_all(events)
+        self._db.commit()
+        return events
 
     # -- strength-state defaulting -------------------------------------
 

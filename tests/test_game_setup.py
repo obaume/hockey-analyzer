@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import pytest
 
-from hockey_analyzer.domain.enums import EventSource, Position, RinkType
+from hockey_analyzer.domain.enums import EventSource, Position, RinkType, UnitType
 from hockey_analyzer.domain.game_setup import (
     DuplicateJerseyNumberError,
+    PlayerNotRosteredError,
     SameTeamBothSidesError,
 )
-from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Stoppage, Team
+from hockey_analyzer.domain.models import (
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+    Player,
+    Stoppage,
+    Team,
+)
 
 # -- create_game: no pre-existing data required ---------------------------
 
@@ -488,3 +496,180 @@ def test_list_games_ordering_bumps_on_event_deletion_too(game_setup_service, ses
         first.id,
         second.id,
     ]
+
+
+# -- unit assignments (ticket 17) -------------------------------------------
+
+
+def _rostered_player(game_setup_service, game, team, jersey_number):
+    return game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=jersey_number
+    ).player_id
+
+
+def test_assign_unit_persists_a_game_unit_assignment(game_setup_service, session):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+
+    assignment = game_setup_service.assign_unit(
+        game_id=game.id,
+        team_id=team.id,
+        player_id=player_id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+
+    assert session.get(GameUnitAssignment, assignment.id) is not None
+    assert assignment.unit_type is UnitType.FORWARD_LINE
+    assert assignment.unit_number == 1
+
+
+def test_a_player_can_hold_several_unit_types_at_once(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+
+    for unit_type, unit_number in (
+        (UnitType.FORWARD_LINE, 1),
+        (UnitType.POWER_PLAY, 1),
+        (UnitType.PENALTY_KILL, 2),
+    ):
+        game_setup_service.assign_unit(
+            game_id=game.id,
+            team_id=team.id,
+            player_id=player_id,
+            unit_type=unit_type,
+            unit_number=unit_number,
+        )
+
+    assert game_setup_service.player_unit_assignments(game.id, player_id) == {
+        UnitType.FORWARD_LINE: 1,
+        UnitType.POWER_PLAY: 1,
+        UnitType.PENALTY_KILL: 2,
+    }
+
+
+def test_assign_unit_again_for_the_same_type_replaces_the_unit_number(
+    game_setup_service, session
+):
+    # At most one assignment per (game, player, unit_type) -- reassigning
+    # moves the player rather than raising or duplicating.
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+    kwargs = {"game_id": game.id, "team_id": team.id, "player_id": player_id}
+
+    game_setup_service.assign_unit(
+        **kwargs, unit_type=UnitType.FORWARD_LINE, unit_number=1
+    )
+    game_setup_service.assign_unit(
+        **kwargs, unit_type=UnitType.FORWARD_LINE, unit_number=3
+    )
+
+    assert game_setup_service.player_unit_assignments(game.id, player_id) == {
+        UnitType.FORWARD_LINE: 3
+    }
+    assert session.query(GameUnitAssignment).count() == 1
+
+
+def test_unassign_unit_removes_only_that_unit_type(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+    kwargs = {"game_id": game.id, "team_id": team.id, "player_id": player_id}
+    game_setup_service.assign_unit(
+        **kwargs, unit_type=UnitType.FORWARD_LINE, unit_number=1
+    )
+    game_setup_service.assign_unit(
+        **kwargs, unit_type=UnitType.POWER_PLAY, unit_number=1
+    )
+
+    game_setup_service.unassign_unit(
+        game_id=game.id, player_id=player_id, unit_type=UnitType.POWER_PLAY
+    )
+
+    assert game_setup_service.player_unit_assignments(game.id, player_id) == {
+        UnitType.FORWARD_LINE: 1
+    }
+
+
+def test_unassign_unit_is_a_no_op_when_nothing_is_assigned(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+
+    game_setup_service.unassign_unit(
+        game_id=game.id, player_id=player_id, unit_type=UnitType.POWER_PLAY
+    )
+
+    assert game_setup_service.player_unit_assignments(game.id, player_id) == {}
+
+
+def test_assign_unit_rejects_a_player_not_on_that_teams_roster(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    other_team = game_setup_service.create_team("Rivals")
+    player_id = _rostered_player(game_setup_service, game, other_team, 14)
+
+    with pytest.raises(PlayerNotRosteredError):
+        game_setup_service.assign_unit(
+            game_id=game.id,
+            team_id=team.id,
+            player_id=player_id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=1,
+        )
+
+
+def test_assign_unit_rejects_a_non_positive_unit_number(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+
+    with pytest.raises(ValueError):
+        game_setup_service.assign_unit(
+            game_id=game.id,
+            team_id=team.id,
+            player_id=player_id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=0,
+        )
+
+
+def test_unit_assignments_are_per_game(game_setup_service):
+    # Fixed for the whole game, but a different game starts fresh.
+    game = game_setup_service.create_game()
+    other_game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, game, team, 14)
+    game_setup_service.add_roster_entry(
+        game_id=other_game.id, team_id=team.id, jersey_number=14, player_id=player_id
+    )
+    game_setup_service.assign_unit(
+        game_id=game.id,
+        team_id=team.id,
+        player_id=player_id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+
+    assert game_setup_service.player_unit_assignments(other_game.id, player_id) == {}
+
+
+def test_list_games_ordering_bumps_on_unit_assignment_activity(game_setup_service):
+    first = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    player_id = _rostered_player(game_setup_service, first, team, 14)
+    second = game_setup_service.create_game()
+    assert game_setup_service.list_games()[0].id == second.id
+
+    game_setup_service.assign_unit(
+        game_id=first.id,
+        team_id=team.id,
+        player_id=player_id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+
+    assert game_setup_service.list_games()[0].id == first.id

@@ -4,7 +4,14 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QDialog
 
-from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import (
+    EventType,
+    RinkType,
+    ShotOutcome,
+    ShotType,
+    UnitType,
+)
+from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.ui.keys import key_string
 from hockey_analyzer.ui.rink_view import RinkClickDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -49,6 +56,48 @@ class _FakeShotAttemptDialog(_FakeRinkClickDialog):
         self.shot_type = shot_type
 
 
+class _FakeLineChangeDialog:
+    """Stands in for `LineChangeDialog`, for the same modal-`exec()`
+    reason as `_FakeRinkClickDialog`. Built via `_line_change_factory`,
+    which records the `units` the panel offered so tests can pick one."""
+
+    def __init__(
+        self,
+        units,
+        *,
+        accepted=True,
+        team_side="home",
+        on_ice=True,
+        unit_index=None,
+        jersey_numbers=(),
+    ):
+        self.offered_units = units
+        self._accepted = accepted
+        self.team_side = team_side
+        self.on_ice = on_ice
+        self.unit = units[team_side][unit_index][1] if unit_index is not None else None
+        self.jersey_numbers = list(jersey_numbers)
+
+    def exec(self) -> QDialog.DialogCode:
+        return (
+            QDialog.DialogCode.Accepted
+            if self._accepted
+            else QDialog.DialogCode.Rejected
+        )
+
+
+def _line_change_factory(**choice):
+    opened = []
+
+    def factory(units):
+        dialog = _FakeLineChangeDialog(units, **choice)
+        opened.append(dialog)
+        return dialog
+
+    factory.opened = opened
+    return factory
+
+
 def _make_panel(
     qtbot,
     tagging_session,
@@ -58,6 +107,7 @@ def _make_panel(
     pause=None,
     rink_click_dialog_factory=None,
     shot_attempt_dialog_factory=None,
+    line_change_dialog_factory=None,
 ):
     panel = TaggingPanel(
         tagging_session,
@@ -67,6 +117,8 @@ def _make_panel(
         rink_click_dialog_factory=rink_click_dialog_factory or _FakeRinkClickDialog,
         shot_attempt_dialog_factory=shot_attempt_dialog_factory
         or _FakeShotAttemptDialog,
+        line_change_dialog_factory=line_change_dialog_factory
+        or _line_change_factory(accepted=False),
     )
     qtbot.addWidget(panel)
     # Shown so isVisible() (used to assert the edit panel appears/hides)
@@ -762,3 +814,115 @@ def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(
 
     assert registry.dispatch(key_string(Qt.Key.Key_1)) is True
     assert len(tagging_session.list_events()) == 1
+
+
+# -- bulk line change (ticket 17) -------------------------------------------
+
+
+def _declare_unit(session, tagging_session, jerseys, unit_type, unit_number):
+    service = GameSetupService(session)
+    for jersey in jerseys:
+        entry = tagging_session.resolve_or_create_roster_entry(
+            tagging_session.home_team_id, jersey
+        )
+        service.assign_unit(
+            game_id=tagging_session.game_id,
+            team_id=tagging_session.home_team_id,
+            player_id=entry.player_id,
+            unit_type=unit_type,
+            unit_number=unit_number,
+        )
+
+
+def test_line_change_button_bulk_logs_a_declared_unit(qtbot, tagging_session, session):
+    _declare_unit(session, tagging_session, (14, 17, 23), UnitType.FORWARD_LINE, 1)
+    factory = _line_change_factory(unit_index=0, on_ice=True)
+    panel = _make_panel(
+        qtbot, tagging_session, position_ms=5000, line_change_dialog_factory=factory
+    )
+
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    ((offered_label, _unit),) = factory.opened[0].offered_units["home"]
+    assert offered_label == "Forward line 1 (#14, #17, #23)"
+    assert factory.opened[0].offered_units["away"] == []
+    events = tagging_session.list_events()
+    assert len(events) == 3
+    assert {event.video_timestamp for event in events} == {5000}
+    assert all(event.shift_on_ice is True for event in events)
+    assert panel.event_table.rowCount() == 3
+
+
+def test_line_change_ad_hoc_logs_the_typed_jerseys(qtbot, tagging_session):
+    factory = _line_change_factory(
+        team_side="away", on_ice=False, jersey_numbers=[7, 12]
+    )
+    panel = _make_panel(qtbot, tagging_session, line_change_dialog_factory=factory)
+
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    events = tagging_session.list_events()
+    assert len(events) == 2
+    assert all(event.shift_team_id == tagging_session.away_team_id for event in events)
+    assert all(event.shift_on_ice is False for event in events)
+
+
+def test_line_change_timestamp_is_captured_before_the_dialog_opens(
+    tagging_session, qtbot
+):
+    # The tagger may take a few seconds to pick the unit while footage
+    # keeps playing -- the change belongs at the instant the key was hit.
+    position = {"ms": 1000}
+
+    def factory(units):
+        position["ms"] = 9000
+        return _FakeLineChangeDialog(units, jersey_numbers=[14])
+
+    panel = TaggingPanel(
+        tagging_session,
+        current_position_ms=lambda: position["ms"],
+        shortcuts=ShortcutRegistry(),
+        line_change_dialog_factory=factory,
+    )
+    qtbot.addWidget(panel)
+
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    assert [event.video_timestamp for event in tagging_session.list_events()] == [1000]
+
+
+def test_cancelling_the_line_change_dialog_logs_nothing(qtbot, tagging_session):
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        line_change_dialog_factory=_line_change_factory(accepted=False),
+    )
+
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    assert tagging_session.list_events() == []
+
+
+def test_hotkey_8_opens_the_line_change_dialog(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    factory = _line_change_factory(jersey_numbers=[14])
+    _panel = _make_panel(
+        qtbot, tagging_session, shortcuts=registry, line_change_dialog_factory=factory
+    )
+
+    assert registry.dispatch(key_string(Qt.Key.Key_8)) is True
+
+    assert len(tagging_session.list_events()) == 1
+
+
+def test_bulk_logged_rows_are_individually_selectable_and_deletable(
+    qtbot, tagging_session
+):
+    factory = _line_change_factory(jersey_numbers=[14, 17])
+    panel = _make_panel(qtbot, tagging_session, line_change_dialog_factory=factory)
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    _select_row(panel, 0)
+    qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
+
+    assert panel.event_table.rowCount() == 1
