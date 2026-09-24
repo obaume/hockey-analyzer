@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QKeyEvent
@@ -45,9 +46,28 @@ from hockey_analyzer.ui.playback_controller import (
 )
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
+from hockey_analyzer.ui.units_dialog import UnitsDialog
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
 
 PLAYBACK_SCOPE = "playback"
+
+
+class UnitsDialogFactory(Protocol):
+    """`UnitsDialog`'s constructor shape -- spelled out (rather than
+    `Callable[..., UnitsDialog]`) so a test fake is checked against the
+    same keyword arguments `_edit_units` passes."""
+
+    def __call__(
+        self,
+        service: GameSetupService,
+        *,
+        game_id: int,
+        home_team_id: int,
+        away_team_id: int,
+        parent: QWidget | None = None,
+    ) -> UnitsDialog: ...
+
+
 JUMP_SECONDS = 5
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
 
@@ -66,6 +86,7 @@ class MainWindow(QMainWindow):
         | None = None,
         game_list_dialog_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
+        units_dialog_factory: UnitsDialogFactory | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -99,6 +120,7 @@ class MainWindow(QMainWindow):
         )
         self._game_setup_dialog_factory = game_setup_dialog_factory or GameSetupDialog
         self._game_list_dialog_factory = game_list_dialog_factory or GameListDialog
+        self._units_dialog_factory = units_dialog_factory or UnitsDialog
         self._video_missing_notice = (
             video_missing_notice
             if video_missing_notice is not None
@@ -176,6 +198,12 @@ class MainWindow(QMainWindow):
         self.new_game_action.triggered.connect(self._new_game)
         self.select_game_action = game_menu.addAction("Select Game…")
         self.select_game_action.triggered.connect(self._select_game)
+        # Units (ticket 17) belong to one game and one team per side, so
+        # this only enables once the active game has both -- see
+        # `_activate_game`.
+        self.units_action = game_menu.addAction("Units…")
+        self.units_action.triggered.connect(self._edit_units)
+        self.units_action.setEnabled(False)
         # No db_session means there's nowhere to persist a Game -- keep
         # this window in its ticket-13 video-only mode rather than
         # offering actions that would have nothing to write to.
@@ -204,9 +232,12 @@ class MainWindow(QMainWindow):
         same three fields."""
         self._active_game_id = game_id
         if game_id is None:
+            self.units_action.setEnabled(False)
             return
         game = self._game_setup_service.get_game(game_id)
-        if game.home_team_id is not None and game.away_team_id is not None:
+        has_both_sides = game.home_team_id is not None and game.away_team_id is not None
+        self.units_action.setEnabled(has_both_sides)
+        if has_both_sides:
             tagging_session = TaggingSession(
                 self._db_session,
                 game_id=game.id,
@@ -227,6 +258,21 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._activate_game(dialog.game_id)
+
+    def _edit_units(self) -> None:
+        if self._game_setup_service is None or self._active_game_id is None:
+            return
+        game = self._game_setup_service.get_game(self._active_game_id)
+        if game.home_team_id is None or game.away_team_id is None:
+            return
+        dialog = self._units_dialog_factory(
+            self._game_setup_service,
+            game_id=game.id,
+            home_team_id=game.home_team_id,
+            away_team_id=game.away_team_id,
+            parent=self,
+        )
+        dialog.exec()
 
     def _select_game(self) -> None:
         if self._game_setup_service is None:

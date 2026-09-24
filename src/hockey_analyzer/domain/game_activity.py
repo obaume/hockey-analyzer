@@ -1,7 +1,7 @@
 """Keeps `Game.updated_at` tracking "most recently worked on", not just
 "most recently edited at the GameSetupService level" -- so the "Select
 Game" picker (see CONTEXT.md's Game entry) can surface the game a tagger
-was just actively logging events/roster entries against, which is the
+was just actively logging events/roster entries/unit assignments against, which is the
 overwhelmingly dominant activity once a game exists.
 
 This is domain *behavior* (a cross-cutting business rule about what counts
@@ -21,7 +21,12 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.models import Event, Game, GameRosterEntry
+from hockey_analyzer.domain.models import (
+    Event,
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+)
 
 _last_touch: datetime | None = None
 
@@ -50,7 +55,7 @@ def _touch_game_updated_at(session: Session, flush_context, instances) -> None:
     for obj in list(session.new) + list(session.dirty) + list(session.deleted):
         if isinstance(obj, Game):
             obj.updated_at = now
-        elif isinstance(obj, (Event, GameRosterEntry)):
+        elif isinstance(obj, (Event, GameRosterEntry, GameUnitAssignment)):
             touched_game_ids.add(obj.game_id)
     for game_id in touched_game_ids:
         game = session.get(Game, game_id)
