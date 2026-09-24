@@ -16,7 +16,9 @@ DB_FILENAME = "hockey_analyzer.db"
 
 
 def _default_db_path() -> Path:
-    data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+    data_dir = Path(
+        QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    )
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir / DB_FILENAME
 

@@ -1,4 +1,4 @@
-""""Select Game" (game-selection wiring ticket): picks among already-created
+""" "Select Game" (game-selection wiring ticket): picks among already-created
 `Game`s so a resumed tagging pass doesn't have to go through
 `GameSetupDialog` again. Read-only over `GameSetupService.list_games` --
 creating a game is `GameSetupDialog`'s job, not this dialog's.
@@ -30,7 +30,9 @@ def _score_text(game: Game) -> str:
 
 
 class GameListDialog(QDialog):
-    def __init__(self, service: GameSetupService, *, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, service: GameSetupService, *, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Select Game")
         self.selected_game_id: int | None = None
@@ -44,9 +46,21 @@ class GameListDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.itemDoubleClicked.connect(self._accept_selection)
         for row, game in enumerate(self._games):
-            self.table.setItem(row, 0, QTableWidgetItem(game.date.isoformat() if game.date else "Unscheduled"))
-            self.table.setItem(row, 1, QTableWidgetItem(game.home_team.name if game.home_team else "TBD"))
-            self.table.setItem(row, 2, QTableWidgetItem(game.away_team.name if game.away_team else "TBD"))
+            self.table.setItem(
+                row,
+                0,
+                QTableWidgetItem(game.date.isoformat() if game.date else "Unscheduled"),
+            )
+            self.table.setItem(
+                row,
+                1,
+                QTableWidgetItem(game.home_team.name if game.home_team else "TBD"),
+            )
+            self.table.setItem(
+                row,
+                2,
+                QTableWidgetItem(game.away_team.name if game.away_team else "TBD"),
+            )
             self.table.setItem(row, 3, QTableWidgetItem(_score_text(game)))
 
         self.open_button = QPushButton("Open")

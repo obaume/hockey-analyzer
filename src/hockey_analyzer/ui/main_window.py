@@ -8,10 +8,10 @@ never requires footage to already be open (see CONTEXT.md's Game entry).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
-from PySide6.QtCore import QUrl, Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -19,28 +19,33 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
-    QLineEdit,
-    QLabel
 )
 from sqlalchemy.orm import Session
 
 from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.domain.tagging_session import TaggingSession
+from hockey_analyzer.domain.video_timestamp import (
+    format_video_timestamp,
+    parse_video_timestamp,
+)
 from hockey_analyzer.ui.game_list_dialog import GameListDialog
 from hockey_analyzer.ui.game_setup_dialog import GameSetupDialog
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
-from hockey_analyzer.ui.playback_controller import DEFAULT_SPEED_STEPS, PlaybackController
+from hockey_analyzer.ui.playback_controller import (
+    DEFAULT_SPEED_STEPS,
+    PlaybackController,
+)
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
-
-from hockey_analyzer.domain.video_timestamp import parse_video_timestamp, format_video_timestamp
 
 PLAYBACK_SCOPE = "playback"
 JUMP_SECONDS = 5
@@ -57,8 +62,10 @@ class MainWindow(QMainWindow):
         file_dialog: Callable[[], str] | None = None,
         db_session: Session | None = None,
         tagging_session: TaggingSession | None = None,
-        game_setup_dialog_factory: Callable[[GameSetupService], GameSetupDialog] | None = None,
-        game_list_dialog_factory: Callable[[GameSetupService], GameListDialog] | None = None,
+        game_setup_dialog_factory: Callable[[GameSetupService], GameSetupDialog]
+        | None = None,
+        game_list_dialog_factory: Callable[[GameSetupService], GameListDialog]
+        | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -87,11 +94,15 @@ class MainWindow(QMainWindow):
         self._shortcuts.enter_scope(PLAYBACK_SCOPE)
 
         self._db_session = db_session
-        self._game_setup_service = GameSetupService(db_session) if db_session is not None else None
+        self._game_setup_service = (
+            GameSetupService(db_session) if db_session is not None else None
+        )
         self._game_setup_dialog_factory = game_setup_dialog_factory or GameSetupDialog
         self._game_list_dialog_factory = game_list_dialog_factory or GameListDialog
         self._video_missing_notice = (
-            video_missing_notice if video_missing_notice is not None else self._show_video_missing_notice
+            video_missing_notice
+            if video_missing_notice is not None
+            else self._show_video_missing_notice
         )
         # The Game currently being tagged/played in this window, if any --
         # set by New Game/Select Game, and used to attach a video path to
@@ -114,7 +125,7 @@ class MainWindow(QMainWindow):
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.sliderMoved.connect(self._on_slider_moved)
         self.position_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        
+
         self.time = QLineEdit()
         self.time.setFixedWidth(80)
         self.time.editingFinished.connect(self._on_time_changed)
@@ -197,7 +208,10 @@ class MainWindow(QMainWindow):
         game = self._game_setup_service.get_game(game_id)
         if game.home_team_id is not None and game.away_team_id is not None:
             tagging_session = TaggingSession(
-                self._db_session, game_id=game.id, home_team_id=game.home_team_id, away_team_id=game.away_team_id
+                self._db_session,
+                game_id=game.id,
+                home_team_id=game.home_team_id,
+                away_team_id=game.away_team_id,
             )
             self._install_tagging_panel(tagging_session)
         # Tagging needs both sides' teams (see TaggingSession); a game can
@@ -218,7 +232,10 @@ class MainWindow(QMainWindow):
         if self._game_setup_service is None:
             return
         dialog = self._game_list_dialog_factory(self._game_setup_service)
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_game_id is None:
+        if (
+            dialog.exec() != QDialog.DialogCode.Accepted
+            or dialog.selected_game_id is None
+        ):
             return
         self._activate_game(dialog.selected_game_id)
 
@@ -234,7 +251,9 @@ class MainWindow(QMainWindow):
 
     def _register_shortcuts(self) -> None:
         bindings: dict[str, Callable[[], None]] = {
-            key_string(Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier): self._open_video,
+            key_string(
+                Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier
+            ): self._open_video,
             key_string(Qt.Key.Key_Space): self._toggle_play_pause,
             key_string(Qt.Key.Key_Right): lambda: self._controller.jump(JUMP_SECONDS),
             key_string(Qt.Key.Key_Left): lambda: self._controller.jump(-JUMP_SECONDS),
@@ -260,7 +279,10 @@ class MainWindow(QMainWindow):
         path = self._file_dialog()
         if path:
             self.open_video(Path(path))
-            if self._active_game_id is not None and self._game_setup_service is not None:
+            if (
+                self._active_game_id is not None
+                and self._game_setup_service is not None
+            ):
                 self._game_setup_service.set_video_path(self._active_game_id, path)
 
     def _show_open_file_dialog(self) -> str:
@@ -315,7 +337,7 @@ class MainWindow(QMainWindow):
 
     def _on_slider_moved(self, position: int) -> None:
         self._controller.seek(position)
-        
+
     def _on_time_changed(self) -> None:
         ms = parse_video_timestamp(self.time.text())
         if ms:

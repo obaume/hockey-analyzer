@@ -22,7 +22,13 @@ from typing import NamedTuple
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType, Side
+from hockey_analyzer.domain.enums import (
+    EventType,
+    RinkType,
+    ShotOutcome,
+    ShotType,
+    Side,
+)
 from hockey_analyzer.domain.models import (
     Event,
     Faceoff,
@@ -66,17 +72,25 @@ class _ReferenceSpec(NamedTuple):
 # implicitly; faceoff/shot_attempt, which carry more than one, require it.
 _REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
     EventType.PENALTY: {
-        "player": _ReferenceSpec("penalty_player_id", "penalty_player_unknown", "penalty_team_id"),
+        "player": _ReferenceSpec(
+            "penalty_player_id", "penalty_player_unknown", "penalty_team_id"
+        ),
     },
     EventType.SHIFT_CHANGE: {
-        "player": _ReferenceSpec("shift_player_id", "shift_player_unknown", "shift_team_id"),
+        "player": _ReferenceSpec(
+            "shift_player_id", "shift_player_unknown", "shift_team_id"
+        ),
     },
     EventType.FACEOFF: {
         "participant_a": _ReferenceSpec(
-            "faceoff_participant_a_id", "faceoff_participant_a_unknown", "faceoff_team_a_id"
+            "faceoff_participant_a_id",
+            "faceoff_participant_a_unknown",
+            "faceoff_team_a_id",
         ),
         "participant_b": _ReferenceSpec(
-            "faceoff_participant_b_id", "faceoff_participant_b_unknown", "faceoff_team_b_id"
+            "faceoff_participant_b_id",
+            "faceoff_participant_b_unknown",
+            "faceoff_team_b_id",
         ),
     },
     EventType.SHOT_ATTEMPT: {
@@ -120,7 +134,9 @@ class TaggingSession:
     per ticket 08. Takes an already-open SQLAlchemy `Session`; every
     method here commits before returning."""
 
-    def __init__(self, db_session: Session, *, game_id: int, home_team_id: int, away_team_id: int) -> None:
+    def __init__(
+        self, db_session: Session, *, game_id: int, home_team_id: int, away_team_id: int
+    ) -> None:
         self._db = db_session
         self.game_id = game_id
         self.home_team_id = home_team_id
@@ -172,7 +188,9 @@ class TaggingSession:
             game_id=self.game_id,
             video_timestamp=video_timestamp,
             strength_state=(
-                strength_state if strength_state is not None else self._infer_strength_state(video_timestamp)
+                strength_state
+                if strength_state is not None
+                else self._infer_strength_state(video_timestamp)
             ),
             **fields,
         )
@@ -204,7 +222,11 @@ class TaggingSession:
         always-visible event log displays them: by video timestamp,
         tiebroken by insertion order for events logged at the same
         instant."""
-        stmt = select(Event).where(Event.game_id == self.game_id).order_by(Event.video_timestamp, Event.id)
+        stmt = (
+            select(Event)
+            .where(Event.game_id == self.game_id)
+            .order_by(Event.video_timestamp, Event.id)
+        )
         return list(self._db.scalars(stmt))
 
     def get_event(self, event_id: int) -> Event:
@@ -222,14 +244,24 @@ class TaggingSession:
         the module docstring's "widgets only render" split."""
         event_type = EventType(event.event_type)
         if event_type in (EventType.PERIOD_START, EventType.PERIOD_END):
-            return f"Period {event.period_number}" if event.period_number else "period not set"
+            return (
+                f"Period {event.period_number}"
+                if event.period_number
+                else "period not set"
+            )
         if event_type is EventType.STOPPAGE:
             return ""
         if event_type is EventType.PENALTY:
             who = self._describe_player_reference(
-                event.penalty_team_id, event.penalty_player_id, event.penalty_player_unknown
+                event.penalty_team_id,
+                event.penalty_player_id,
+                event.penalty_player_unknown,
             )
-            duration = f"{event.penalty_duration_minutes:g} min" if event.penalty_duration_minutes else "duration not set"
+            duration = (
+                f"{event.penalty_duration_minutes:g} min"
+                if event.penalty_duration_minutes
+                else "duration not set"
+            )
             infraction = event.penalty_infraction or "infraction not set"
             return f"{who} - {infraction} ({duration})"
         if event_type is EventType.SHIFT_CHANGE:
@@ -243,19 +275,31 @@ class TaggingSession:
             return f"{who} {state}"
         if event_type is EventType.FACEOFF:
             participant_a = self._describe_player_reference(
-                event.faceoff_team_a_id, event.faceoff_participant_a_id, event.faceoff_participant_a_unknown
+                event.faceoff_team_a_id,
+                event.faceoff_participant_a_id,
+                event.faceoff_participant_a_unknown,
             )
             participant_b = self._describe_player_reference(
-                event.faceoff_team_b_id, event.faceoff_participant_b_id, event.faceoff_participant_b_unknown
+                event.faceoff_team_b_id,
+                event.faceoff_participant_b_id,
+                event.faceoff_participant_b_unknown,
             )
             return f"{participant_a} vs {participant_b}"
         if event_type is EventType.SHOT_ATTEMPT:
-            shooter = self._describe_player_reference(event.shot_team_id, event.shooter_id, event.shooter_unknown)
-            outcome = event.shot_outcome.value if event.shot_outcome is not None else "outcome not set"
+            shooter = self._describe_player_reference(
+                event.shot_team_id, event.shooter_id, event.shooter_unknown
+            )
+            outcome = (
+                event.shot_outcome.value
+                if event.shot_outcome is not None
+                else "outcome not set"
+            )
             return f"{shooter} - {outcome}"
         return ""
 
-    def _describe_player_reference(self, team_id: int | None, player_id: int | None, unknown: bool) -> str:
+    def _describe_player_reference(
+        self, team_id: int | None, player_id: int | None, unknown: bool
+    ) -> str:
         team = self._db.get(Team, team_id) if team_id is not None else None
         team_label = team.name if team is not None else "team not set"
         if unknown:
@@ -264,13 +308,16 @@ class TaggingSession:
             return f"{team_label} - player not set"
 
         stmt = select(GameRosterEntry).where(
-            GameRosterEntry.game_id == self.game_id, GameRosterEntry.player_id == player_id
+            GameRosterEntry.game_id == self.game_id,
+            GameRosterEntry.player_id == player_id,
         )
         entry = self._db.scalars(stmt).one_or_none()
         jersey = f"#{entry.jersey_number}" if entry is not None else ""
         player = self._db.get(Player, player_id)
         name = player.full_name if player is not None and player.full_name else ""
-        label = " ".join(part for part in (jersey, name) if part) or f"player {player_id}"
+        label = (
+            " ".join(part for part in (jersey, name) if part) or f"player {player_id}"
+        )
         return f"{team_label} - {label}"
 
     # -- player identification ---------------------------------------
@@ -302,7 +349,9 @@ class TaggingSession:
         event_type = EventType(event.event_type)
         specs = _REFERENCE_SPECS.get(event_type)
         if not specs:
-            raise ValueError(f"{event.event_type.value} events have no player reference to set")
+            raise ValueError(
+                f"{event.event_type.value} events have no player reference to set"
+            )
         if reference is None:
             if len(specs) != 1:
                 raise ValueError(
@@ -312,7 +361,9 @@ class TaggingSession:
             reference = next(iter(specs))
         spec = specs.get(reference)
         if spec is None:
-            raise ValueError(f"{event.event_type.value} events have no {reference!r} reference")
+            raise ValueError(
+                f"{event.event_type.value} events have no {reference!r} reference"
+            )
 
         team_id = self._team_id_for_side(team_side)
         if spec.team_column is not None:
@@ -324,7 +375,9 @@ class TaggingSession:
         else:
             if jersey_number is None:
                 raise ValueError("jersey_number is required unless unknown=True")
-            entry = self.resolve_or_create_roster_entry(team_id, jersey_number, full_name=full_name)
+            entry = self.resolve_or_create_roster_entry(
+                team_id, jersey_number, full_name=full_name
+            )
             setattr(event, spec.id_column, entry.player_id)
             setattr(event, spec.unknown_column, False)
 

@@ -9,7 +9,8 @@ test double both work without the controller depending on Qt beyond the
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 from PySide6.QtMultimedia import QMediaPlayer
 

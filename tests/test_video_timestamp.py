@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from hockey_analyzer.domain.video_timestamp import format_video_timestamp, parse_video_timestamp
+from hockey_analyzer.domain.video_timestamp import (
+    format_video_timestamp,
+    parse_video_timestamp,
+)
 
 # -- format_video_timestamp ---------------------------------------------------
 

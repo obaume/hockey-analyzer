@@ -26,7 +26,9 @@ def parse_video_timestamp(text: str) -> int | None:
     fields = text.strip().split(":")
     if len(fields) > 3 or not all(_FIELD.fullmatch(field) for field in fields):
         return None
-    seconds, minutes, hours = (int(field) for field in [*reversed(fields), "0", "0"][:3])
+    seconds, minutes, hours = (
+        int(field) for field in [*reversed(fields), "0", "0"][:3]
+    )
     if minutes > 59 or seconds > 59:
         return None
     return ((hours * 60 + minutes) * 60 + seconds) * 1000

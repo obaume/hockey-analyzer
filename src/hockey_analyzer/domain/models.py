@@ -31,22 +31,31 @@ derived by later modules (TaggingSession/StatsEngine) from `Event` rows.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date as date_, datetime
+from datetime import date as date_
+from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     Date,
     DateTime,
-    Enum as SAEnum,
     Float,
     ForeignKey,
     Integer,
-    JSON,
     String,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
+from sqlalchemy import (
+    Enum as SAEnum,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    declared_attr,
+    mapped_column,
+    relationship,
+)
 
 from hockey_analyzer.domain.enums import (
     EventSource,
@@ -68,13 +77,17 @@ def _enum_column(enum_cls):
     """A SQLAlchemy Enum type storing each member's `.value` (matching the
     vocabulary in CONTEXT.md, e.g. "shot_attempt") rather than its Python
     attribute name."""
-    return SAEnum(enum_cls, values_callable=lambda members: [member.value for member in members])
+    return SAEnum(
+        enum_cls, values_callable=lambda members: [member.value for member in members]
+    )
 
 
 _ConstraintFactory = Callable[[str], CheckConstraint]
 
 
-def _required_reference_constraint(id_column: str, unknown_column: str, name: str) -> _ConstraintFactory:
+def _required_reference_constraint(
+    id_column: str, unknown_column: str, name: str
+) -> _ConstraintFactory:
     """For rows of the owning subtype: exactly one of (id set, unknown flag
     set) — the reference is always supplied, either as a known player or an
     explicit "unknown". Rows of other event types don't use this field at
@@ -93,7 +106,9 @@ def _required_reference_constraint(id_column: str, unknown_column: str, name: st
     return build
 
 
-def _optional_reference_constraint(id_column: str, unknown_column: str, name: str) -> CheckConstraint:
+def _optional_reference_constraint(
+    id_column: str, unknown_column: str, name: str
+) -> CheckConstraint:
     """The reference may be entirely absent; if present, it's either a
     known player or an explicit "unknown", never both. Holds regardless of
     event type, since an unused field on another subtype's row is simply
@@ -111,12 +126,16 @@ def _required_column_constraint(column: str, name: str) -> _ConstraintFactory:
     to `_add_constraints`."""
 
     def build(for_event_type: str) -> CheckConstraint:
-        return CheckConstraint(f"event_type != '{for_event_type}' OR {column} IS NOT NULL", name=name)
+        return CheckConstraint(
+            f"event_type != '{for_event_type}' OR {column} IS NOT NULL", name=name
+        )
 
     return build
 
 
-def _add_constraints(model: type["Event"], *constraints: CheckConstraint | _ConstraintFactory) -> None:
+def _add_constraints(
+    model: type[Event], *constraints: CheckConstraint | _ConstraintFactory
+) -> None:
     """Attach an `Event` subtype's CHECK constraints to the shared
     `events` table. Declarative only builds `__table_args__` for a class
     that owns its table, which a single-table-inheritance subtype
@@ -128,7 +147,11 @@ def _add_constraints(model: type["Event"], *constraints: CheckConstraint | _Cons
     rather than repeated at each constraint call site."""
     for_event_type = model.__mapper__.polymorphic_identity.value
     for constraint in constraints:
-        resolved = constraint if isinstance(constraint, CheckConstraint) else constraint(for_event_type)
+        resolved = (
+            constraint
+            if isinstance(constraint, CheckConstraint)
+            else constraint(for_event_type)
+        )
         model.__table__.append_constraint(resolved)
 
 
@@ -140,8 +163,10 @@ class Team(Base):
     league_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     is_user_team: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    roster_entries: Mapped[list["GameRosterEntry"]] = relationship(back_populates="team")
-    unit_assignments: Mapped[list["GameUnitAssignment"]] = relationship(back_populates="team")
+    roster_entries: Mapped[list[GameRosterEntry]] = relationship(back_populates="team")
+    unit_assignments: Mapped[list[GameUnitAssignment]] = relationship(
+        back_populates="team"
+    )
 
 
 class Player(Base):
@@ -149,11 +174,19 @@ class Player(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     full_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    handedness: Mapped[Handedness | None] = mapped_column(_enum_column(Handedness), nullable=True)
-    position: Mapped[Position | None] = mapped_column(_enum_column(Position), nullable=True)
+    handedness: Mapped[Handedness | None] = mapped_column(
+        _enum_column(Handedness), nullable=True
+    )
+    position: Mapped[Position | None] = mapped_column(
+        _enum_column(Position), nullable=True
+    )
 
-    roster_entries: Mapped[list["GameRosterEntry"]] = relationship(back_populates="player")
-    unit_assignments: Mapped[list["GameUnitAssignment"]] = relationship(back_populates="player")
+    roster_entries: Mapped[list[GameRosterEntry]] = relationship(
+        back_populates="player"
+    )
+    unit_assignments: Mapped[list[GameUnitAssignment]] = relationship(
+        back_populates="player"
+    )
 
 
 class Game(Base):
@@ -178,8 +211,12 @@ class Game(Base):
     # domain/rink.py and CONTEXT.md's Rink type entry). Set once here and
     # never edited afterward -- there is no setter for it anywhere in this
     # codebase, deliberately (see ADR-0008).
-    rink_type: Mapped[RinkType] = mapped_column(_enum_column(RinkType), nullable=False, default=RinkType.IIHF)
-    opponent_shifts_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rink_type: Mapped[RinkType] = mapped_column(
+        _enum_column(RinkType), nullable=False, default=RinkType.IIHF
+    )
+    opponent_shifts_complete: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # List of {"home": int, "away": int} dicts, one per period. Context only
@@ -191,8 +228,12 @@ class Game(Base):
     # stored *relative to* home/away the way coordinates are stored
     # relative to rink geometry, so there's no silent-reinterpretation
     # risk in fixing a wrong pick later (see CONTEXT.md's Game entry).
-    home_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    away_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    home_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    away_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
     # Attached on demand the first time footage is opened while this game
     # is active (GameSetupService.set_video_path), not required at
     # creation -- a game record can exist before footage is even
@@ -206,19 +247,25 @@ class Game(Base):
     # entry). timezone=True: always populated with a tz-aware UTC value,
     # never a naive one, so it's never at risk of a naive/aware comparison
     # error against another datetime later.
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
-    home_team: Mapped["Team | None"] = relationship(foreign_keys=[home_team_id])
-    away_team: Mapped["Team | None"] = relationship(foreign_keys=[away_team_id])
-    roster_entries: Mapped[list["GameRosterEntry"]] = relationship(back_populates="game")
-    unit_assignments: Mapped[list["GameUnitAssignment"]] = relationship(back_populates="game")
-    events: Mapped[list["Event"]] = relationship(back_populates="game")
+    home_team: Mapped[Team | None] = relationship(foreign_keys=[home_team_id])
+    away_team: Mapped[Team | None] = relationship(foreign_keys=[away_team_id])
+    roster_entries: Mapped[list[GameRosterEntry]] = relationship(back_populates="game")
+    unit_assignments: Mapped[list[GameUnitAssignment]] = relationship(
+        back_populates="game"
+    )
+    events: Mapped[list[Event]] = relationship(back_populates="game")
 
 
 class GameRosterEntry(Base):
     __tablename__ = "game_roster_entries"
     __table_args__ = (
-        UniqueConstraint("game_id", "team_id", "jersey_number", name="uq_roster_jersey_per_game_team"),
+        UniqueConstraint(
+            "game_id", "team_id", "jersey_number", name="uq_roster_jersey_per_game_team"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -228,17 +275,21 @@ class GameRosterEntry(Base):
     jersey_number: Mapped[int] = mapped_column(Integer, nullable=False)
     # Game-of-the-day position from a league-API roster import only; never
     # written to Player.position (see CONTEXT.md's Game roster entry).
-    position: Mapped[Position | None] = mapped_column(_enum_column(Position), nullable=True)
+    position: Mapped[Position | None] = mapped_column(
+        _enum_column(Position), nullable=True
+    )
 
-    game: Mapped["Game"] = relationship(back_populates="roster_entries")
-    player: Mapped["Player"] = relationship(back_populates="roster_entries")
-    team: Mapped["Team"] = relationship(back_populates="roster_entries")
+    game: Mapped[Game] = relationship(back_populates="roster_entries")
+    player: Mapped[Player] = relationship(back_populates="roster_entries")
+    team: Mapped[Team] = relationship(back_populates="roster_entries")
 
 
 class GameUnitAssignment(Base):
     __tablename__ = "game_unit_assignments"
     __table_args__ = (
-        UniqueConstraint("game_id", "player_id", "unit_type", name="uq_unit_per_game_player_type"),
+        UniqueConstraint(
+            "game_id", "player_id", "unit_type", name="uq_unit_per_game_player_type"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -248,9 +299,9 @@ class GameUnitAssignment(Base):
     unit_type: Mapped[UnitType] = mapped_column(_enum_column(UnitType), nullable=False)
     unit_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    game: Mapped["Game"] = relationship(back_populates="unit_assignments")
-    player: Mapped["Player"] = relationship(back_populates="unit_assignments")
-    team: Mapped["Team"] = relationship(back_populates="unit_assignments")
+    game: Mapped[Game] = relationship(back_populates="unit_assignments")
+    player: Mapped[Player] = relationship(back_populates="unit_assignments")
+    team: Mapped[Team] = relationship(back_populates="unit_assignments")
 
 
 class Event(Base):
@@ -263,15 +314,19 @@ class Event(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), nullable=False)
-    event_type: Mapped[EventType] = mapped_column(_enum_column(EventType), nullable=False)
+    event_type: Mapped[EventType] = mapped_column(
+        _enum_column(EventType), nullable=False
+    )
     video_timestamp: Mapped[int] = mapped_column(Integer, nullable=False)
-    source: Mapped[EventSource] = mapped_column(_enum_column(EventSource), nullable=False, default=EventSource.MANUAL)
+    source: Mapped[EventSource] = mapped_column(
+        _enum_column(EventSource), nullable=False, default=EventSource.MANUAL
+    )
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Explicit per-event value (e.g. "5v5", "PP", "4v4", "EN") — never
     # derived from the penalty timeline (see CONTEXT.md's Strength state).
     strength_state: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    game: Mapped["Game"] = relationship(back_populates="events")
+    game: Mapped[Game] = relationship(back_populates="events")
 
     __mapper_args__ = {
         "polymorphic_on": event_type,
@@ -308,22 +363,40 @@ class Faceoff(Event):
 
     faceoff_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     faceoff_y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    faceoff_team_a_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    faceoff_participant_a_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    faceoff_participant_a_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    faceoff_team_b_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    faceoff_participant_b_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    faceoff_participant_b_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    faceoff_winner_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    faceoff_team_a_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    faceoff_participant_a_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    faceoff_participant_a_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    faceoff_team_b_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    faceoff_participant_b_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    faceoff_participant_b_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    faceoff_winner_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
 
 
 _add_constraints(
     Faceoff,
     _required_reference_constraint(
-        "faceoff_participant_a_id", "faceoff_participant_a_unknown", "ck_faceoff_participant_a_ref"
+        "faceoff_participant_a_id",
+        "faceoff_participant_a_unknown",
+        "ck_faceoff_participant_a_ref",
     ),
     _required_reference_constraint(
-        "faceoff_participant_b_id", "faceoff_participant_b_unknown", "ck_faceoff_participant_b_ref"
+        "faceoff_participant_b_id",
+        "faceoff_participant_b_unknown",
+        "ck_faceoff_participant_b_ref",
     ),
 )
 
@@ -336,9 +409,15 @@ class ShotAttempt(Event):
 
     shot_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     shot_y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    shot_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    shot_outcome: Mapped[ShotOutcome | None] = mapped_column(_enum_column(ShotOutcome), nullable=True)
-    shot_type: Mapped[ShotType | None] = mapped_column(_enum_column(ShotType), nullable=True)
+    shot_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    shot_outcome: Mapped[ShotOutcome | None] = mapped_column(
+        _enum_column(ShotOutcome), nullable=True
+    )
+    shot_type: Mapped[ShotType | None] = mapped_column(
+        _enum_column(ShotType), nullable=True
+    )
     shot_rush: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     shot_rebound: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     shot_screened: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -346,12 +425,24 @@ class ShotAttempt(Event):
     # Populated only for goal/saved outcomes; null until the xG model is
     # calibrated (out of scope here — see CONTEXT.md's xG entry).
     shot_xg: Mapped[float | None] = mapped_column(Float, nullable=True)
-    shooter_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    shooter_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    assist1_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    assist1_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    assist2_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    assist2_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    shooter_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    shooter_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    assist1_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    assist1_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    assist2_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    assist2_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
 
 _add_constraints(
@@ -361,37 +452,58 @@ _add_constraints(
     _optional_reference_constraint("assist2_id", "assist2_unknown", "ck_assist2_ref"),
     _required_column_constraint("shot_type", "ck_shot_type_required"),
     _required_column_constraint("shot_outcome", "ck_shot_outcome_required"),
-    CheckConstraint("shot_xg IS NULL OR (shot_xg >= 0 AND shot_xg <= 1)", name="ck_shot_xg_range"),
-    CheckConstraint("shot_xg IS NULL OR shot_outcome IN ('goal', 'saved')", name="ck_shot_xg_only_for_shots_on_goal"),
+    CheckConstraint(
+        "shot_xg IS NULL OR (shot_xg >= 0 AND shot_xg <= 1)", name="ck_shot_xg_range"
+    ),
+    CheckConstraint(
+        "shot_xg IS NULL OR shot_outcome IN ('goal', 'saved')",
+        name="ck_shot_xg_only_for_shots_on_goal",
+    ),
 )
 
 
 class Penalty(Event):
     __mapper_args__ = {"polymorphic_identity": EventType.PENALTY}
 
-    penalty_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    penalty_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    penalty_player_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    penalty_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    penalty_player_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    penalty_player_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     penalty_duration_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
     penalty_infraction: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 _add_constraints(
     Penalty,
-    _required_reference_constraint("penalty_player_id", "penalty_player_unknown", "ck_penalty_player_ref"),
+    _required_reference_constraint(
+        "penalty_player_id", "penalty_player_unknown", "ck_penalty_player_ref"
+    ),
 )
 
 
 class ShiftChange(Event):
     __mapper_args__ = {"polymorphic_identity": EventType.SHIFT_CHANGE}
 
-    shift_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    shift_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
-    shift_player_unknown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    shift_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    shift_player_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    shift_player_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     shift_on_ice: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 _add_constraints(
     ShiftChange,
-    _required_reference_constraint("shift_player_id", "shift_player_unknown", "ck_shift_player_ref"),
+    _required_reference_constraint(
+        "shift_player_id", "shift_player_unknown", "ck_shift_player_ref"
+    ),
 )

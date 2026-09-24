@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from PySide6.QtMultimedia import QMediaPlayer
 
-from hockey_analyzer.ui.playback_controller import DEFAULT_SPEED_STEPS, PlaybackController
+from hockey_analyzer.ui.playback_controller import (
+    DEFAULT_SPEED_STEPS,
+    PlaybackController,
+)
 
 
 class FakePlayer:
@@ -148,7 +151,9 @@ def test_step_frame_backward_moves_back_by_one_frame_duration():
 
 
 def test_step_frame_pauses_playback():
-    player = FakePlayer(position=1_000, duration=100_000, state=QMediaPlayer.PlaybackState.PlayingState)
+    player = FakePlayer(
+        position=1_000, duration=100_000, state=QMediaPlayer.PlaybackState.PlayingState
+    )
     controller = PlaybackController(player)
 
     controller.step_frame(1)

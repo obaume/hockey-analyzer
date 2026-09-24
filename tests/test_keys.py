@@ -28,7 +28,9 @@ def test_key_string_from_event_strips_altgr_ctrl_alt_combo():
     # is synthesized as a simultaneous Ctrl+Alt press. Qt still reports both
     # modifiers on the QKeyEvent even though the resolved key already
     # accounts for AltGr, so this must match the plain "]" binding.
-    altgr_modifiers = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+    altgr_modifiers = (
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+    )
     event = QKeyEvent(
         QKeyEvent.Type.KeyPress,
         Qt.Key.Key_BracketRight,

@@ -5,12 +5,12 @@ from __future__ import annotations
 import enum
 
 
-class Handedness(str, enum.Enum):
+class Handedness(enum.StrEnum):
     LEFT = "left"
     RIGHT = "right"
 
 
-class Position(str, enum.Enum):
+class Position(enum.StrEnum):
     CENTER = "C"
     LEFT_WING = "LW"
     RIGHT_WING = "RW"
@@ -18,7 +18,7 @@ class Position(str, enum.Enum):
     GOALIE = "G"
 
 
-class EventType(str, enum.Enum):
+class EventType(enum.StrEnum):
     PERIOD_START = "period_start"
     PERIOD_END = "period_end"
     STOPPAGE = "stoppage"
@@ -28,19 +28,19 @@ class EventType(str, enum.Enum):
     SHIFT_CHANGE = "shift_change"
 
 
-class EventSource(str, enum.Enum):
+class EventSource(enum.StrEnum):
     MANUAL = "manual"
     VISION = "vision"
 
 
-class ShotOutcome(str, enum.Enum):
+class ShotOutcome(enum.StrEnum):
     GOAL = "goal"
     SAVED = "saved"
     MISSED = "missed"
     BLOCKED = "blocked"
 
 
-class ShotType(str, enum.Enum):
+class ShotType(enum.StrEnum):
     WRIST = "wrist"
     SLAP = "slap"
     SNAP = "snap"
@@ -50,19 +50,19 @@ class ShotType(str, enum.Enum):
     UNKNOWN = "unknown"
 
 
-class UnitType(str, enum.Enum):
+class UnitType(enum.StrEnum):
     FORWARD_LINE = "forward-line"
     DEFENSE_PAIR = "defense-pair"
     POWER_PLAY = "power-play"
     PENALTY_KILL = "penalty-kill"
 
 
-class RinkType(str, enum.Enum):
+class RinkType(enum.StrEnum):
     IIHF = "iihf"
     NHL = "nhl"
 
 
-class Side(str, enum.Enum):
+class Side(enum.StrEnum):
     """Which side of a Game a Team is on -- shared by TaggingSession
     (event-level team references) and GameSetupService (persisting
     Game.home_team_id/away_team_id), so there is exactly one closed

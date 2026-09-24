@@ -1,0 +1,6 @@
+# Mechanical reformats, skipped by `git blame` (GitHub applies this file
+# automatically; locally: git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# SHAs survive only because PRs land via merge commits, not squash/rebase.
+
+# Apply ruff format and ruff check --fix across the codebase (#40)
+bbb93d6075151614ae1f4b98b9332b55968a5112
