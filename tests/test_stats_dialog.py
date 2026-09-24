@@ -151,6 +151,34 @@ def test_goalie_table_defaults_to_all_situations(qtbot, tagged_game):
     assert _table(dialog.goalie_table)["#35"][_column(dialog.goalie_table, "GA")] == "1"
 
 
+def test_caveat_line_is_hidden_when_every_shift_change_is_resolved(qtbot, tagged_game):
+    data, _kim = tagged_game
+    dialog = _dialog(qtbot, data)
+
+    assert dialog.caveat_label.isHidden() is True
+
+
+def test_unresolved_shift_changes_are_reported_once_per_team(
+    qtbot, session, tagged_game
+):
+    data, _kim = tagged_game
+    game = data.game
+    tagging = TaggingSession(
+        session,
+        game_id=game.id,
+        home_team_id=game.home_team_id,
+        away_team_id=game.away_team_id,
+    )
+    stub = tagging.log_event(EventType.SHIFT_CHANGE, 5000)
+    tagging.set_player_reference(stub.id, "home", unknown=True)
+
+    dialog = _dialog(qtbot, load_game_data(session, game.id))
+
+    assert dialog.caveat_label.isHidden() is False
+    assert "Icebreakers: 1 shift change" in dialog.caveat_label.text()
+    assert "Rivals" not in dialog.caveat_label.text()
+
+
 def test_shot_quality_table_shows_type_counts_and_high_danger_share(qtbot, tagged_game):
     data, _kim = tagged_game
     dialog = _dialog(qtbot, data)

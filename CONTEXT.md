@@ -36,7 +36,7 @@ Every event with a physical location on the ice (currently: `faceoff`, `shot_att
 
 ### Attacking direction
 
-Which end of the rink (toward +x or −x in **Rink coordinates**) a team is shooting at during a given period — what turns a raw faceoff location into "offensive" or "defensive" *for that team* (e.g. for **Zone start (%)**). Never stored and never asked of the tagger: teams switch ends every period, and the tagger just clicks raw coordinates. Derived per team, per period (periods delimited by `period_start` events), from where that team's own `shot_attempt`s land that period, by majority — nearly every attempt is taken in the offensive half, so a stray dump-in doesn't flip it. A team with no located attempts in a period attacks the end opposite the other team's; with none from either team, the direction is unknown and any zone that depends on it is reported as undetermined, never guessed.
+Which end of the rink (toward +x or −x in **Rink coordinates**) a team is shooting at during a given period — what turns a raw faceoff location into "offensive" or "defensive" *for that team* (e.g. for **Zone start (%)**). Never stored and never asked of the tagger: teams switch ends every period, and the tagger just clicks raw coordinates. Derived per team, per period (periods delimited by `period_start` events), from where that team's own `shot_attempt`s land that period, by majority — nearly every attempt is taken in the offensive half, so a stray dump-in doesn't flip it. A team with no majority in a period (no located attempts, or a tie) attacks the end opposite the other team's; with no majority from either team, the direction is unknown and any zone that depends on it is reported as undetermined, never guessed.
 
 ### Rink type
 

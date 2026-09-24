@@ -337,23 +337,21 @@ def test_team_stats_are_never_gated_by_opponent_shift_completeness():
 # -- unknown player references -----------------------------------------
 
 
-def test_unknown_shift_player_marks_only_that_teams_on_ice_stats_incomplete():
+def test_unknown_shift_player_is_reported_per_team_without_touching_known_stats():
     game = _Builder(opponent_shifts_complete=True)
     home_player, away_player = _one_shift_each(game)
     game.shift(HOME, None, on=True, unknown=True)
+    unset = game.shift(HOME, home_player, on=True)
+    unset.shift_on_ice = None  # on/off never filled in: just as unresolved
     game.shot(HOME)
     data = game.build()
 
-    home_stats = _skater(data, home_player)
-    away_stats = _skater(data, away_player)
-
-    assert home_stats.unresolved_shift_changes == 1
-    assert home_stats.incomplete is True
-    # Still computed from what *is* known, not dropped.
-    assert home_stats.corsi.for_ == 2
-    assert away_stats.incomplete is False
-    team = stats_engine.team_stats(data, HOME)
-    assert team.corsi.for_ == 2
+    # Whoever the unknown player was is missing that ice time -- reported
+    # for that team alone, never folded into a known player's numbers.
+    assert stats_engine.unresolved_shift_changes(data) == {HOME: 2}
+    assert _skater(data, home_player).corsi.for_ == 2
+    assert _skater(data, away_player).corsi.against == 2
+    assert stats_engine.team_stats(data, HOME).corsi.for_ == 2
 
 
 def test_unknown_shooter_does_not_degrade_on_ice_stats():
@@ -361,11 +359,10 @@ def test_unknown_shooter_does_not_degrade_on_ice_stats():
     kim = game.player(HOME, 14)
     game.shift(HOME, kim, on=True)
     game.shot(HOME, ShotOutcome.GOAL)  # the builder's shooters are unknown
+    data = game.build()
 
-    kim_stats = _skater(game.build(), kim)
-
-    assert kim_stats.plus_minus == 1
-    assert kim_stats.incomplete is False
+    assert _skater(data, kim).plus_minus == 1
+    assert stats_engine.unresolved_shift_changes(data) == {}
 
 
 # -- zone starts ---------------------------------------------------------
@@ -583,6 +580,47 @@ def test_goals_against_average_uses_derived_game_clock_minutes():
     assert stats.goals_against_average == pytest.approx(3.0)
 
 
+def test_filtered_goals_against_average_uses_minutes_at_that_strength_only():
+    game = _Builder()
+    goalie = game.player(HOME, 30, position=Position.GOALIE)
+    game.shift(HOME, goalie, on=True, at=0)
+    game.faceoff(0.0, at=0, strength="5v5")
+    game.shot(AWAY, ShotOutcome.SAVED, at=300_000, strength="5v5")
+    game.stoppage(at=600_000)  # 10 live minutes at 5v5
+    game.faceoff(-69.0, at=700_000, strength="4v5")  # home penalty kill
+    game.shot(AWAY, ShotOutcome.GOAL, at=1_000_000, strength="4v5")  # 5 min
+    game.faceoff(0.0, at=1_100_000, strength="5v5")
+    game.period_end(1, at=1_400_000)  # 5 more at 5v5
+    data = game.build()
+
+    even = _goalie(data, goalie, strength_state="5v5")
+    short_handed = _goalie(data, goalie, strength_state="4v5")
+
+    assert even.minutes_played == pytest.approx(15.0)
+    assert even.goals_against_average == pytest.approx(0.0)
+    assert short_handed.minutes_played == pytest.approx(5.0)
+    assert short_handed.goals_against_average == pytest.approx(12.0)
+    assert _goalie(data, goalie).minutes_played == pytest.approx(20.0)
+
+
+def test_strength_change_during_live_play_splits_the_goalies_minutes():
+    game = _Builder()
+    goalie = game.player(HOME, 30, position=Position.GOALIE)
+    game.shift(HOME, goalie, on=True, at=0)
+    game.faceoff(69.0, at=0, strength="5v4")
+    # Penalty expires on the fly; the next event carries the new state.
+    game.shot(HOME, ShotOutcome.MISSED, at=120_000, strength="5v5")
+    game.period_end(1, at=600_000)
+    data = game.build()
+
+    assert _goalie(data, goalie, strength_state="5v4").minutes_played == (
+        pytest.approx(2.0)
+    )
+    assert _goalie(data, goalie, strength_state="5v5").minutes_played == (
+        pytest.approx(8.0)
+    )
+
+
 def test_goals_against_average_is_undefined_with_no_time_in_net():
     game = _Builder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
@@ -623,15 +661,6 @@ def test_goalie_stats_are_computed_for_both_teams_regardless_of_the_flag():
 
     assert stats[home_goalie].shots_against == 0
     assert stats[away_goalie].shots_against == 1
-
-
-def test_unknown_shift_player_marks_that_teams_goalie_stats_incomplete():
-    game = _Builder()
-    goalie = game.player(HOME, 30, position=Position.GOALIE)
-    game.shift(HOME, goalie, on=True)
-    game.shift(HOME, None, on=False, unknown=True)
-
-    assert _goalie(game.build(), goalie).incomplete is True
 
 
 # -- shot-quality breakdown ------------------------------------------------

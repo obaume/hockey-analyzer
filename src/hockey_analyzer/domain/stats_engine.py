@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from hockey_analyzer.domain import rink
 from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType
@@ -128,9 +128,7 @@ def _shot_quality(data: GameData, shots: list[ShotAttempt]) -> ShotQuality:
             for context in SHOT_CONTEXTS
         },
         high_danger=sum(1 for shot in shots if _is_high_danger(data, shot)),
-        located=sum(
-            1 for shot in shots if shot.shot_x is not None and shot.shot_y is not None
-        ),
+        located=sum(1 for shot in shots if _is_located(shot)),
     )
 
 
@@ -163,20 +161,10 @@ class SkaterStats:
     # On-ice goals for/against, at the active strength filter.
     goals: ForAgainst
     zone_starts: ZoneStarts
-    # How many of this player's team's `shift_change` events name an
-    # unknown player or leave on/off unset: while any exist, on-ice sets
-    # for this team can't be fully trusted, so these stats are computed
-    # from what's known and flagged incomplete rather than dropped (see
-    # CONTEXT.md's Unknown player reference entry).
-    unresolved_shift_changes: int
 
     @property
     def plus_minus(self) -> int:
         return self.goals.differential
-
-    @property
-    def incomplete(self) -> bool:
-        return self.unresolved_shift_changes > 0
 
 
 @dataclass(frozen=True)
@@ -209,7 +197,6 @@ def skater_stats(
     shots = _shots(data, strength_state)
     on_ice = _on_ice_at_shots(data)
     zone_starts = _zone_starts(data, strength_state)
-    unresolved = _unresolved_shift_changes(data)
     skaters: list[SkaterStats] = []
     excluded: list[ExcludedSkater] = []
     for entry in data.roster:
@@ -235,7 +222,6 @@ def skater_stats(
                 fenwick=_for_against(_unblocked(on_ice_shots), entry.team_id),
                 goals=_for_against(_goals(on_ice_shots), entry.team_id),
                 zone_starts=zone_starts.get(entry.player_id, ZoneStarts()),
-                unresolved_shift_changes=unresolved.get(entry.team_id, 0),
             )
         )
     return SkaterReport(skaters=skaters, excluded=excluded)
@@ -256,9 +242,6 @@ class GoalieStats:
     high_danger_goals_against: int
     # Derived game-clock time in net (live play only), not raw video time.
     time_in_net_ms: int
-    # See `SkaterStats.unresolved_shift_changes`: an unknown shift_change
-    # player on this team could be this goalie coming on or off.
-    unresolved_shift_changes: int
 
     @property
     def saves(self) -> int:
@@ -286,10 +269,6 @@ class GoalieStats:
             return None
         return self.goals_against * 60 / self.minutes_played
 
-    @property
-    def incomplete(self) -> bool:
-        return self.unresolved_shift_changes > 0
-
 
 def goalie_stats(
     data: GameData, *, strength_state: str | None = ALL_SITUATIONS
@@ -302,7 +281,6 @@ def goalie_stats(
     on_ice = _on_ice_at_shots(data)
     intervals = _on_ice_intervals(data)
     live = _live_segments(data)
-    unresolved = _unresolved_shift_changes(data)
     results = []
     for entry in data.roster:
         if not _is_goalie(entry):
@@ -322,8 +300,9 @@ def goalie_stats(
                 goals_against=len(_goals(faced)),
                 high_danger_shots_against=len(high_danger),
                 high_danger_goals_against=len(_goals(high_danger)),
-                time_in_net_ms=_overlap(intervals.get(entry.player_id, []), live),
-                unresolved_shift_changes=unresolved.get(entry.team_id, 0),
+                time_in_net_ms=_time_on_ice(
+                    intervals.get(entry.player_id, []), live, strength_state
+                ),
             )
         )
     return results
@@ -332,9 +311,14 @@ def goalie_stats(
 def _is_high_danger(data: GameData, shot: ShotAttempt) -> bool:
     """See CONTEXT.md's Danger zone entry. A shot whose location was never
     clicked can't be classified, so it isn't counted as high danger."""
-    if shot.shot_x is None or shot.shot_y is None:
-        return False
-    return rink.high_danger(shot.shot_x, shot.shot_y, data.game.rink_type)
+    return _is_located(shot) and rink.high_danger(
+        shot.shot_x, shot.shot_y, data.game.rink_type
+    )
+
+
+def _is_located(shot: ShotAttempt) -> bool:
+    """Whether the tagger clicked this shot's rink location."""
+    return shot.shot_x is not None and shot.shot_y is not None
 
 
 Interval = tuple[int, int]
@@ -366,30 +350,54 @@ def _on_ice_intervals(data: GameData) -> dict[int, list[Interval]]:
     return intervals
 
 
-def _live_segments(data: GameData) -> list[Interval]:
+class _LiveSegment(NamedTuple):
+    start: int
+    end: int
+    strength_state: str | None
+
+
+def _live_segments(data: GameData) -> list[_LiveSegment]:
     """The game clock's running stretches: from each faceoff to the next
     event that stops play (see `_stops_play`), so stoppage gaps and
-    intermissions drop out -- CONTEXT.md's Game clock derivation."""
+    intermissions drop out -- CONTEXT.md's Game clock derivation. Each
+    stretch is further cut wherever a logged event records a different
+    strength state (e.g. a penalty expiring on the fly), so a filtered
+    GAA divides by minutes at that strength only. `shift_change` events
+    don't cut: theirs is only the tagging UI's mid-change headcount."""
     timeline = _timeline(data)
-    segments: list[Interval] = []
+    segments: list[_LiveSegment] = []
     live_since: int | None = None
+    strength: str | None = None
     for event in timeline:
-        if isinstance(event, Faceoff):
-            if live_since is None:
-                live_since = event.video_timestamp
-        elif _stops_play(event) and live_since is not None:
-            segments.append((live_since, event.video_timestamp))
+        if isinstance(event, Faceoff) and live_since is None:
+            live_since, strength = event.video_timestamp, event.strength_state
+        elif live_since is None:
+            continue
+        elif _stops_play(event):
+            segments.append(_LiveSegment(live_since, event.video_timestamp, strength))
             live_since = None
+        elif (
+            not isinstance(event, ShiftChange)
+            and event.strength_state is not None
+            and event.strength_state != strength
+        ):
+            segments.append(_LiveSegment(live_since, event.video_timestamp, strength))
+            live_since, strength = event.video_timestamp, event.strength_state
     if live_since is not None:
-        segments.append((live_since, _game_end(timeline)))
+        segments.append(_LiveSegment(live_since, _game_end(timeline), strength))
     return segments
 
 
-def _overlap(intervals: list[Interval], segments: list[Interval]) -> int:
+def _time_on_ice(
+    intervals: list[Interval],
+    segments: list[_LiveSegment],
+    strength_state: str | None,
+) -> int:
     return sum(
-        max(0, min(end, segment_end) - max(start, segment_start))
+        max(0, min(end, segment.end) - max(start, segment.start))
         for start, end in intervals
-        for segment_start, segment_end in segments
+        for segment in segments
+        if _matches(segment.strength_state, strength_state)
     )
 
 
@@ -400,7 +408,14 @@ def _on_ice_eligible(data: GameData, team_id: int) -> bool:
     return team_id != data.game.away_team_id or bool(data.game.opponent_shifts_complete)
 
 
-def _unresolved_shift_changes(data: GameData) -> dict[int, int]:
+def unresolved_shift_changes(data: GameData) -> dict[int, int]:
+    """Per team, how many `shift_change` events name an unknown player or
+    leave on/off unset. A known player's on-ice set comes only from their
+    own events, so their stats are unaffected; what's missing is that
+    stretch of ice time for whoever the unresolved event really was -- a
+    gap in the team's individual stats as a whole, reported here once per
+    team rather than silently dropped (see CONTEXT.md's Unknown player
+    reference entry). Team-wide stats never depend on it."""
     counts: dict[int, int] = {}
     for event in data.events:
         if isinstance(event, ShiftChange) and event.shift_team_id is not None:
@@ -468,15 +483,17 @@ def _attacking_directions(
     period. Nothing stores this -- teams switch ends every period and the
     tagger clicks raw rink coordinates -- so it's derived from where each
     team's own shot attempts land that period (nearly all are taken in the
-    offensive half), by majority. A team with no shots that period
-    attacks the end opposite the other team's; with no shots from either,
-    it stays unknown."""
+    offensive half), by majority. A team with no majority that period (no
+    located shots, or a tie) attacks the end opposite the other team's;
+    with no majority from either, it stays unknown. A shot on the center
+    line (x == 0) points at neither end and doesn't vote."""
     votes: dict[tuple[int, int], int] = {}
     for period, event in _with_periods(timeline):
         if (
             isinstance(event, ShotAttempt)
             and event.shot_team_id is not None
-            and event.shot_x
+            and _is_located(event)
+            and event.shot_x != 0
         ):
             key = (event.shot_team_id, period)
             votes[key] = votes.get(key, 0) + (1 if event.shot_x > 0 else -1)

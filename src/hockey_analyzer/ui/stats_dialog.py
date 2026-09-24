@@ -6,8 +6,9 @@ itself; every number shown comes straight from `stats_engine`.
 Skater and goalie stats carry separate filters, since goalie stats
 default to all situations while everything else defaults to 5v5 (see
 CONTEXT.md's Goalie stats entry). Team and shot-quality tables follow the
-skater filter. A stat that couldn't be computed, or was computed from
-incomplete data, says so in its row's Note rather than disappearing.
+skater filter. A stat that couldn't be computed says so in its row's
+Note rather than disappearing, and unresolved shift changes (which leave
+some unknown player's ice time missing) get one caveat line per team.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -33,7 +35,6 @@ from hockey_analyzer.domain.stats_engine import (
     ALL_SITUATIONS,
     EVEN_STRENGTH,
     ForAgainst,
-    GoalieStats,
     SkaterStats,
     TeamStats,
 )
@@ -57,7 +58,7 @@ _SKATER_COLUMNS = (
     "ZS%",
     "Note",
 )
-_GOALIE_COLUMNS = ("Team", "SA", "GA", "SV%", "GAA", "HDSA", "HD SV%", "MIN", "Note")
+_GOALIE_COLUMNS = ("Team", "SA", "GA", "SV%", "GAA", "HDSA", "HD SV%", "MIN")
 _CONTEXT_LABELS = {
     "rush": "Rush",
     "rebound": "Rebound",
@@ -124,20 +125,8 @@ def _shot_quality_rows(stats: TeamStats) -> dict[str, str]:
 
 
 def _skater_note(stats: SkaterStats) -> str:
-    notes = []
-    if stats.incomplete:
-        notes.append(
-            f"incomplete: {stats.unresolved_shift_changes} unresolved shift change(s)"
-        )
-    if stats.zone_starts.undetermined:
-        notes.append(f"{stats.zone_starts.undetermined} zone start(s) undetermined")
-    return "; ".join(notes)
-
-
-def _goalie_note(stats: GoalieStats) -> str:
-    if not stats.incomplete:
-        return ""
-    return f"incomplete: {stats.unresolved_shift_changes} unresolved shift change(s)"
+    undetermined = stats.zone_starts.undetermined
+    return f"{undetermined} zone start(s) undetermined" if undetermined else ""
 
 
 def _fill(
@@ -193,6 +182,19 @@ class StatsDialog(QDialog):
         self.skater_strength_combo = self._strength_combo(strengths, EVEN_STRENGTH)
         self.goalie_strength_combo = self._strength_combo(strengths, ALL_SITUATIONS)
 
+        unresolved = stats_engine.unresolved_shift_changes(data)
+        self.caveat_label = QLabel(
+            "Individual stats are missing some ice time -- "
+            + "; ".join(
+                f"{name}: {unresolved[team_id]} shift change(s) with an unknown "
+                "player or unset on/off"
+                for team_id, name in self._sides
+                if unresolved.get(team_id)
+            )
+        )
+        self.caveat_label.setWordWrap(True)
+        self.caveat_label.setHidden(not unresolved)
+
         self.team_table = _read_only_table()
         self.skater_table = _read_only_table()
         self.skater_table.verticalHeader().setVisible(False)
@@ -214,6 +216,7 @@ class StatsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(filter_row)
+        layout.addWidget(self.caveat_label)
         layout.addWidget(tabs)
 
         self.skater_strength_combo.currentIndexChanged.connect(self._render_skaters)
@@ -304,7 +307,6 @@ class StatsDialog(QDialog):
                     str(stats.high_danger_shots_against),
                     _save_percentage(stats.high_danger_save_percentage),
                     _number(stats.minutes_played, 1),
-                    _goalie_note(stats),
                 ]
                 for stats in goalies
             ],
