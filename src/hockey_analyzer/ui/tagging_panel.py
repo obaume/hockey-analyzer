@@ -13,7 +13,7 @@ ticket 15's "PySide6 widgets only handle video decode/hotkeys/rendering".
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFocusEvent, QKeyEvent
@@ -106,7 +106,9 @@ class _JerseyEntry(QLineEdit):
     resumes `JERSEY_ENTRY_SCOPE`, where "h"/"a" are registered; losing
     focus reverses that."""
 
-    def __init__(self, shortcuts: ShortcutRegistry, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, shortcuts: ShortcutRegistry, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._shortcuts = shortcuts
 
@@ -136,7 +138,8 @@ class TaggingPanel(QWidget):
         shortcuts: ShortcutRegistry | None = None,
         pause: Callable[[], None] | None = None,
         rink_click_dialog_factory: Callable[[], RinkClickDialog] | None = None,
-        shot_attempt_dialog_factory: Callable[[], ShotAttemptCaptureDialog] | None = None,
+        shot_attempt_dialog_factory: Callable[[], ShotAttemptCaptureDialog]
+        | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -176,8 +179,12 @@ class TaggingPanel(QWidget):
         # Registered up front (see _JerseyEntry) but suspended until the
         # jersey field actually has focus.
         self._shortcuts.enter_scope(JERSEY_ENTRY_SCOPE)
-        self._register_shortcut(key_string(Qt.Key.Key_H), JERSEY_ENTRY_SCOPE, self._side_action("home"))
-        self._register_shortcut(key_string(Qt.Key.Key_A), JERSEY_ENTRY_SCOPE, self._side_action("away"))
+        self._register_shortcut(
+            key_string(Qt.Key.Key_H), JERSEY_ENTRY_SCOPE, self._side_action("home")
+        )
+        self._register_shortcut(
+            key_string(Qt.Key.Key_A), JERSEY_ENTRY_SCOPE, self._side_action("away")
+        )
         self._shortcuts.suspend_scope(JERSEY_ENTRY_SCOPE)
 
         self.event_table = QTableWidget(0, 3)
@@ -198,7 +205,9 @@ class TaggingPanel(QWidget):
         self.edit_group.setVisible(False)
         self.refresh()
 
-    def _register_shortcut(self, key: str, scope: str, action: Callable[[], None]) -> None:
+    def _register_shortcut(
+        self, key: str, scope: str, action: Callable[[], None]
+    ) -> None:
         self._shortcuts.register(key, scope, action)
         self._registered_keys.append((key, scope))
 
@@ -234,7 +243,9 @@ class TaggingPanel(QWidget):
 
         self.strength_state_field = QLineEdit()
         self.strength_state_field.editingFinished.connect(
-            lambda: self._commit_field("strength_state", self.strength_state_field.text().strip() or None)
+            lambda: self._commit_field(
+                "strength_state", self.strength_state_field.text().strip() or None
+            )
         )
         self.edit_form.addRow("Strength state", self.strength_state_field)
 
@@ -244,7 +255,9 @@ class TaggingPanel(QWidget):
         self.period_number_field.setRange(0, 9)
         self.period_number_field.setSpecialValueText("not set")
         self.period_number_field.editingFinished.connect(
-            lambda: self._commit_field("period_number", self.period_number_field.value() or None)
+            lambda: self._commit_field(
+                "period_number", self.period_number_field.value() or None
+            )
         )
         self.edit_form.addRow("Period", self.period_number_field)
 
@@ -280,7 +293,9 @@ class TaggingPanel(QWidget):
         self.edit_form.addRow("Player", self.player_reference_row)
 
         self.on_ice_checkbox = QCheckBox("On ice")
-        self.on_ice_checkbox.toggled.connect(lambda checked: self._commit_field("shift_on_ice", checked))
+        self.on_ice_checkbox.toggled.connect(
+            lambda checked: self._commit_field("shift_on_ice", checked)
+        )
         self.edit_form.addRow("", self.on_ice_checkbox)
 
         # 0.0 reads as "not set" -- there is no such thing as a real
@@ -290,13 +305,17 @@ class TaggingPanel(QWidget):
         self.duration_field.setSingleStep(0.5)
         self.duration_field.setSpecialValueText("not set")
         self.duration_field.editingFinished.connect(
-            lambda: self._commit_field("penalty_duration_minutes", self.duration_field.value() or None)
+            lambda: self._commit_field(
+                "penalty_duration_minutes", self.duration_field.value() or None
+            )
         )
         self.edit_form.addRow("Duration (min)", self.duration_field)
 
         self.infraction_field = QLineEdit()
         self.infraction_field.editingFinished.connect(
-            lambda: self._commit_field("penalty_infraction", self.infraction_field.text().strip() or None)
+            lambda: self._commit_field(
+                "penalty_infraction", self.infraction_field.text().strip() or None
+            )
         )
         self.edit_form.addRow("Infraction", self.infraction_field)
 
@@ -307,7 +326,9 @@ class TaggingPanel(QWidget):
         for outcome in ShotOutcome:
             self.outcome_combo.addItem(outcome.value, outcome.value)
         self.outcome_combo.currentIndexChanged.connect(
-            lambda: self._commit_field("shot_outcome", ShotOutcome(self.outcome_combo.currentData()))
+            lambda: self._commit_field(
+                "shot_outcome", ShotOutcome(self.outcome_combo.currentData())
+            )
         )
         self.edit_form.addRow("Outcome", self.outcome_combo)
 
@@ -315,7 +336,9 @@ class TaggingPanel(QWidget):
         for shot_type in ShotType:
             self.shot_type_combo.addItem(shot_type.value, shot_type.value)
         self.shot_type_combo.currentIndexChanged.connect(
-            lambda: self._commit_field("shot_type", ShotType(self.shot_type_combo.currentData()))
+            lambda: self._commit_field(
+                "shot_type", ShotType(self.shot_type_combo.currentData())
+            )
         )
         self.edit_form.addRow("Shot type", self.shot_type_combo)
 
@@ -372,7 +395,11 @@ class TaggingPanel(QWidget):
         x_column, y_column = _LOCATION_FIELDS[event_type]
         if event_type is EventType.SHOT_ATTEMPT:
             dialog = self._shot_attempt_dialog_factory()
-            if dialog.exec() != QDialog.DialogCode.Accepted or dialog.x is None or dialog.y is None:
+            if (
+                dialog.exec() != QDialog.DialogCode.Accepted
+                or dialog.x is None
+                or dialog.y is None
+            ):
                 return
             event = self._session.log_event(
                 event_type,
@@ -382,7 +409,11 @@ class TaggingPanel(QWidget):
             )
         else:
             dialog = self._rink_click_dialog_factory()
-            if dialog.exec() != QDialog.DialogCode.Accepted or dialog.x is None or dialog.y is None:
+            if (
+                dialog.exec() != QDialog.DialogCode.Accepted
+                or dialog.x is None
+                or dialog.y is None
+            ):
                 return
             event = self._session.log_event(event_type, self._current_position_ms())
 
@@ -395,9 +426,15 @@ class TaggingPanel(QWidget):
         self.event_table.setRowCount(len(events))
         self._row_event_ids = [event.id for event in events]
         for row, event in enumerate(events):
-            self.event_table.setItem(row, 0, QTableWidgetItem(format_video_timestamp(event.video_timestamp)))
-            self.event_table.setItem(row, 1, QTableWidgetItem(_TYPE_LABELS[EventType(event.event_type)]))
-            self.event_table.setItem(row, 2, QTableWidgetItem(self._session.describe_event(event)))
+            self.event_table.setItem(
+                row, 0, QTableWidgetItem(format_video_timestamp(event.video_timestamp))
+            )
+            self.event_table.setItem(
+                row, 1, QTableWidgetItem(_TYPE_LABELS[EventType(event.event_type)])
+            )
+            self.event_table.setItem(
+                row, 2, QTableWidgetItem(self._session.describe_event(event))
+            )
 
         if self._selected_event_id in self._row_event_ids:
             self._select_row_for_event(self._selected_event_id)
@@ -452,7 +489,9 @@ class TaggingPanel(QWidget):
                 self.reference_combo.blockSignals(True)
                 self.reference_combo.clear()
                 for name in reference_names:
-                    self.reference_combo.addItem(_REFERENCE_LABELS.get(name, name), name)
+                    self.reference_combo.addItem(
+                        _REFERENCE_LABELS.get(name, name), name
+                    )
                 self.reference_combo.setCurrentIndex(0)
                 self.reference_combo.blockSignals(False)
 
@@ -494,11 +533,15 @@ class TaggingPanel(QWidget):
         self.edit_form.setRowVisible(self.shot_context_row, is_shot_attempt)
         if is_shot_attempt:
             self.outcome_combo.blockSignals(True)
-            self.outcome_combo.setCurrentIndex(max(self.outcome_combo.findData(event.shot_outcome.value), 0))
+            self.outcome_combo.setCurrentIndex(
+                max(self.outcome_combo.findData(event.shot_outcome.value), 0)
+            )
             self.outcome_combo.blockSignals(False)
 
             self.shot_type_combo.blockSignals(True)
-            self.shot_type_combo.setCurrentIndex(max(self.shot_type_combo.findData(event.shot_type.value), 0))
+            self.shot_type_combo.setCurrentIndex(
+                max(self.shot_type_combo.findData(event.shot_type.value), 0)
+            )
             self.shot_type_combo.blockSignals(False)
 
             for column, checkbox in self.shot_context_checkboxes.items():
@@ -511,7 +554,9 @@ class TaggingPanel(QWidget):
         if is_location_bearing:
             x_column, y_column = _LOCATION_FIELDS[event_type]
             x_value, y_value = getattr(event, x_column), getattr(event, y_column)
-            self.location_label.setText("not set" if x_value is None else f"({x_value:.1f}, {y_value:.1f})")
+            self.location_label.setText(
+                "not set" if x_value is None else f"({x_value:.1f}, {y_value:.1f})"
+            )
 
     def _commit_field(self, field: str, value: object) -> None:
         if self._selected_event_id is None:
@@ -535,13 +580,18 @@ class TaggingPanel(QWidget):
         reference = self._current_reference_name()
         reference_kwargs = {} if reference is None else {"reference": reference}
         if self.unknown_checkbox.isChecked():
-            self._session.set_player_reference(self._selected_event_id, team_side, unknown=True, **reference_kwargs)
+            self._session.set_player_reference(
+                self._selected_event_id, team_side, unknown=True, **reference_kwargs
+            )
         else:
             text = self.jersey_field.text().strip()
             if not text.isdigit():
                 return
             self._session.set_player_reference(
-                self._selected_event_id, team_side, jersey_number=int(text), **reference_kwargs
+                self._selected_event_id,
+                team_side,
+                jersey_number=int(text),
+                **reference_kwargs,
             )
         self.refresh()
 
@@ -553,9 +603,15 @@ class TaggingPanel(QWidget):
         x_column, y_column = _LOCATION_FIELDS[event_type]
 
         dialog = self._rink_click_dialog_factory()
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.x is None or dialog.y is None:
+        if (
+            dialog.exec() != QDialog.DialogCode.Accepted
+            or dialog.x is None
+            or dialog.y is None
+        ):
             return
-        self._session.update_event(self._selected_event_id, **{x_column: dialog.x, y_column: dialog.y})
+        self._session.update_event(
+            self._selected_event_id, **{x_column: dialog.x, y_column: dialog.y}
+        )
         self.refresh()
 
     def _delete_selected(self) -> None:

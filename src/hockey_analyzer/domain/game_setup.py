@@ -29,7 +29,9 @@ class SameTeamBothSidesError(Exception):
     `ck_game_home_away_distinct` constraint in models.py."""
 
     def __init__(self, team_id: int) -> None:
-        super().__init__(f"team {team_id} cannot be both the home and away side of the same game")
+        super().__init__(
+            f"team {team_id} cannot be both the home and away side of the same game"
+        )
         self.team_id = team_id
 
 
@@ -42,7 +44,9 @@ class DuplicateJerseyNumberError(Exception):
     `models.py` unique constraint."""
 
     def __init__(self, team_id: int, jersey_number: int) -> None:
-        super().__init__(f"jersey number {jersey_number} is already on this team's roster for this game")
+        super().__init__(
+            f"jersey number {jersey_number} is already on this team's roster for this game"
+        )
         self.team_id = team_id
         self.jersey_number = jersey_number
 
@@ -125,7 +129,9 @@ class GameSetupService:
     def get_player(self, player_id: int) -> Player:
         return self._get_player(player_id)
 
-    def create_player(self, *, full_name: str | None = None, position: Position | None = None) -> Player:
+    def create_player(
+        self, *, full_name: str | None = None, position: Position | None = None
+    ) -> Player:
         """`full_name` is promptable but skippable at creation (see
         CONTEXT.md's Player entry) -- omit it and backfill later with
         `set_player_full_name`."""
@@ -172,7 +178,9 @@ class GameSetupService:
         `position` (both optional). `team_id` may be either side of the
         game -- there is no separate "opponent" variant of this method."""
         if player_id is not None and (full_name is not None or position is not None):
-            raise ValueError("full_name/position only apply when creating a new player, not when player_id is given")
+            raise ValueError(
+                "full_name/position only apply when creating a new player, not when player_id is given"
+            )
 
         if self._roster_entry(game_id, team_id, jersey_number) is not None:
             raise DuplicateJerseyNumberError(team_id, jersey_number)
@@ -181,7 +189,12 @@ class GameSetupService:
             player = self.create_player(full_name=full_name, position=position)
             player_id = player.id
 
-        entry = GameRosterEntry(game_id=game_id, player_id=player_id, team_id=team_id, jersey_number=jersey_number)
+        entry = GameRosterEntry(
+            game_id=game_id,
+            player_id=player_id,
+            team_id=team_id,
+            jersey_number=jersey_number,
+        )
         self._db.add(entry)
         self._db.commit()
         return entry
@@ -189,12 +202,16 @@ class GameSetupService:
     def list_roster(self, game_id: int, team_id: int) -> list[GameRosterEntry]:
         stmt = (
             select(GameRosterEntry)
-            .where(GameRosterEntry.game_id == game_id, GameRosterEntry.team_id == team_id)
+            .where(
+                GameRosterEntry.game_id == game_id, GameRosterEntry.team_id == team_id
+            )
             .order_by(GameRosterEntry.jersey_number)
         )
         return list(self._db.scalars(stmt))
 
-    def _roster_entry(self, game_id: int, team_id: int, jersey_number: int) -> GameRosterEntry | None:
+    def _roster_entry(
+        self, game_id: int, team_id: int, jersey_number: int
+    ) -> GameRosterEntry | None:
         stmt = select(GameRosterEntry).where(
             GameRosterEntry.game_id == game_id,
             GameRosterEntry.team_id == team_id,

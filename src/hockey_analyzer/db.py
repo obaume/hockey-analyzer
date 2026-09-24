@@ -9,11 +9,15 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from hockey_analyzer.domain import game_activity  # noqa: F401 -- import is for its `before_flush` registration side effect, not its names
+from hockey_analyzer.domain import (
+    game_activity,  # noqa: F401 -- import is for its `before_flush` registration side effect, not its names
+)
 from hockey_analyzer.domain.models import Base
 
 
-def create_sqlite_engine(path: str | Path | None = None, *, echo: bool = False) -> Engine:
+def create_sqlite_engine(
+    path: str | Path | None = None, *, echo: bool = False
+) -> Engine:
     """An engine backed by a temp/real file at `path`, or a shared
     in-memory database when `path` is omitted."""
     if path is None:

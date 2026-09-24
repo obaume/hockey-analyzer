@@ -16,7 +16,7 @@ registration side effect (see its own comment).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import event
 from sqlalchemy.orm import Session
@@ -36,7 +36,7 @@ def _next_touch_timestamp() -> datetime:
     ordering fall back on arbitrary tie-breaking instead of "whichever
     actually happened more recently"."""
     global _last_touch
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if _last_touch is not None and now <= _last_touch:
         now = _last_touch + timedelta(microseconds=1)
     _last_touch = now

@@ -17,8 +17,13 @@ def key_string(
 
 def key_string_from_event(event: QKeyEvent) -> str:
     modifiers = event.modifiers()
-    if Qt.KeyboardModifier.ControlModifier in modifiers and Qt.KeyboardModifier.AltModifier in modifiers:
-        modifiers &= ~(Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+    if (
+        Qt.KeyboardModifier.ControlModifier in modifiers
+        and Qt.KeyboardModifier.AltModifier in modifiers
+    ):
+        modifiers &= ~(
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        )
     return _combination_string(QKeyCombination(modifiers, Qt.Key(event.key())))
 
 

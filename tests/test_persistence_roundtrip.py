@@ -6,7 +6,13 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from hockey_analyzer.domain.enums import Handedness, Position, UnitType
-from hockey_analyzer.domain.models import Game, GameRosterEntry, GameUnitAssignment, Player, Team
+from hockey_analyzer.domain.models import (
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+    Player,
+    Team,
+)
 
 
 def test_team_round_trip(session):
@@ -31,7 +37,9 @@ def test_team_is_user_team_not_a_singleton(session):
 
 
 def test_player_round_trip(session):
-    player = Player(full_name="Alex Rivera", handedness=Handedness.LEFT, position=Position.CENTER)
+    player = Player(
+        full_name="Alex Rivera", handedness=Handedness.LEFT, position=Position.CENTER
+    )
     session.add(player)
     session.commit()
 
@@ -59,7 +67,11 @@ def test_game_round_trip_with_scores_and_period_scores(session):
         venue="Community Rink",
         home_score=4,
         away_score=2,
-        period_scores=[{"home": 1, "away": 0}, {"home": 2, "away": 1}, {"home": 1, "away": 1}],
+        period_scores=[
+            {"home": 1, "away": 0},
+            {"home": 2, "away": 1},
+            {"home": 1, "away": 1},
+        ],
     )
     session.add(game)
     session.commit()
@@ -144,31 +156,51 @@ def test_game_roster_entry_round_trip(session, game_and_teams):
     assert fetched.team_id == team.id
 
 
-def test_game_roster_entry_jersey_number_unique_within_game_and_team(session, game_and_teams):
+def test_game_roster_entry_jersey_number_unique_within_game_and_team(
+    session, game_and_teams
+):
     game, team, _ = game_and_teams
     player_a = Player(full_name="Jordan Kim")
     player_b = Player(full_name="Casey Nguyen")
     session.add_all([player_a, player_b])
     session.flush()
 
-    session.add(GameRosterEntry(game_id=game.id, player_id=player_a.id, team_id=team.id, jersey_number=14))
+    session.add(
+        GameRosterEntry(
+            game_id=game.id, player_id=player_a.id, team_id=team.id, jersey_number=14
+        )
+    )
     session.commit()
 
-    session.add(GameRosterEntry(game_id=game.id, player_id=player_b.id, team_id=team.id, jersey_number=14))
+    session.add(
+        GameRosterEntry(
+            game_id=game.id, player_id=player_b.id, team_id=team.id, jersey_number=14
+        )
+    )
     with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
 
 
-def test_game_roster_entry_same_jersey_number_allowed_across_teams(session, game_and_teams):
+def test_game_roster_entry_same_jersey_number_allowed_across_teams(
+    session, game_and_teams
+):
     game, team_a, team_b = game_and_teams
     player_a = Player(full_name="Jordan Kim")
     player_b = Player(full_name="Casey Nguyen")
     session.add_all([player_a, player_b])
     session.flush()
 
-    session.add(GameRosterEntry(game_id=game.id, player_id=player_a.id, team_id=team_a.id, jersey_number=14))
-    session.add(GameRosterEntry(game_id=game.id, player_id=player_b.id, team_id=team_b.id, jersey_number=14))
+    session.add(
+        GameRosterEntry(
+            game_id=game.id, player_id=player_a.id, team_id=team_a.id, jersey_number=14
+        )
+    )
+    session.add(
+        GameRosterEntry(
+            game_id=game.id, player_id=player_b.id, team_id=team_b.id, jersey_number=14
+        )
+    )
     session.commit()  # no error
 
 
@@ -201,18 +233,28 @@ def test_player_can_hold_several_simultaneous_unit_assignments(session, game_and
 
     session.add(
         GameUnitAssignment(
-            game_id=game.id, player_id=player.id, team_id=team.id, unit_type=UnitType.FORWARD_LINE, unit_number=1
+            game_id=game.id,
+            player_id=player.id,
+            team_id=team.id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=1,
         )
     )
     session.add(
         GameUnitAssignment(
-            game_id=game.id, player_id=player.id, team_id=team.id, unit_type=UnitType.POWER_PLAY, unit_number=1
+            game_id=game.id,
+            player_id=player.id,
+            team_id=team.id,
+            unit_type=UnitType.POWER_PLAY,
+            unit_number=1,
         )
     )
     session.commit()  # no error: different unit_type
 
 
-def test_game_unit_assignment_unique_within_game_player_and_unit_type(session, game_and_teams):
+def test_game_unit_assignment_unique_within_game_player_and_unit_type(
+    session, game_and_teams
+):
     game, team, _ = game_and_teams
     player = Player(full_name="Jordan Kim")
     session.add(player)
@@ -220,14 +262,22 @@ def test_game_unit_assignment_unique_within_game_player_and_unit_type(session, g
 
     session.add(
         GameUnitAssignment(
-            game_id=game.id, player_id=player.id, team_id=team.id, unit_type=UnitType.FORWARD_LINE, unit_number=1
+            game_id=game.id,
+            player_id=player.id,
+            team_id=team.id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=1,
         )
     )
     session.commit()
 
     session.add(
         GameUnitAssignment(
-            game_id=game.id, player_id=player.id, team_id=team.id, unit_type=UnitType.FORWARD_LINE, unit_number=2
+            game_id=game.id,
+            player_id=player.id,
+            team_id=team.id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=2,
         )
     )
     with pytest.raises(IntegrityError):

@@ -65,9 +65,13 @@ def test_rink_type_combo_defaults_to_iihf(qtbot, game_setup_service):
     assert dialog.rink_type is RinkType.IIHF
 
 
-def test_new_game_button_creates_a_game_with_the_selected_rink_type(qtbot, game_setup_service, session):
+def test_new_game_button_creates_a_game_with_the_selected_rink_type(
+    qtbot, game_setup_service, session
+):
     dialog = _make_dialog(qtbot, game_setup_service)
-    dialog.rink_type_combo.setCurrentIndex(dialog.rink_type_combo.findData(RinkType.NHL.value))
+    dialog.rink_type_combo.setCurrentIndex(
+        dialog.rink_type_combo.findData(RinkType.NHL.value)
+    )
 
     _create_game(qtbot, dialog)
 
@@ -96,7 +100,9 @@ def test_creating_a_team_selects_it_in_the_combo(qtbot, game_setup_service):
     assert dialog.home_panel.team_id is not None
 
 
-def test_an_existing_team_can_be_selected_without_creating_a_new_one(qtbot, game_setup_service):
+def test_an_existing_team_can_be_selected_without_creating_a_new_one(
+    qtbot, game_setup_service
+):
     existing = game_setup_service.create_team("Rivals")
     dialog = _make_dialog(qtbot, game_setup_service)
     _create_game(qtbot, dialog)
@@ -115,7 +121,9 @@ def test_a_new_team_can_be_flagged_as_the_users_own(qtbot, game_setup_service):
     panel.is_user_team_checkbox.setChecked(True)
     qtbot.mouseClick(panel.create_team_button, Qt.MouseButton.LeftButton)
 
-    team = next(team for team in game_setup_service.list_teams() if team.id == panel.team_id)
+    team = next(
+        team for team in game_setup_service.list_teams() if team.id == panel.team_id
+    )
     assert team.is_user_team is True
 
 
@@ -125,11 +133,17 @@ def test_a_new_team_defaults_to_not_the_users_own(qtbot, game_setup_service):
 
     _create_team(qtbot, dialog.home_panel, "Icebreakers")
 
-    team = next(team for team in game_setup_service.list_teams() if team.id == dialog.home_panel.team_id)
+    team = next(
+        team
+        for team in game_setup_service.list_teams()
+        if team.id == dialog.home_panel.team_id
+    )
     assert team.is_user_team is False
 
 
-def test_the_is_user_team_checkbox_resets_after_creating_a_team(qtbot, game_setup_service):
+def test_the_is_user_team_checkbox_resets_after_creating_a_team(
+    qtbot, game_setup_service
+):
     dialog = _make_dialog(qtbot, game_setup_service)
     _create_game(qtbot, dialog)
     panel = dialog.home_panel
@@ -193,7 +207,13 @@ def test_position_can_be_set_at_creation(qtbot, game_setup_service):
     _create_game(qtbot, dialog)
     _create_team(qtbot, dialog.home_panel, "Icebreakers")
 
-    _add_new_player(qtbot, dialog.home_panel, jersey_number=31, full_name="Sam Lee", position=Position.GOALIE)
+    _add_new_player(
+        qtbot,
+        dialog.home_panel,
+        jersey_number=31,
+        full_name="Sam Lee",
+        position=Position.GOALIE,
+    )
 
     roster = game_setup_service.list_roster(dialog.game_id, dialog.home_panel.team_id)
     assert roster[0].player.position is Position.GOALIE
@@ -210,13 +230,17 @@ def test_roster_entry_works_identically_on_the_away_side(qtbot, game_setup_servi
     assert roster[0].player.full_name == "Away Player"
 
 
-def test_duplicate_jersey_number_shows_an_error_and_does_not_add_a_row(qtbot, game_setup_service):
+def test_duplicate_jersey_number_shows_an_error_and_does_not_add_a_row(
+    qtbot, game_setup_service
+):
     dialog = _make_dialog(qtbot, game_setup_service)
     _create_game(qtbot, dialog)
     _create_team(qtbot, dialog.home_panel, "Icebreakers")
     _add_new_player(qtbot, dialog.home_panel, jersey_number=14, full_name="Jordan Kim")
 
-    _add_new_player(qtbot, dialog.home_panel, jersey_number=14, full_name="Casey Nguyen")
+    _add_new_player(
+        qtbot, dialog.home_panel, jersey_number=14, full_name="Casey Nguyen"
+    )
 
     panel = dialog.home_panel
     assert panel.error_label.text() != ""
@@ -282,7 +306,10 @@ def test_selecting_a_home_team_persists_it_on_the_game(qtbot, game_setup_service
 
     _create_team(qtbot, dialog.home_panel, "Icebreakers")
 
-    assert game_setup_service.get_game(dialog.game_id).home_team_id == dialog.home_panel.team_id
+    assert (
+        game_setup_service.get_game(dialog.game_id).home_team_id
+        == dialog.home_panel.team_id
+    )
 
 
 def test_selecting_an_away_team_persists_it_on_the_game(qtbot, game_setup_service):
@@ -291,7 +318,10 @@ def test_selecting_an_away_team_persists_it_on_the_game(qtbot, game_setup_servic
 
     _create_team(qtbot, dialog.away_panel, "Rivals")
 
-    assert game_setup_service.get_game(dialog.game_id).away_team_id == dialog.away_panel.team_id
+    assert (
+        game_setup_service.get_game(dialog.game_id).away_team_id
+        == dialog.away_panel.team_id
+    )
 
 
 def test_picking_the_same_team_on_both_sides_shows_an_error(qtbot, game_setup_service):
@@ -317,7 +347,9 @@ def test_position_can_be_set_after_creation(qtbot, game_setup_service):
     _add_new_player(qtbot, panel, jersey_number=14, full_name="Jordan Kim")
 
     panel.roster_table.selectRow(0)
-    panel.edit_position_combo.setCurrentIndex(panel.edit_position_combo.findData(Position.DEFENSE))
+    panel.edit_position_combo.setCurrentIndex(
+        panel.edit_position_combo.findData(Position.DEFENSE)
+    )
     qtbot.mouseClick(panel.edit_save_button, Qt.MouseButton.LeftButton)
 
     roster = game_setup_service.list_roster(dialog.game_id, panel.team_id)

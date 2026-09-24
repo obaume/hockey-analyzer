@@ -6,7 +6,11 @@ from PySide6.QtCore import Qt as QtCore
 from PySide6.QtWidgets import QDialog
 
 from hockey_analyzer.domain.enums import RinkType, ShotOutcome, ShotType
-from hockey_analyzer.ui.rink_view import RinkClickDialog, RinkDiagramWidget, ShotAttemptCaptureDialog
+from hockey_analyzer.ui.rink_view import (
+    RinkClickDialog,
+    RinkDiagramWidget,
+    ShotAttemptCaptureDialog,
+)
 
 
 def _make_widget(qtbot, rink_type=RinkType.IIHF, width=400, height=200):
@@ -62,7 +66,11 @@ def test_click_near_right_edge_maps_to_positive_x(qtbot):
     widget = _make_widget(qtbot)
 
     with qtbot.waitSignal(widget.location_clicked) as blocker:
-        qtbot.mouseClick(widget, QtCore.MouseButton.LeftButton, pos=QPoint(widget.width() - 5, widget.height() // 2))
+        qtbot.mouseClick(
+            widget,
+            QtCore.MouseButton.LeftButton,
+            pos=QPoint(widget.width() - 5, widget.height() // 2),
+        )
 
     x, _ = blocker.args
     assert x > 50.0
@@ -92,7 +100,9 @@ def test_rink_click_dialog_accepts_itself_on_click(qtbot):
     dialog.show()
     qtbot.waitExposed(dialog)
 
-    qtbot.mouseClick(dialog.rink, QtCore.MouseButton.LeftButton, pos=_center(dialog.rink))
+    qtbot.mouseClick(
+        dialog.rink, QtCore.MouseButton.LeftButton, pos=_center(dialog.rink)
+    )
     # matplotlib schedules a deferred idle-redraw on click; let it fire
     # here, while the widget is still alive, rather than leaking into
     # whichever test runs next (a stray fired-late redraw referencing an
@@ -108,7 +118,9 @@ def test_rink_click_dialog_uses_the_passed_rink_type(qtbot):
     dialog = RinkClickDialog(RinkType.NHL)
     qtbot.addWidget(dialog)
 
-    assert dialog.rink._ax.get_xlim() != RinkClickDialog(RinkType.IIHF).rink._ax.get_xlim()
+    assert (
+        dialog.rink._ax.get_xlim() != RinkClickDialog(RinkType.IIHF).rink._ax.get_xlim()
+    )
 
 
 # -- ShotAttemptCaptureDialog: combined location + outcome/type -------------
@@ -134,7 +146,9 @@ def test_shot_attempt_capture_dialog_accepts_itself_on_click(qtbot):
     dialog.show()
     qtbot.waitExposed(dialog)
 
-    qtbot.mouseClick(dialog.rink, QtCore.MouseButton.LeftButton, pos=_center(dialog.rink))
+    qtbot.mouseClick(
+        dialog.rink, QtCore.MouseButton.LeftButton, pos=_center(dialog.rink)
+    )
     qtbot.wait(50)
 
     assert dialog.result() == QDialog.DialogCode.Accepted

@@ -5,7 +5,6 @@ from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QDialog
 
 from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
-from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.ui.keys import key_string
 from hockey_analyzer.ui.rink_view import RinkClickDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -20,13 +19,19 @@ class _FakeRinkClickDialog:
     seams. `accepted=False` simulates the tagger dismissing the dialog
     without clicking a location."""
 
-    def __init__(self, x: float = 40.0, y: float = 5.0, *, accepted: bool = True) -> None:
+    def __init__(
+        self, x: float = 40.0, y: float = 5.0, *, accepted: bool = True
+    ) -> None:
         self.x = x if accepted else None
         self.y = y if accepted else None
         self._accepted = accepted
 
     def exec(self) -> QDialog.DialogCode:
-        return QDialog.DialogCode.Accepted if self._accepted else QDialog.DialogCode.Rejected
+        return (
+            QDialog.DialogCode.Accepted
+            if self._accepted
+            else QDialog.DialogCode.Rejected
+        )
 
 
 class _FakeShotAttemptDialog(_FakeRinkClickDialog):
@@ -60,7 +65,8 @@ def _make_panel(
         shortcuts=shortcuts if shortcuts is not None else ShortcutRegistry(),
         pause=pause,
         rink_click_dialog_factory=rink_click_dialog_factory or _FakeRinkClickDialog,
-        shot_attempt_dialog_factory=shot_attempt_dialog_factory or _FakeShotAttemptDialog,
+        shot_attempt_dialog_factory=shot_attempt_dialog_factory
+        or _FakeShotAttemptDialog,
     )
     qtbot.addWidget(panel)
     # Shown so isVisible() (used to assert the edit panel appears/hides)
@@ -115,7 +121,9 @@ def test_each_event_type_has_a_working_log_button(qtbot, tagging_session):
     assert logged_types == set(panel.log_buttons.keys())
 
 
-def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(qtbot, tagging_session):
+def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(
+    qtbot, tagging_session
+):
     registry = ShortcutRegistry()
     panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
@@ -155,7 +163,9 @@ def test_logging_an_event_adds_a_row_to_the_table(qtbot, tagging_session):
 
 def test_selecting_a_row_reveals_the_edit_panel(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+    )
     assert panel.edit_group.isVisible() is False
 
     _select_row(panel, 0)
@@ -165,7 +175,9 @@ def test_selecting_a_row_reveals_the_edit_panel(qtbot, tagging_session):
 
 def test_editing_period_number_persists_through_the_session(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     panel.period_number_field.setValue(2)
@@ -189,7 +201,9 @@ def test_editing_strength_state_overrides_it(qtbot, tagging_session):
 
 def test_jersey_home_button_resolves_and_creates_roster_entry(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     panel.jersey_field.setText("14")
@@ -202,7 +216,9 @@ def test_jersey_home_button_resolves_and_creates_roster_entry(qtbot, tagging_ses
     assert event.shift_team_id == tagging_session.home_team_id
 
 
-def test_selecting_a_player_reference_row_auto_focuses_the_jersey_field(qtbot, tagging_session):
+def test_selecting_a_player_reference_row_auto_focuses_the_jersey_field(
+    qtbot, tagging_session
+):
     # Live-tag speed (ticket 08) needs the tagger's next keystrokes to
     # land in the jersey field immediately after selecting a row, with
     # no extra click required to reach it. focusWidget() (the widget that
@@ -210,7 +226,9 @@ def test_selecting_a_player_reference_row_auto_focuses_the_jersey_field(qtbot, t
     # which additionally requires the top-level window to be OS-active --
     # true for a real user, but not guaranteed in every test environment.
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
 
     _select_row(panel, 0)
 
@@ -219,7 +237,9 @@ def test_selecting_a_player_reference_row_auto_focuses_the_jersey_field(qtbot, t
 
 def test_jersey_field_h_key_resolves_against_home_team(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
     _focus_jersey_field(panel)
 
@@ -246,12 +266,16 @@ def test_jersey_field_a_key_resolves_against_away_team(qtbot, tagging_session):
     assert event.penalty_team_id == tagging_session.away_team_id
 
 
-def test_jersey_number_containing_1_through_5_does_not_trigger_event_type_hotkeys(qtbot, tagging_session):
+def test_jersey_number_containing_1_through_5_does_not_trigger_event_type_hotkeys(
+    qtbot, tagging_session
+):
     # Regression (ADR-0007): TAGGING_SCOPE's digit hotkeys (1-5) must be
     # suspended while the jersey field has focus, since jersey numbers
     # routinely contain those same digits (e.g. "14").
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
     _focus_jersey_field(panel)
 
@@ -261,7 +285,9 @@ def test_jersey_number_containing_1_through_5_does_not_trigger_event_type_hotkey
     assert len(tagging_session.list_events()) == 1
 
 
-def test_tagging_hotkeys_resume_once_the_jersey_field_loses_focus(qtbot, tagging_session):
+def test_tagging_hotkeys_resume_once_the_jersey_field_loses_focus(
+    qtbot, tagging_session
+):
     # dispatch() doesn't just check bindability, it *invokes* the bound
     # action -- so this test makes exactly one side-effecting dispatch
     # call. (Dispatching "1" while still focused would log a PERIOD_START,
@@ -270,7 +296,9 @@ def test_tagging_hotkeys_resume_once_the_jersey_field_loses_focus(qtbot, tagging
     # is checking.)
     registry = ShortcutRegistry()
     panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
     _focus_jersey_field(panel)  # suspends TAGGING_SCOPE
 
@@ -280,10 +308,14 @@ def test_tagging_hotkeys_resume_once_the_jersey_field_loses_focus(qtbot, tagging
     assert len(tagging_session.list_events()) == 2
 
 
-def test_jersey_entry_hotkeys_are_suspended_once_the_field_loses_focus(qtbot, tagging_session):
+def test_jersey_entry_hotkeys_are_suspended_once_the_field_loses_focus(
+    qtbot, tagging_session
+):
     registry = ShortcutRegistry()
     panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
     _focus_jersey_field(panel)
 
@@ -292,20 +324,26 @@ def test_jersey_entry_hotkeys_are_suspended_once_the_field_loses_focus(qtbot, ta
     assert registry.dispatch(key_string(Qt.Key.Key_H)) is False
 
 
-def test_jersey_entry_scope_is_suspended_until_the_field_has_focus(qtbot, tagging_session):
+def test_jersey_entry_scope_is_suspended_until_the_field_has_focus(
+    qtbot, tagging_session
+):
     registry = ShortcutRegistry()
     _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     assert registry.dispatch(key_string(Qt.Key.Key_H)) is False
 
 
-def test_unknown_checkbox_starts_unchecked_even_though_a_fresh_stub_is_unknown(qtbot, tagging_session):
+def test_unknown_checkbox_starts_unchecked_even_though_a_fresh_stub_is_unknown(
+    qtbot, tagging_session
+):
     # Regression: a freshly-logged event defaults its player reference to
     # explicit unknown (see TaggingSession.log_event), so the checkbox
     # must NOT mirror that on selection -- otherwise typing a jersey
     # number and pressing Home/Away would silently be ignored.
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     assert panel.unknown_checkbox.isChecked() is False
@@ -325,7 +363,9 @@ def test_unknown_checkbox_marks_the_player_reference_unknown(qtbot, tagging_sess
     assert event.penalty_player_id is None
 
 
-def test_delete_button_removes_the_event_and_hides_the_edit_panel(qtbot, tagging_session):
+def test_delete_button_removes_the_event_and_hides_the_edit_panel(
+    qtbot, tagging_session
+):
     panel = _make_panel(qtbot, tagging_session)
     qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
     _select_row(panel, 0)
@@ -350,7 +390,9 @@ def test_field_visibility_matches_event_type(qtbot, tagging_session):
 
 def test_field_visibility_for_shift_change(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     assert panel.edit_form.isRowVisible(panel.player_reference_row) is True
@@ -364,14 +406,16 @@ def test_selecting_a_row_does_not_write_any_field_by_itself(qtbot, tagging_sessi
     # effect of merely selecting a row (QCheckBox.toggled, unlike the
     # other fields' editingFinished, fires on a programmatic set too).
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
     event_id = tagging_session.list_events()[0].id
     tagging_session.update_event(event_id, shift_on_ice=True)
 
     calls = []
     original_update_event = tagging_session.update_event
-    tagging_session.update_event = lambda *args, **kwargs: calls.append((args, kwargs)) or original_update_event(
-        *args, **kwargs
+    tagging_session.update_event = lambda *args, **kwargs: (
+        calls.append((args, kwargs)) or original_update_event(*args, **kwargs)
     )
 
     _select_row(panel, 0)
@@ -385,7 +429,9 @@ def test_event_log_stays_ordered_by_video_timestamp_after_edits(qtbot, tagging_s
     qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
 
     panel._current_position_ms = lambda: 100
-    qtbot.mouseClick(panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+    )
 
     assert panel.event_table.item(0, 1).text() == "Period Start"
     assert panel.event_table.item(1, 1).text() == "Stoppage"
@@ -394,7 +440,9 @@ def test_event_log_stays_ordered_by_video_timestamp_after_edits(qtbot, tagging_s
 # -- location-bearing capture: faceoff / shot_attempt (ticket 16) ---------
 
 
-def test_faceoff_button_pauses_playback_then_logs_the_clicked_location(qtbot, tagging_session):
+def test_faceoff_button_pauses_playback_then_logs_the_clicked_location(
+    qtbot, tagging_session
+):
     pause_calls = []
     panel = _make_panel(
         qtbot,
@@ -415,7 +463,9 @@ def test_faceoff_button_pauses_playback_then_logs_the_clicked_location(qtbot, ta
     assert events[0].faceoff_y == -5.0
 
 
-def test_shot_attempt_button_pauses_playback_and_captures_location_plus_outcome(qtbot, tagging_session):
+def test_shot_attempt_button_pauses_playback_and_captures_location_plus_outcome(
+    qtbot, tagging_session
+):
     pause_calls = []
     panel = _make_panel(
         qtbot,
@@ -426,7 +476,9 @@ def test_shot_attempt_button_pauses_playback_and_captures_location_plus_outcome(
         ),
     )
 
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
 
     assert pause_calls == [True]
     events = tagging_session.list_events()
@@ -464,7 +516,9 @@ def test_faceoff_pauses_even_with_no_pause_callable_injected(qtbot, tagging_sess
 
 def test_dismissing_the_rink_dialog_logs_no_event(qtbot, tagging_session):
     panel = _make_panel(
-        qtbot, tagging_session, rink_click_dialog_factory=lambda: _FakeRinkClickDialog(accepted=False)
+        qtbot,
+        tagging_session,
+        rink_click_dialog_factory=lambda: _FakeRinkClickDialog(accepted=False),
     )
 
     qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
@@ -474,10 +528,14 @@ def test_dismissing_the_rink_dialog_logs_no_event(qtbot, tagging_session):
 
 def test_dismissing_the_shot_attempt_dialog_logs_no_event(qtbot, tagging_session):
     panel = _make_panel(
-        qtbot, tagging_session, shot_attempt_dialog_factory=lambda: _FakeShotAttemptDialog(accepted=False)
+        qtbot,
+        tagging_session,
+        shot_attempt_dialog_factory=lambda: _FakeShotAttemptDialog(accepted=False),
     )
 
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
 
     assert tagging_session.list_events() == []
 
@@ -486,14 +544,18 @@ def test_faceoff_and_shot_attempt_appear_in_the_same_event_log(qtbot, tagging_se
     panel = _make_panel(qtbot, tagging_session)
 
     qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
 
     assert panel.event_table.rowCount() == 2
     labels = {panel.event_table.item(row, 1).text() for row in range(2)}
     assert labels == {"Faceoff", "Shot Attempt"}
 
 
-def test_default_rink_click_dialog_factory_uses_the_sessions_rink_type(qtbot, tagging_session, session, game_and_teams):
+def test_default_rink_click_dialog_factory_uses_the_sessions_rink_type(
+    qtbot, tagging_session, session, game_and_teams
+):
     # Every other test injects a fake dialog factory (a real one's exec()
     # blocks with nothing to click); this test exercises the panel's own
     # default factory instead, without ever calling exec(), to confirm it
@@ -501,20 +563,26 @@ def test_default_rink_click_dialog_factory_uses_the_sessions_rink_type(qtbot, ta
     game, _, _ = game_and_teams
     game.rink_type = RinkType.NHL
     session.commit()
-    panel = TaggingPanel(tagging_session, current_position_ms=lambda: 0, shortcuts=ShortcutRegistry())
+    panel = TaggingPanel(
+        tagging_session, current_position_ms=lambda: 0, shortcuts=ShortcutRegistry()
+    )
     qtbot.addWidget(panel)
 
     dialog = panel._rink_click_dialog_factory()
     qtbot.addWidget(dialog)
 
     assert isinstance(dialog, RinkClickDialog)
-    assert dialog.rink._ax.get_xlim() != RinkClickDialog(RinkType.IIHF).rink._ax.get_xlim()
+    assert (
+        dialog.rink._ax.get_xlim() != RinkClickDialog(RinkType.IIHF).rink._ax.get_xlim()
+    )
 
 
 # -- location-bearing inline edit: reference combo, outcome/type, context --
 
 
-def test_faceoff_reference_combo_lets_both_participants_be_resolved_independently(qtbot, tagging_session):
+def test_faceoff_reference_combo_lets_both_participants_be_resolved_independently(
+    qtbot, tagging_session
+):
     panel = _make_panel(qtbot, tagging_session)
     qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
     _select_row(panel, 0)
@@ -540,7 +608,9 @@ def test_faceoff_reference_combo_lets_both_participants_be_resolved_independentl
 
 def test_shot_attempt_reference_combo_defaults_to_shooter(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     assert panel.reference_combo.currentData() == "shooter"
@@ -556,7 +626,9 @@ def test_shot_attempt_reference_combo_defaults_to_shooter(qtbot, tagging_session
 
 def test_shot_attempt_reference_combo_can_set_an_assist(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     index = panel.reference_combo.findData("assist1")
@@ -570,7 +642,9 @@ def test_shot_attempt_reference_combo_can_set_an_assist(qtbot, tagging_session):
     assert event.assist1_id is not None
 
 
-def test_penalty_hides_the_reference_combo_since_it_has_only_one_reference(qtbot, tagging_session):
+def test_penalty_hides_the_reference_combo_since_it_has_only_one_reference(
+    qtbot, tagging_session
+):
     panel = _make_panel(qtbot, tagging_session)
     qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
     _select_row(panel, 0)
@@ -586,7 +660,9 @@ def test_shot_attempt_outcome_and_type_are_editable_inline(qtbot, tagging_sessio
             shot_outcome=ShotOutcome.SAVED, shot_type=ShotType.SLAP
         ),
     )
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     outcome_index = panel.outcome_combo.findData(ShotOutcome.GOAL.value)
@@ -602,7 +678,9 @@ def test_shot_attempt_outcome_and_type_are_editable_inline(qtbot, tagging_sessio
 
 def test_shot_context_checkboxes_are_editable_inline(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
     _select_row(panel, 0)
 
     panel.shot_context_checkboxes["shot_rush"].setChecked(True)
@@ -617,7 +695,11 @@ def test_shot_context_checkboxes_are_editable_inline(qtbot, tagging_session):
 
 
 def test_relocate_button_updates_the_stored_location(qtbot, tagging_session):
-    panel = _make_panel(qtbot, tagging_session, rink_click_dialog_factory=lambda: _FakeRinkClickDialog(x=1.0, y=1.0))
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        rink_click_dialog_factory=lambda: _FakeRinkClickDialog(x=1.0, y=1.0),
+    )
     qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
     _select_row(panel, 0)
 
@@ -652,7 +734,9 @@ def test_deleting_a_faceoff_removes_it_from_the_log(qtbot, tagging_session):
 # -- release_shortcuts: lets a replacement panel reuse the same registry ---
 
 
-def test_release_shortcuts_frees_every_key_this_panel_registered(qtbot, tagging_session):
+def test_release_shortcuts_frees_every_key_this_panel_registered(
+    qtbot, tagging_session
+):
     registry = ShortcutRegistry()
     panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
@@ -663,7 +747,9 @@ def test_release_shortcuts_frees_every_key_this_panel_registered(qtbot, tagging_
     assert registry.dispatch(key_string(Qt.Key.Key_H)) is False
 
 
-def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(qtbot, tagging_session):
+def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(
+    qtbot, tagging_session
+):
     # Regression: without release_shortcuts, a second TaggingPanel sharing
     # the same registry (e.g. MainWindow switching to a different Game)
     # would raise ShortcutConflictError on construction -- Qt's own

@@ -32,8 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import Position, Handedness, RinkType, Side
-from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, GameSetupService, SameTeamBothSidesError
+from hockey_analyzer.domain.enums import Handedness, Position, RinkType, Side
+from hockey_analyzer.domain.game_setup import (
+    DuplicateJerseyNumberError,
+    GameSetupService,
+    SameTeamBothSidesError,
+)
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
 # the full_name/position fields" rather than rostering an existing one.
@@ -47,7 +51,12 @@ class TeamRosterPanel(QWidget):
     or special-cases which side it is."""
 
     def __init__(
-        self, service: GameSetupService, side_label: str, side: Side, *, parent: QWidget | None = None
+        self,
+        service: GameSetupService,
+        side_label: str,
+        side: Side,
+        *,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
@@ -73,7 +82,9 @@ class TeamRosterPanel(QWidget):
         self.roster_table = QTableWidget(0, 3)
         self.roster_table.setHorizontalHeaderLabels(["#", "Name", "Position"])
         self.roster_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.roster_table.itemSelectionChanged.connect(self._on_roster_selection_changed)
+        self.roster_table.itemSelectionChanged.connect(
+            self._on_roster_selection_changed
+        )
 
         self.jersey_field = QLineEdit()
         self.jersey_field.setPlaceholderText("Jersey #")
@@ -85,7 +96,7 @@ class TeamRosterPanel(QWidget):
         self.full_name_field.setPlaceholderText("Full name (optional)")
 
         self.position_combo = _build_position_combo()
-        
+
         self.handedness_combo = _build_handedness_combo()
 
         self.add_player_button = QPushButton("Add to roster")
@@ -111,7 +122,7 @@ class TeamRosterPanel(QWidget):
         edit_form = QFormLayout()
         edit_form.addRow("Full name", self.edit_full_name_field)
         edit_form.addRow("Position", self.edit_position_combo)
-        edit_form.addRow("Handedness", self.edit_handedness_combo)        
+        edit_form.addRow("Handedness", self.edit_handedness_combo)
         edit_form.addRow("", self.edit_save_button)
         self.edit_group = QGroupBox("Selected player")
         self.edit_group.setLayout(edit_form)
@@ -149,7 +160,9 @@ class TeamRosterPanel(QWidget):
         name = self.new_team_name_field.text().strip()
         if not name:
             return
-        team = self._service.create_team(name, is_user_team=self.is_user_team_checkbox.isChecked())
+        team = self._service.create_team(
+            name, is_user_team=self.is_user_team_checkbox.isChecked()
+        )
         self.new_team_name_field.clear()
         self.is_user_team_checkbox.setChecked(False)
         self._refresh_team_combo()
@@ -182,7 +195,9 @@ class TeamRosterPanel(QWidget):
         self.player_combo.clear()
         self.player_combo.addItem("New player…", _NEW_PLAYER)
         for player in self._service.list_players():
-            self.player_combo.addItem(player.full_name or f"Player {player.id}", player.id)
+            self.player_combo.addItem(
+                player.full_name or f"Player {player.id}", player.id
+            )
         self.player_combo.blockSignals(False)
         self._on_player_choice_changed(self.player_combo.currentIndex())
 
@@ -243,9 +258,15 @@ class TeamRosterPanel(QWidget):
         for row, entry in enumerate(entries):
             self._roster_player_ids.append(entry.player_id)
             player = entry.player
-            self.roster_table.setItem(row, 0, QTableWidgetItem(str(entry.jersey_number)))
+            self.roster_table.setItem(
+                row, 0, QTableWidgetItem(str(entry.jersey_number))
+            )
             self.roster_table.setItem(row, 1, QTableWidgetItem(player.full_name or ""))
-            self.roster_table.setItem(row, 2, QTableWidgetItem(player.position.value if player.position else ""))
+            self.roster_table.setItem(
+                row,
+                2,
+                QTableWidgetItem(player.position.value if player.position else ""),
+            )
 
     def _on_roster_selection_changed(self) -> None:
         rows = self.roster_table.selectionModel().selectedRows()
@@ -258,7 +279,9 @@ class TeamRosterPanel(QWidget):
         self.edit_group.setVisible(True)
         self.edit_full_name_field.setText(player.full_name or "")
         self.edit_position_combo.setCurrentIndex(
-            self.edit_position_combo.findData(player.position) if player.position is not None else 0
+            self.edit_position_combo.findData(player.position)
+            if player.position is not None
+            else 0
         )
 
     def _save_selected_player(self) -> None:
@@ -266,8 +289,12 @@ class TeamRosterPanel(QWidget):
         if not rows:
             return
         player_id = self._roster_player_ids[rows[0].row()]
-        self._service.set_player_full_name(player_id, self.edit_full_name_field.text().strip() or None)
-        self._service.set_player_position(player_id, self.edit_position_combo.currentData())
+        self._service.set_player_full_name(
+            player_id, self.edit_full_name_field.text().strip() or None
+        )
+        self._service.set_player_position(
+            player_id, self.edit_position_combo.currentData()
+        )
         self._refresh_roster_table()
         self._refresh_player_combo()
 
@@ -279,6 +306,7 @@ def _build_position_combo() -> QComboBox:
         combo.addItem(position.value, position)
     return combo
 
+
 def _build_handedness_combo() -> QComboBox:
     combo = QComboBox()
     combo.addItem("", None)
@@ -288,7 +316,9 @@ def _build_handedness_combo() -> QComboBox:
 
 
 class GameSetupDialog(QDialog):
-    def __init__(self, service: GameSetupService, *, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, service: GameSetupService, *, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Game & Roster Setup")
         self._service = service

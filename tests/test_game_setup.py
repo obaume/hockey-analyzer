@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from hockey_analyzer.domain.enums import EventSource, Position, RinkType
-from hockey_analyzer.domain.game_setup import DuplicateJerseyNumberError, SameTeamBothSidesError
+from hockey_analyzer.domain.game_setup import (
+    DuplicateJerseyNumberError,
+    SameTeamBothSidesError,
+)
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Stoppage, Team
-
 
 # -- create_game: no pre-existing data required ---------------------------
 
@@ -39,7 +41,9 @@ def test_create_game_accepts_an_explicit_rink_type(game_setup_service):
     assert game.rink_type is RinkType.NHL
 
 
-def test_game_setup_service_has_no_way_to_change_rink_type_after_creation(game_setup_service):
+def test_game_setup_service_has_no_way_to_change_rink_type_after_creation(
+    game_setup_service,
+):
     # Immutable by design (see ADR-0008/CONTEXT.md's Rink type entry) --
     # there is deliberately no set_rink_type or equivalent update path.
     assert not hasattr(game_setup_service, "set_rink_type")
@@ -67,7 +71,9 @@ def test_create_team_can_be_flagged_as_the_users_own(game_setup_service):
     assert team.is_user_team is True
 
 
-def test_list_teams_includes_teams_created_outside_this_service(game_setup_service, session):
+def test_list_teams_includes_teams_created_outside_this_service(
+    game_setup_service, session
+):
     session.add(Team(name="Pre-existing"))
     session.commit()
 
@@ -91,7 +97,9 @@ def test_create_player_with_full_name(game_setup_service):
 
 
 def test_create_player_with_position(game_setup_service):
-    player = game_setup_service.create_player(full_name="Jordan Kim", position=Position.CENTER)
+    player = game_setup_service.create_player(
+        full_name="Jordan Kim", position=Position.CENTER
+    )
     assert player.position is Position.CENTER
 
 
@@ -110,7 +118,9 @@ def test_set_player_full_name_raises_for_a_missing_player(game_setup_service):
         game_setup_service.set_player_full_name(999999, "Nobody")
 
 
-def test_set_player_position_is_a_player_level_attribute_not_per_game(game_setup_service, session):
+def test_set_player_position_is_a_player_level_attribute_not_per_game(
+    game_setup_service, session
+):
     player = game_setup_service.create_player(full_name="Jordan Kim")
 
     updated = game_setup_service.set_player_position(player.id, Position.DEFENSE)
@@ -127,11 +137,15 @@ def test_set_player_position_raises_for_a_missing_player(game_setup_service):
 # -- roster entries: add a player to a team's roster for this game --------
 
 
-def test_add_roster_entry_creates_a_brand_new_player_on_the_spot(game_setup_service, session):
+def test_add_roster_entry_creates_a_brand_new_player_on_the_spot(
+    game_setup_service, session
+):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
 
-    entry = game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=14, full_name="Jordan Kim")
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=14, full_name="Jordan Kim"
+    )
 
     assert entry.id is not None
     assert entry.jersey_number == 14
@@ -142,11 +156,15 @@ def test_add_roster_entry_creates_a_brand_new_player_on_the_spot(game_setup_serv
     assert player.full_name == "Jordan Kim"
 
 
-def test_add_roster_entry_with_no_full_name_creates_a_nameless_player(game_setup_service):
+def test_add_roster_entry_with_no_full_name_creates_a_nameless_player(
+    game_setup_service,
+):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
 
-    entry = game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=14)
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=14
+    )
 
     assert entry.player.full_name is None
 
@@ -156,7 +174,11 @@ def test_add_roster_entry_with_position_sets_it_on_the_new_player(game_setup_ser
     team = game_setup_service.create_team("Icebreakers")
 
     entry = game_setup_service.add_roster_entry(
-        game_id=game.id, team_id=team.id, jersey_number=14, full_name="Jordan Kim", position=Position.LEFT_WING
+        game_id=game.id,
+        team_id=team.id,
+        jersey_number=14,
+        full_name="Jordan Kim",
+        position=Position.LEFT_WING,
     )
 
     assert entry.player.position is Position.LEFT_WING
@@ -167,67 +189,103 @@ def test_add_roster_entry_can_roster_an_existing_player(game_setup_service):
     team = game_setup_service.create_team("Icebreakers")
     player = game_setup_service.create_player(full_name="Jordan Kim")
 
-    entry = game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=14, player_id=player.id)
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=14, player_id=player.id
+    )
 
     assert entry.player_id == player.id
 
 
-def test_add_roster_entry_rejects_full_name_when_rostering_an_existing_player(game_setup_service):
+def test_add_roster_entry_rejects_full_name_when_rostering_an_existing_player(
+    game_setup_service,
+):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
     player = game_setup_service.create_player(full_name="Jordan Kim")
 
     with pytest.raises(ValueError):
         game_setup_service.add_roster_entry(
-            game_id=game.id, team_id=team.id, jersey_number=14, player_id=player.id, full_name="Someone Else"
+            game_id=game.id,
+            team_id=team.id,
+            jersey_number=14,
+            player_id=player.id,
+            full_name="Someone Else",
         )
 
 
-def test_add_roster_entry_rejects_position_when_rostering_an_existing_player(game_setup_service):
+def test_add_roster_entry_rejects_position_when_rostering_an_existing_player(
+    game_setup_service,
+):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
     player = game_setup_service.create_player(full_name="Jordan Kim")
 
     with pytest.raises(ValueError):
         game_setup_service.add_roster_entry(
-            game_id=game.id, team_id=team.id, jersey_number=14, player_id=player.id, position=Position.CENTER
+            game_id=game.id,
+            team_id=team.id,
+            jersey_number=14,
+            player_id=player.id,
+            position=Position.CENTER,
         )
 
 
-def test_add_roster_entry_works_identically_for_either_side_of_the_game(game_setup_service):
+def test_add_roster_entry_works_identically_for_either_side_of_the_game(
+    game_setup_service,
+):
     # No special-cased "opponent" path -- the same method, with the same
     # arguments, rosters a player for either team.
     game = game_setup_service.create_game()
     home = game_setup_service.create_team("Icebreakers", is_user_team=True)
     away = game_setup_service.create_team("Rivals")
 
-    home_entry = game_setup_service.add_roster_entry(game_id=game.id, team_id=home.id, jersey_number=9, full_name="Home Player")
-    away_entry = game_setup_service.add_roster_entry(game_id=game.id, team_id=away.id, jersey_number=9, full_name="Away Player")
+    home_entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=9, full_name="Home Player"
+    )
+    away_entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=away.id, jersey_number=9, full_name="Away Player"
+    )
 
     assert home_entry.team_id == home.id
     assert away_entry.team_id == away.id
 
 
-def test_add_roster_entry_rejects_a_duplicate_jersey_number_on_the_same_team(game_setup_service, session):
+def test_add_roster_entry_rejects_a_duplicate_jersey_number_on_the_same_team(
+    game_setup_service, session
+):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
-    game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=14, full_name="Jordan Kim")
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=14, full_name="Jordan Kim"
+    )
 
     with pytest.raises(DuplicateJerseyNumberError):
-        game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=14, full_name="Casey Nguyen")
+        game_setup_service.add_roster_entry(
+            game_id=game.id, team_id=team.id, jersey_number=14, full_name="Casey Nguyen"
+        )
 
     # Rejected outright -- no orphan roster entry or duplicate row leaks in.
-    entries = session.query(GameRosterEntry).filter_by(game_id=game.id, team_id=team.id, jersey_number=14).all()
+    entries = (
+        session.query(GameRosterEntry)
+        .filter_by(game_id=game.id, team_id=team.id, jersey_number=14)
+        .all()
+    )
     assert len(entries) == 1
 
 
-def test_add_roster_entry_allows_the_same_jersey_number_on_different_teams(game_setup_service):
+def test_add_roster_entry_allows_the_same_jersey_number_on_different_teams(
+    game_setup_service,
+):
     game = game_setup_service.create_game()
     home = game_setup_service.create_team("Icebreakers")
     away = game_setup_service.create_team("Rivals")
-    game_setup_service.add_roster_entry(game_id=game.id, team_id=home.id, jersey_number=14, full_name="Home Player")
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14, full_name="Home Player"
+    )
 
-    entry = game_setup_service.add_roster_entry(game_id=game.id, team_id=away.id, jersey_number=14, full_name="Away Player")
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=away.id, jersey_number=14, full_name="Away Player"
+    )
 
     assert entry.jersey_number == 14
 
@@ -237,9 +295,18 @@ def test_list_roster_returns_only_this_games_this_teams_entries(game_setup_servi
     other_game = game_setup_service.create_game()
     home = game_setup_service.create_team("Icebreakers")
     away = game_setup_service.create_team("Rivals")
-    game_setup_service.add_roster_entry(game_id=game.id, team_id=home.id, jersey_number=9, full_name="Home Player")
-    game_setup_service.add_roster_entry(game_id=game.id, team_id=away.id, jersey_number=10, full_name="Away Player")
-    game_setup_service.add_roster_entry(game_id=other_game.id, team_id=home.id, jersey_number=9, full_name="Other Game Player")
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=9, full_name="Home Player"
+    )
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=away.id, jersey_number=10, full_name="Away Player"
+    )
+    game_setup_service.add_roster_entry(
+        game_id=other_game.id,
+        team_id=home.id,
+        jersey_number=9,
+        full_name="Other Game Player",
+    )
 
     roster = game_setup_service.list_roster(game.id, home.id)
 
@@ -249,8 +316,12 @@ def test_list_roster_returns_only_this_games_this_teams_entries(game_setup_servi
 def test_list_roster_is_ordered_by_jersey_number(game_setup_service):
     game = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
-    game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=27, full_name="B")
-    game_setup_service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=4, full_name="A")
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=27, full_name="B"
+    )
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=4, full_name="A"
+    )
 
     roster = game_setup_service.list_roster(game.id, team.id)
 
@@ -347,17 +418,27 @@ def test_list_games_orders_by_most_recently_updated_first(game_setup_service):
     assert [game.id for game in game_setup_service.list_games()] == [newer.id, older.id]
 
 
-def test_list_games_ordering_bumps_on_roster_activity_not_just_game_row_edits(game_setup_service):
+def test_list_games_ordering_bumps_on_roster_activity_not_just_game_row_edits(
+    game_setup_service,
+):
     first = game_setup_service.create_game()
     second = game_setup_service.create_game()
     team = game_setup_service.create_team("Icebreakers")
-    assert [game.id for game in game_setup_service.list_games()] == [second.id, first.id]
+    assert [game.id for game in game_setup_service.list_games()] == [
+        second.id,
+        first.id,
+    ]
 
     # Touching the older game (roster activity, not a Game-row edit) should
     # bump it back to the top.
-    game_setup_service.add_roster_entry(game_id=first.id, team_id=team.id, jersey_number=9, full_name="Player")
+    game_setup_service.add_roster_entry(
+        game_id=first.id, team_id=team.id, jersey_number=9, full_name="Player"
+    )
 
-    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
+    assert [game.id for game in game_setup_service.list_games()] == [
+        first.id,
+        second.id,
+    ]
 
 
 def test_list_games_ordering_bumps_on_event_activity(game_setup_service, session):
@@ -365,26 +446,45 @@ def test_list_games_ordering_bumps_on_event_activity(game_setup_service, session
     second = game_setup_service.create_game()
 
     session.add(
-        Stoppage(game_id=first.id, video_timestamp=1000, source=EventSource.MANUAL, confirmed=False)
+        Stoppage(
+            game_id=first.id,
+            video_timestamp=1000,
+            source=EventSource.MANUAL,
+            confirmed=False,
+        )
     )
     session.commit()
 
-    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
+    assert [game.id for game in game_setup_service.list_games()] == [
+        first.id,
+        second.id,
+    ]
 
 
 def test_list_games_ordering_bumps_on_event_deletion_too(game_setup_service, session):
     first = game_setup_service.create_game()
     second = game_setup_service.create_game()
-    stoppage = Stoppage(game_id=first.id, video_timestamp=1000, source=EventSource.MANUAL, confirmed=False)
+    stoppage = Stoppage(
+        game_id=first.id,
+        video_timestamp=1000,
+        source=EventSource.MANUAL,
+        confirmed=False,
+    )
     session.add(stoppage)
     session.commit()
     # Touch `second` more recently than the stoppage tagged against `first` above.
     game_setup_service.set_video_path(second.id, "C:/clips/second.mp4")
-    assert [game.id for game in game_setup_service.list_games()] == [second.id, first.id]
+    assert [game.id for game in game_setup_service.list_games()] == [
+        second.id,
+        first.id,
+    ]
 
     # Deleting an event is still "activity" on its game -- should bump
     # `first` back above `second`, which hasn't been touched since.
     session.delete(stoppage)
     session.commit()
 
-    assert [game.id for game in game_setup_service.list_games()] == [first.id, second.id]
+    assert [game.id for game in game_setup_service.list_games()] == [
+        first.id,
+        second.id,
+    ]

@@ -34,7 +34,9 @@ def game_and_teams(session):
 @pytest.fixture
 def tagging_session(session, game_and_teams):
     game, team_a, team_b = game_and_teams
-    return TaggingSession(session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id)
+    return TaggingSession(
+        session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id
+    )
 
 
 @pytest.fixture

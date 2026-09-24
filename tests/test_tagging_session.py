@@ -4,7 +4,14 @@ import pytest
 
 from hockey_analyzer.db import create_sqlite_engine, init_db, make_session_factory
 from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
-from hockey_analyzer.domain.models import Event, Game, GameRosterEntry, Player, Stoppage, Team
+from hockey_analyzer.domain.models import (
+    Event,
+    Game,
+    GameRosterEntry,
+    Player,
+    Stoppage,
+    Team,
+)
 from hockey_analyzer.domain.rink import high_danger, zone
 from hockey_analyzer.domain.tagging_session import TaggingSession
 
@@ -34,7 +41,9 @@ def test_log_event_with_no_shift_data_leaves_strength_state_unset(tagging_sessio
     assert event.strength_state is None
 
 
-def test_log_event_explicit_strength_state_overrides_the_computed_default(tagging_session):
+def test_log_event_explicit_strength_state_overrides_the_computed_default(
+    tagging_session,
+):
     event = tagging_session.log_event(EventType.STOPPAGE, 612, strength_state="4v4")
     assert event.strength_state == "4v4"
 
@@ -118,8 +127,12 @@ def test_list_events_only_returns_this_games_events(session, game_and_teams):
     session.add(other_game)
     session.flush()
 
-    this_session = TaggingSession(session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id)
-    other_session = TaggingSession(session, game_id=other_game.id, home_team_id=team_a.id, away_team_id=team_b.id)
+    this_session = TaggingSession(
+        session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id
+    )
+    other_session = TaggingSession(
+        session, game_id=other_game.id, home_team_id=team_a.id, away_team_id=team_b.id
+    )
     this_session.log_event(EventType.STOPPAGE, 10)
     other_session.log_event(EventType.STOPPAGE, 20)
 
@@ -134,14 +147,20 @@ def test_rink_type_reflects_the_games_rink_type(session, game_and_teams):
     game.rink_type = RinkType.NHL
     session.commit()
 
-    tagging_session = TaggingSession(session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id)
+    tagging_session = TaggingSession(
+        session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id
+    )
 
     assert tagging_session.rink_type is RinkType.NHL
 
 
-def test_rink_type_defaults_to_iihf_for_a_game_created_via_game_setup_service(session, game_and_teams):
+def test_rink_type_defaults_to_iihf_for_a_game_created_via_game_setup_service(
+    session, game_and_teams
+):
     game, team_a, team_b = game_and_teams
-    tagging_session = TaggingSession(session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id)
+    tagging_session = TaggingSession(
+        session, game_id=game.id, home_team_id=team_a.id, away_team_id=team_b.id
+    )
 
     assert tagging_session.rink_type is RinkType.IIHF
 
@@ -155,18 +174,28 @@ def test_tagging_session_has_no_way_to_change_rink_type(tagging_session):
 # -- on-the-fly roster creation / player identification --------------------
 
 
-def test_set_player_reference_creates_a_player_and_roster_entry_on_the_fly(tagging_session, session):
+def test_set_player_reference_creates_a_player_and_roster_entry_on_the_fly(
+    tagging_session, session
+):
     event = tagging_session.log_event(EventType.SHIFT_CHANGE, 100)
 
-    updated = tagging_session.set_player_reference(event.id, "home", jersey_number=14, full_name="Jordan Kim")
+    updated = tagging_session.set_player_reference(
+        event.id, "home", jersey_number=14, full_name="Jordan Kim"
+    )
 
     assert updated.shift_player_unknown is False
     assert updated.shift_player_id is not None
     player = session.get(Player, updated.shift_player_id)
     assert player.full_name == "Jordan Kim"
-    entry = session.query(GameRosterEntry).filter_by(
-        game_id=tagging_session.game_id, team_id=tagging_session.home_team_id, jersey_number=14
-    ).one()
+    entry = (
+        session.query(GameRosterEntry)
+        .filter_by(
+            game_id=tagging_session.game_id,
+            team_id=tagging_session.home_team_id,
+            jersey_number=14,
+        )
+        .one()
+    )
     assert entry.player_id == player.id
 
 
@@ -237,7 +266,9 @@ def test_set_player_reference_rejects_an_invalid_team_side(tagging_session):
         tagging_session.set_player_reference(event.id, "visitors", jersey_number=9)
 
 
-def test_set_player_reference_rejects_event_types_with_no_player_reference(tagging_session):
+def test_set_player_reference_rejects_event_types_with_no_player_reference(
+    tagging_session,
+):
     event = tagging_session.log_event(EventType.STOPPAGE, 400)
 
     with pytest.raises(ValueError):
@@ -245,7 +276,9 @@ def test_set_player_reference_rejects_event_types_with_no_player_reference(taggi
 
 
 def test_resolve_or_create_roster_entry_is_directly_usable(tagging_session, session):
-    entry = tagging_session.resolve_or_create_roster_entry(tagging_session.home_team_id, 88)
+    entry = tagging_session.resolve_or_create_roster_entry(
+        tagging_session.home_team_id, 88
+    )
 
     assert entry.jersey_number == 88
     assert session.get(Player, entry.player_id) is not None
@@ -258,12 +291,16 @@ def test_infer_strength_state_reflects_on_ice_counts_so_far(tagging_session):
     home_players = [(f"H{i}", i) for i in range(5)]
     away_players = [(f"A{i}", i) for i in range(4)]
     for name, jersey in home_players:
-        entry = tagging_session.resolve_or_create_roster_entry(tagging_session.home_team_id, jersey, full_name=name)
+        entry = tagging_session.resolve_or_create_roster_entry(
+            tagging_session.home_team_id, jersey, full_name=name
+        )
         on = tagging_session.log_event(EventType.SHIFT_CHANGE, 10)
         tagging_session.set_player_reference(on.id, "home", jersey_number=jersey)
         tagging_session.update_event(on.id, shift_on_ice=True)
     for name, jersey in away_players:
-        entry = tagging_session.resolve_or_create_roster_entry(tagging_session.away_team_id, jersey, full_name=name)
+        entry = tagging_session.resolve_or_create_roster_entry(
+            tagging_session.away_team_id, jersey, full_name=name
+        )
         on = tagging_session.log_event(EventType.SHIFT_CHANGE, 10)
         tagging_session.set_player_reference(on.id, "away", jersey_number=jersey)
         tagging_session.update_event(on.id, shift_on_ice=True)
@@ -330,8 +367,12 @@ def test_describe_event_reports_missing_fields_without_raising(tagging_session):
 
 def test_describe_event_includes_jersey_and_team_once_resolved(tagging_session):
     penalty = tagging_session.log_event(EventType.PENALTY, 400)
-    tagging_session.set_player_reference(penalty.id, "home", jersey_number=14, full_name="Jordan Kim")
-    tagging_session.update_event(penalty.id, penalty_infraction="tripping", penalty_duration_minutes=2.0)
+    tagging_session.set_player_reference(
+        penalty.id, "home", jersey_number=14, full_name="Jordan Kim"
+    )
+    tagging_session.update_event(
+        penalty.id, penalty_infraction="tripping", penalty_duration_minutes=2.0
+    )
 
     description = tagging_session.describe_event(penalty)
 
@@ -362,9 +403,14 @@ def test_log_event_faceoff_defaults_both_participants_to_unknown(tagging_session
     assert faceoff.faceoff_participant_b_unknown is True
 
 
-def test_log_event_shot_attempt_defaults_shooter_to_unknown_but_not_assists(tagging_session):
+def test_log_event_shot_attempt_defaults_shooter_to_unknown_but_not_assists(
+    tagging_session,
+):
     shot = tagging_session.log_event(
-        EventType.SHOT_ATTEMPT, 812, shot_outcome=ShotOutcome.SAVED, shot_type=ShotType.WRIST
+        EventType.SHOT_ATTEMPT,
+        812,
+        shot_outcome=ShotOutcome.SAVED,
+        shot_type=ShotType.WRIST,
     )
 
     assert shot.shooter_id is None
@@ -387,22 +433,34 @@ def test_log_event_shot_attempt_requires_outcome_and_shot_type(tagging_session):
         tagging_session.log_event(EventType.SHOT_ATTEMPT, 812, shot_type=ShotType.WRIST)
 
     with pytest.raises(ValueError):
-        tagging_session.log_event(EventType.SHOT_ATTEMPT, 812, shot_outcome=ShotOutcome.SAVED)
+        tagging_session.log_event(
+            EventType.SHOT_ATTEMPT, 812, shot_outcome=ShotOutcome.SAVED
+        )
 
 
-def test_update_event_stores_faceoff_location_and_zone_is_derivable_at_read_time(tagging_session):
+def test_update_event_stores_faceoff_location_and_zone_is_derivable_at_read_time(
+    tagging_session,
+):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
 
     updated = tagging_session.update_event(faceoff.id, faceoff_x=40.0, faceoff_y=0.0)
 
     assert updated.faceoff_x == 40.0
     assert updated.faceoff_y == 0.0
-    assert zone(updated.faceoff_x, attacking_direction=1, rink_type=RinkType.IIHF) == "offensive"
+    assert (
+        zone(updated.faceoff_x, attacking_direction=1, rink_type=RinkType.IIHF)
+        == "offensive"
+    )
 
 
-def test_update_event_stores_shot_location_and_high_danger_is_derivable_at_read_time(tagging_session):
+def test_update_event_stores_shot_location_and_high_danger_is_derivable_at_read_time(
+    tagging_session,
+):
     shot = tagging_session.log_event(
-        EventType.SHOT_ATTEMPT, 812, shot_outcome=ShotOutcome.SAVED, shot_type=ShotType.WRIST
+        EventType.SHOT_ATTEMPT,
+        812,
+        shot_outcome=ShotOutcome.SAVED,
+        shot_type=ShotType.WRIST,
     )
 
     updated = tagging_session.update_event(shot.id, shot_x=85.0, shot_y=0.0)
@@ -411,12 +469,17 @@ def test_update_event_stores_shot_location_and_high_danger_is_derivable_at_read_
     assert high_danger(updated.shot_x, updated.shot_y, rink_type=RinkType.IIHF) is True
 
 
-def test_update_event_can_revise_shot_type_outcome_and_set_shot_context_flags(tagging_session):
+def test_update_event_can_revise_shot_type_outcome_and_set_shot_context_flags(
+    tagging_session,
+):
     # Edit-anytime still applies past the initial required capture -- a
     # tagger who got the outcome wrong in the heat of the moment can
     # correct it afterward, same as every other field.
     shot = tagging_session.log_event(
-        EventType.SHOT_ATTEMPT, 812, shot_outcome=ShotOutcome.SAVED, shot_type=ShotType.SLAP
+        EventType.SHOT_ATTEMPT,
+        812,
+        shot_outcome=ShotOutcome.SAVED,
+        shot_type=ShotType.SLAP,
     )
 
     updated = tagging_session.update_event(
@@ -437,14 +500,21 @@ def test_update_event_can_revise_shot_type_outcome_and_set_shot_context_flags(ta
     assert updated.shot_one_timer is False
 
 
-def test_log_event_shot_attempt_leaves_xg_null_with_no_calibration_logic(tagging_session):
+def test_log_event_shot_attempt_leaves_xg_null_with_no_calibration_logic(
+    tagging_session,
+):
     shot = tagging_session.log_event(
-        EventType.SHOT_ATTEMPT, 812, shot_outcome=ShotOutcome.GOAL, shot_type=ShotType.WRIST
+        EventType.SHOT_ATTEMPT,
+        812,
+        shot_outcome=ShotOutcome.GOAL,
+        shot_type=ShotType.WRIST,
     )
     assert shot.shot_xg is None
 
 
-def test_set_player_reference_requires_an_explicit_reference_for_faceoff(tagging_session):
+def test_set_player_reference_requires_an_explicit_reference_for_faceoff(
+    tagging_session,
+):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
 
     with pytest.raises(ValueError):
@@ -455,7 +525,11 @@ def test_set_player_reference_sets_faceoff_participant_a(tagging_session, sessio
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
 
     updated = tagging_session.set_player_reference(
-        faceoff.id, "home", reference="participant_a", jersey_number=14, full_name="Jordan Kim"
+        faceoff.id,
+        "home",
+        reference="participant_a",
+        jersey_number=14,
+        full_name="Jordan Kim",
     )
 
     assert updated.faceoff_participant_a_unknown is False
@@ -466,9 +540,13 @@ def test_set_player_reference_sets_faceoff_participant_a(tagging_session, sessio
 
 def test_set_player_reference_sets_faceoff_participant_b_independently(tagging_session):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
-    tagging_session.set_player_reference(faceoff.id, "home", reference="participant_a", jersey_number=14)
+    tagging_session.set_player_reference(
+        faceoff.id, "home", reference="participant_a", jersey_number=14
+    )
 
-    updated = tagging_session.set_player_reference(faceoff.id, "away", reference="participant_b", jersey_number=9)
+    updated = tagging_session.set_player_reference(
+        faceoff.id, "away", reference="participant_b", jersey_number=9
+    )
 
     assert updated.faceoff_team_b_id == tagging_session.away_team_id
     assert updated.faceoff_participant_b_unknown is False
@@ -478,11 +556,17 @@ def test_set_player_reference_sets_faceoff_participant_b_independently(tagging_s
 
 
 def _log_shot(tagging_session, video_timestamp=812, **overrides):
-    fields = {"shot_outcome": ShotOutcome.SAVED, "shot_type": ShotType.WRIST, **overrides}
+    fields = {
+        "shot_outcome": ShotOutcome.SAVED,
+        "shot_type": ShotType.WRIST,
+        **overrides,
+    }
     return tagging_session.log_event(EventType.SHOT_ATTEMPT, video_timestamp, **fields)
 
 
-def test_set_player_reference_requires_an_explicit_reference_for_shot_attempt(tagging_session):
+def test_set_player_reference_requires_an_explicit_reference_for_shot_attempt(
+    tagging_session,
+):
     shot = _log_shot(tagging_session)
 
     with pytest.raises(ValueError):
@@ -492,17 +576,25 @@ def test_set_player_reference_requires_an_explicit_reference_for_shot_attempt(ta
 def test_set_player_reference_sets_the_shooter(tagging_session):
     shot = _log_shot(tagging_session)
 
-    updated = tagging_session.set_player_reference(shot.id, "home", reference="shooter", jersey_number=9)
+    updated = tagging_session.set_player_reference(
+        shot.id, "home", reference="shooter", jersey_number=9
+    )
 
     assert updated.shooter_unknown is False
     assert updated.shot_team_id == tagging_session.home_team_id
 
 
-def test_set_player_reference_sets_an_assist_without_touching_shot_team(tagging_session):
+def test_set_player_reference_sets_an_assist_without_touching_shot_team(
+    tagging_session,
+):
     shot = _log_shot(tagging_session)
-    tagging_session.set_player_reference(shot.id, "home", reference="shooter", jersey_number=9)
+    tagging_session.set_player_reference(
+        shot.id, "home", reference="shooter", jersey_number=9
+    )
 
-    updated = tagging_session.set_player_reference(shot.id, "home", reference="assist1", jersey_number=14)
+    updated = tagging_session.set_player_reference(
+        shot.id, "home", reference="assist1", jersey_number=14
+    )
 
     assert updated.assist1_unknown is False
     assert updated.assist1_id is not None
@@ -514,7 +606,9 @@ def test_set_player_reference_sets_an_assist_without_touching_shot_team(tagging_
 def test_set_player_reference_assist_can_be_marked_unknown(tagging_session):
     shot = _log_shot(tagging_session)
 
-    updated = tagging_session.set_player_reference(shot.id, "home", reference="assist2", unknown=True)
+    updated = tagging_session.set_player_reference(
+        shot.id, "home", reference="assist2", unknown=True
+    )
 
     assert updated.assist2_id is None
     assert updated.assist2_unknown is True
@@ -524,15 +618,23 @@ def test_set_player_reference_rejects_an_unknown_reference_name(tagging_session)
     shot = _log_shot(tagging_session)
 
     with pytest.raises(ValueError):
-        tagging_session.set_player_reference(shot.id, "home", reference="goalie", jersey_number=1)
+        tagging_session.set_player_reference(
+            shot.id, "home", reference="goalie", jersey_number=1
+        )
 
 
 def test_describe_event_faceoff_reports_both_participants(tagging_session):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
     tagging_session.set_player_reference(
-        faceoff.id, "home", reference="participant_a", jersey_number=14, full_name="Jordan Kim"
+        faceoff.id,
+        "home",
+        reference="participant_a",
+        jersey_number=14,
+        full_name="Jordan Kim",
     )
-    tagging_session.set_player_reference(faceoff.id, "away", reference="participant_b", unknown=True)
+    tagging_session.set_player_reference(
+        faceoff.id, "away", reference="participant_b", unknown=True
+    )
 
     description = tagging_session.describe_event(faceoff)
 
@@ -543,8 +645,12 @@ def test_describe_event_faceoff_reports_both_participants(tagging_session):
 
 
 def test_describe_event_shot_attempt_reports_shooter_and_outcome(tagging_session):
-    shot = _log_shot(tagging_session, shot_outcome=ShotOutcome.GOAL, shot_type=ShotType.WRIST)
-    tagging_session.set_player_reference(shot.id, "home", reference="shooter", jersey_number=9)
+    shot = _log_shot(
+        tagging_session, shot_outcome=ShotOutcome.GOAL, shot_type=ShotType.WRIST
+    )
+    tagging_session.set_player_reference(
+        shot.id, "home", reference="shooter", jersey_number=9
+    )
 
     description = tagging_session.describe_event(shot)
 
@@ -552,8 +658,12 @@ def test_describe_event_shot_attempt_reports_shooter_and_outcome(tagging_session
     assert "goal" in description
 
 
-def test_describe_event_shot_attempt_reports_unknown_shooter_without_raising(tagging_session):
-    shot = _log_shot(tagging_session, shot_outcome=ShotOutcome.MISSED, shot_type=ShotType.UNKNOWN)
+def test_describe_event_shot_attempt_reports_unknown_shooter_without_raising(
+    tagging_session,
+):
+    shot = _log_shot(
+        tagging_session, shot_outcome=ShotOutcome.MISSED, shot_type=ShotType.UNKNOWN
+    )
 
     description = tagging_session.describe_event(shot)
 
@@ -577,7 +687,9 @@ def test_session_survives_being_closed_and_reopened(tmp_path):
         db_session.flush()
         game_id, home_id, away_id = game.id, team_a.id, team_b.id
 
-        tagging_session = TaggingSession(db_session, game_id=game_id, home_team_id=home_id, away_team_id=away_id)
+        tagging_session = TaggingSession(
+            db_session, game_id=game_id, home_team_id=home_id, away_team_id=away_id
+        )
         event = tagging_session.log_event(EventType.PERIOD_START, 0)
         tagging_session.update_event(event.id, period_number=1)
     # Session (and its connection) is now closed -- simulating the app
@@ -586,7 +698,12 @@ def test_session_survives_being_closed_and_reopened(tmp_path):
     reopened_engine = create_sqlite_engine(db_path)
     reopened_factory = make_session_factory(reopened_engine)
     with reopened_factory() as reopened_db_session:
-        resumed = TaggingSession(reopened_db_session, game_id=game_id, home_team_id=home_id, away_team_id=away_id)
+        resumed = TaggingSession(
+            reopened_db_session,
+            game_id=game_id,
+            home_team_id=home_id,
+            away_team_id=away_id,
+        )
         events = resumed.list_events()
 
         assert len(events) == 1
