@@ -291,14 +291,14 @@ def test_infer_strength_state_reflects_on_ice_counts_so_far(tagging_session):
     home_players = [(f"H{i}", i) for i in range(5)]
     away_players = [(f"A{i}", i) for i in range(4)]
     for name, jersey in home_players:
-        entry = tagging_session.resolve_or_create_roster_entry(
+        tagging_session.resolve_or_create_roster_entry(
             tagging_session.home_team_id, jersey, full_name=name
         )
         on = tagging_session.log_event(EventType.SHIFT_CHANGE, 10)
         tagging_session.set_player_reference(on.id, "home", jersey_number=jersey)
         tagging_session.update_event(on.id, shift_on_ice=True)
     for name, jersey in away_players:
-        entry = tagging_session.resolve_or_create_roster_entry(
+        tagging_session.resolve_or_create_roster_entry(
             tagging_session.away_team_id, jersey, full_name=name
         )
         on = tagging_session.log_event(EventType.SHIFT_CHANGE, 10)

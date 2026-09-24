@@ -114,7 +114,7 @@ def test_stoppage_button_logs_an_event_at_the_current_position(qtbot, tagging_se
 def test_each_event_type_has_a_working_log_button(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
 
-    for event_type, button in panel.log_buttons.items():
+    for button in panel.log_buttons.values():
         qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
 
     logged_types = {event.event_type for event in tagging_session.list_events()}
@@ -125,7 +125,7 @@ def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(
     qtbot, tagging_session
 ):
     registry = ShortcutRegistry()
-    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    _panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     for key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5):
         assert registry.dispatch(key_string(key)) is True
@@ -758,7 +758,7 @@ def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(
     first = _make_panel(qtbot, tagging_session, shortcuts=registry)
     first.release_shortcuts()
 
-    second = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    _second = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     assert registry.dispatch(key_string(Qt.Key.Key_1)) is True
     assert len(tagging_session.list_events()) == 1
