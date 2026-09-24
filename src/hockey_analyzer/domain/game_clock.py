@@ -48,8 +48,9 @@ def game_clocks(events: Sequence[Event]) -> dict[int, GameClock]:
     timestamp, then id). An event is stamped with the clock as it stood
     when it happened, before its own effect (a goal's clock is the moment
     it went in). Events before the first `period_start` have no game
-    clock and are left out. A period whose number was never filled in is
-    numbered by counting `period_start` events."""
+    clock and are left out. Periods are numbered by counting `period_start`
+    events, not by `period_number` (which may be unset or mistyped) -- the
+    same count StatsEngine's per-period stats use."""
     clocks: dict[int, GameClock] = {}
     period = 0
     elapsed = 0
@@ -57,7 +58,7 @@ def game_clocks(events: Sequence[Event]) -> dict[int, GameClock]:
     for event in sorted(events, key=lambda event: (event.video_timestamp, event.id)):
         now = event.video_timestamp
         if isinstance(event, PeriodStart):
-            period = event.period_number or period + 1
+            period += 1
             elapsed, live_since = 0, None
         if period:
             running = elapsed + (now - live_since if live_since is not None else 0)

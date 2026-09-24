@@ -185,8 +185,8 @@ def plan_export(
     segments = [
         ClipSegment(
             event.id,
-            max(0, event.video_timestamp - padding.before_ms),
-            min(footage_duration_ms, event.video_timestamp + padding.after_ms),
+            _clamp(event.video_timestamp - padding.before_ms, footage_duration_ms),
+            _clamp(event.video_timestamp + padding.after_ms, footage_duration_ms),
         )
         for event in events
     ]
@@ -203,7 +203,7 @@ def plan_export(
         outputs = (PlannedOutput(output_dir / name, tuple(segments)),)
     else:
         clocks = game_clocks(data.events)
-        names = _unique(
+        names = _dedupe_filenames(
             _clip_filename(event, player, clocks.get(event.id)) for event in events
         )
         outputs = tuple(
@@ -240,14 +240,14 @@ def _clip_filename(event: Event, player: str | None, clock: GameClock | None) ->
 def _reel_filename(game: Game, clip_filter: ClipFilter, player: str | None) -> str:
     date = game.date.isoformat() if game.date else "undated"
     opponent = _opponent(game)
-    opponent_label = _slug(opponent.name) if opponent is not None else "unknown"
+    opponent_label = _slug(opponent.name) if opponent is not None else ""
     summary = [
         player,
         clip_filter.event_type.value if clip_filter.event_type else None,
         clip_filter.shot_outcome.value if clip_filter.shot_outcome else None,
     ]
     summary_label = "-".join(part for part in summary if part) or "all"
-    return f"{date}_vs-{opponent_label}_{summary_label}_reel.mp4"
+    return f"{date}_vs-{opponent_label or 'unknown'}_{summary_label}_reel.mp4"
 
 
 def _opponent(game: Game) -> Team | None:
@@ -282,13 +282,19 @@ def _clock_label(event: Event, clock: GameClock | None) -> str:
     return f"P{clock.period}-{minutes:02d}m{seconds:02d}s"
 
 
+def _clamp(ms: int, footage_duration_ms: int) -> int:
+    """Into the footage: an event logged past its end yields an empty clip
+    at the end rather than one that starts after it stops."""
+    return min(max(0, ms), footage_duration_ms)
+
+
 def _slug(text: str) -> str:
     """Lowercase, runs of anything but letters/digits collapsed to `-`
     (so `_` stays free as the filename's field separator)."""
     return re.sub(r"[\W_]+", "-", text.lower()).strip("-")
 
 
-def _unique(names: Iterable[str]) -> list[str]:
+def _dedupe_filenames(names: Iterable[str]) -> list[str]:
     """Suffixes `_2`, `_3`... onto repeats (e.g. two shift changes during
     one stoppage share a game clock), so no clip overwrites another."""
     seen: dict[str, int] = {}

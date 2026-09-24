@@ -152,3 +152,15 @@ def test_events_are_read_in_video_order_whatever_order_they_are_given_in():
     )
 
     assert game_clocks(list(reversed(events)))[3].remaining_ms == _remaining(30)
+
+
+def test_periods_are_counted_like_stats_engine_counts_them():
+    # A mistyped period_number doesn't override the count, so an event
+    # lands in the same period here as in StatsEngine's per-period stats.
+    events = _events(
+        (0, PeriodStart(period_number=1)),
+        (100, PeriodStart(period_number=3)),
+        (100, _faceoff()),
+    )
+
+    assert game_clocks(events)[3].period == 2

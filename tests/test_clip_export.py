@@ -612,3 +612,30 @@ def test_planning_needs_the_game_footage_attached():
 
     with pytest.raises(ValueError):
         _plan(game, selection)
+
+
+def test_an_event_past_the_footage_end_clamps_to_an_empty_clip_at_the_end():
+    game = _Game()
+    shot = game.shot(120, shooter=ALICE)
+    selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
+
+    plan = _plan(
+        game,
+        selection,
+        padding=Padding(before_ms=5000, after_ms=5000),
+        footage_duration_ms=100 * SECOND,
+    )
+
+    assert plan.outputs[0].segments == (
+        ClipSegment(event_id=shot.id, start_ms=100 * SECOND, end_ms=100 * SECOND),
+    )
+
+
+def test_an_opponent_with_no_sluggable_name_is_unknown():
+    game = _Game()
+    game.game.away_team.name = "!!"
+    selection = select_clips(game.data(), ClipFilter())
+
+    (reel,) = _plan(game, selection, shape=OutputShape.REEL).outputs
+
+    assert reel.path.name == "2026-09-20_vs-unknown_all_reel.mp4"
