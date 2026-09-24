@@ -8,7 +8,7 @@ never requires footage to already be open (see CONTEXT.md's Game entry).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -100,7 +100,10 @@ class MainWindow(QMainWindow):
         | None = None,
         league_source: LeagueSource | None = None,
         units_dialog_factory: UnitsDialogFactory | None = None,
-        stats_dialog_factory: Callable[[GameData, QWidget], StatsDialog] | None = None,
+        stats_dialog_factory: Callable[[Sequence[GameData], QWidget], StatsDialog]
+        | None = None,
+        stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
+        | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -140,6 +143,9 @@ class MainWindow(QMainWindow):
         self._league_source = league_source or SihfHttpSource()
         self._units_dialog_factory = units_dialog_factory or UnitsDialog
         self._stats_dialog_factory = stats_dialog_factory or StatsDialog
+        self._stats_game_picker_factory = stats_game_picker_factory or (
+            lambda service: GameListDialog(service, multi_select=True)
+        )
         self._video_missing_notice = (
             video_missing_notice
             if video_missing_notice is not None
@@ -230,6 +236,10 @@ class MainWindow(QMainWindow):
         self.stats_action = game_menu.addAction("Stats…")
         self.stats_action.triggered.connect(self._show_stats)
         self.stats_action.setEnabled(False)
+        # Stats over a hand-picked set of games (ticket 19) -- picks its
+        # own games, so it doesn't depend on the active one.
+        self.multi_game_stats_action = game_menu.addAction("Multi-Game Stats…")
+        self.multi_game_stats_action.triggered.connect(self._show_multi_game_stats)
         # No db_session means there's nowhere to persist a Game -- keep
         # this window in its ticket-13 video-only mode rather than
         # offering actions that would have nothing to write to.
@@ -237,6 +247,7 @@ class MainWindow(QMainWindow):
             self.new_game_action.setEnabled(False)
             self.import_game_action.setEnabled(False)
             self.select_game_action.setEnabled(False)
+            self.multi_game_stats_action.setEnabled(False)
 
     def _install_tagging_panel(self, tagging_session: TaggingSession) -> None:
         if self.tagging_panel is not None:
@@ -325,7 +336,19 @@ class MainWindow(QMainWindow):
         if self._db_session is None or self._active_game_id is None:
             return
         data = load_game_data(self._db_session, self._active_game_id)
-        self._stats_dialog_factory(data, self).exec()
+        self._stats_dialog_factory([data], self).exec()
+
+    def _show_multi_game_stats(self) -> None:
+        if self._game_setup_service is None:
+            return
+        picker = self._stats_game_picker_factory(self._game_setup_service)
+        if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_game_ids:
+            return
+        games = [
+            load_game_data(self._db_session, game_id)
+            for game_id in picker.selected_game_ids
+        ]
+        self._stats_dialog_factory(games, self).exec()
 
     def _select_game(self) -> None:
         if self._game_setup_service is None:

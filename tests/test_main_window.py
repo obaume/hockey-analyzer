@@ -756,11 +756,11 @@ def test_units_action_is_disabled_again_when_no_game_ends_up_active(
 
 
 class _FakeStatsDialog:
-    """Stands in for StatsDialog.exec() -- records the GameData it was
-    opened with."""
+    """Stands in for StatsDialog.exec() -- records the GameData list it
+    was opened with."""
 
-    def __init__(self, data, parent=None) -> None:
-        self.data = data
+    def __init__(self, games, parent=None) -> None:
+        self.games = games
         self.parent = parent
         self.executed = False
 
@@ -769,9 +769,11 @@ class _FakeStatsDialog:
         return QDialog.DialogCode.Accepted
 
 
-def _window_with_stats_dialog(qtbot, session, opened, *, setup_dialog=None):
-    def factory(data, parent=None):
-        dialog = _FakeStatsDialog(data, parent)
+def _window_with_stats_dialog(
+    qtbot, session, opened, *, setup_dialog=None, game_picker=None
+):
+    def factory(games, parent=None):
+        dialog = _FakeStatsDialog(games, parent)
         opened.append(dialog)
         return dialog
 
@@ -782,6 +784,7 @@ def _window_with_stats_dialog(qtbot, session, opened, *, setup_dialog=None):
         db_session=session,
         game_setup_dialog_factory=lambda service: setup_dialog,
         stats_dialog_factory=factory,
+        stats_game_picker_factory=lambda service: game_picker,
     )
     qtbot.addWidget(window)
     return window
@@ -808,8 +811,9 @@ def test_stats_action_opens_the_stats_view_for_the_active_game(
 
     assert opened[0].executed is True
     assert opened[0].parent is window
-    assert opened[0].data.game.id == game.id
-    assert opened[0].data.game.home_team_id == home.id
+    (data,) = opened[0].games
+    assert data.game.id == game.id
+    assert data.game.home_team_id == home.id
 
 
 def test_stats_action_stays_disabled_until_both_sides_are_set(
@@ -931,3 +935,45 @@ def test_cancelling_the_import_dialog_does_nothing(qtbot, session):
     window.import_game_action.trigger()
 
     assert window.tagging_panel is None
+class _FakeGamePicker(_FakeGameListDialog):
+    def __init__(self, *, selected_game_ids=(), accepted=True) -> None:
+        super().__init__(accepted=accepted)
+        self.selected_game_ids = list(selected_game_ids)
+
+
+def test_multi_game_stats_opens_the_stats_view_over_every_picked_game(
+    qtbot, session, game_setup_service
+):
+    first, _home, _away = _game_with_sides(game_setup_service)
+    second, _home, _away = _game_with_sides(game_setup_service)
+    opened = []
+    window = _window_with_stats_dialog(
+        qtbot,
+        session,
+        opened,
+        game_picker=_FakeGamePicker(selected_game_ids=[first.id, second.id]),
+    )
+    assert window.multi_game_stats_action.isEnabled() is True
+
+    window.multi_game_stats_action.trigger()
+
+    assert opened[0].executed is True
+    assert opened[0].parent is window
+    assert [data.game.id for data in opened[0].games] == [first.id, second.id]
+
+
+def test_multi_game_stats_opens_nothing_when_the_picker_is_cancelled(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    opened = []
+    window = _window_with_stats_dialog(
+        qtbot,
+        session,
+        opened,
+        game_picker=_FakeGamePicker(selected_game_ids=[game.id], accepted=False),
+    )
+
+    window.multi_game_stats_action.trigger()
+
+    assert opened == []

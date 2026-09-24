@@ -1,17 +1,21 @@
-"""StatsEngine (ticket 18): pure query functions turning one tagged game's
+"""StatsEngine (tickets 18, 19): pure query functions turning tagged games'
 `GameData` into the stats CONTEXT.md defines -- Corsi/Fenwick, PDO, zone
-starts, +/-, and goalie SV%/GAA/HD SV%. No GUI, database, or file-I/O
+starts, +/-, goalie SV%/GAA/HD SV% (ticket 18), plus per-position rollups,
+line/unit stats, and `combined_*` sum-then-compute aggregates over a
+hand-picked set of games (ticket 19). No GUI, database, or file-I/O
 dependency: domain objects in, frozen result objects out.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import enum
+import re
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, Protocol, Self, TypeVar
 
 from hockey_analyzer.domain import rink
-from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType, UnitType
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import (
     Event,
@@ -49,6 +53,9 @@ class ForAgainst:
     def percentage(self) -> float | None:
         return _ratio(self.for_, self.for_ + self.against)
 
+    def __add__(self, other: ForAgainst) -> ForAgainst:
+        return ForAgainst(self.for_ + other.for_, self.against + other.against)
+
 
 SHOT_CONTEXTS = ("rush", "rebound", "screened", "one_timer")
 
@@ -69,6 +76,15 @@ class ShotQuality:
     @property
     def high_danger_share(self) -> float | None:
         return _ratio(self.high_danger, self.located)
+
+    def __add__(self, other: ShotQuality) -> ShotQuality:
+        return ShotQuality(
+            attempts=self.attempts + other.attempts,
+            by_type=_add_counts(self.by_type, other.by_type),
+            by_context=_add_counts(self.by_context, other.by_context),
+            high_danger=self.high_danger + other.high_danger,
+            located=self.located + other.located,
+        )
 
 
 @dataclass(frozen=True)
@@ -98,6 +114,16 @@ class TeamStats:
         if self.shooting_percentage is None or self.save_percentage is None:
             return None
         return (self.shooting_percentage + self.save_percentage) * 1000
+
+    def __add__(self, other: TeamStats) -> TeamStats:
+        return TeamStats(
+            team_id=self.team_id,
+            corsi=self.corsi + other.corsi,
+            fenwick=self.fenwick + other.fenwick,
+            goals=self.goals + other.goals,
+            shots_on_goal=self.shots_on_goal + other.shots_on_goal,
+            shot_quality=self.shot_quality + other.shot_quality,
+        )
 
 
 def team_stats(
@@ -148,6 +174,13 @@ class ZoneStarts:
     def percentage(self) -> float | None:
         return _ratio(self.offensive, self.offensive + self.defensive)
 
+    def __add__(self, other: ZoneStarts) -> ZoneStarts:
+        return ZoneStarts(
+            offensive=self.offensive + other.offensive,
+            defensive=self.defensive + other.defensive,
+            undetermined=self.undetermined + other.undetermined,
+        )
+
 
 @dataclass(frozen=True)
 class SkaterStats:
@@ -161,10 +194,26 @@ class SkaterStats:
     # On-ice goals for/against, at the active strength filter.
     goals: ForAgainst
     zone_starts: ZoneStarts
+    # `Player.position` (None when never set) -- for position rollups.
+    position: Position | None = None
 
     @property
     def plus_minus(self) -> int:
         return self.goals.differential
+
+    def __add__(self, other: SkaterStats) -> SkaterStats:
+        """The same skater's stats over both games; jersey number and
+        position as of `other`, the later one."""
+        return SkaterStats(
+            player_id=self.player_id,
+            team_id=self.team_id,
+            jersey_number=other.jersey_number,
+            corsi=self.corsi + other.corsi,
+            fenwick=self.fenwick + other.fenwick,
+            goals=self.goals + other.goals,
+            zone_starts=self.zone_starts + other.zone_starts,
+            position=other.position,
+        )
 
 
 @dataclass(frozen=True)
@@ -222,9 +271,57 @@ def skater_stats(
                 fenwick=_for_against(_unblocked(on_ice_shots), entry.team_id),
                 goals=_for_against(_goals(on_ice_shots), entry.team_id),
                 zone_starts=zone_starts.get(entry.player_id, ZoneStarts()),
+                position=entry.player.position if entry.player else None,
             )
         )
     return SkaterReport(skaters=skaters, excluded=excluded)
+
+
+@dataclass(frozen=True)
+class PositionStats:
+    """One team's skaters at one `Position` (None: position never set),
+    their individual stats pooled -- counts summed, then percentages
+    computed from the sums, the same sum-then-compute rule multi-game
+    aggregation follows. `per_skater` turns a pooled count into the
+    position's per-skater average (e.g. average CF among defensemen)."""
+
+    team_id: int
+    position: Position | None
+    skaters: int
+    corsi: ForAgainst
+    fenwick: ForAgainst
+    goals: ForAgainst
+    zone_starts: ZoneStarts
+
+    @property
+    def plus_minus(self) -> int:
+        return self.goals.differential
+
+    def per_skater(self, total: int) -> float | None:
+        return _ratio(total, self.skaters)
+
+
+def position_rollup(report: SkaterReport) -> list[PositionStats]:
+    """Any `skater_stats` report -- one game's or several games' combined
+    -- grouped by team and `Player.position` (see CONTEXT.md's Position
+    entry), in first-seen order. Per team, since pooling both sides'
+    defensemen would cancel one team's shots for against the other's.
+    Excluded skaters have no stats to pool and stay out."""
+    groups: dict[tuple[int, Position | None], list[SkaterStats]] = {}
+    for stats in report.skaters:
+        groups.setdefault((stats.team_id, stats.position), []).append(stats)
+    return [
+        PositionStats(
+            team_id=team_id,
+            position=position,
+            skaters=len(members),
+            corsi=sum((stats.corsi for stats in members), ForAgainst(0, 0)),
+            fenwick=sum((stats.fenwick for stats in members), ForAgainst(0, 0)),
+            goals=sum((stats.goals for stats in members), ForAgainst(0, 0)),
+            zone_starts=sum((stats.zone_starts for stats in members), ZoneStarts()),
+        )
+        for (team_id, position), members in groups.items()
+    ]
 
 
 @dataclass(frozen=True)
@@ -269,14 +366,30 @@ class GoalieStats:
             return None
         return self.goals_against * 60 / self.minutes_played
 
+    def __add__(self, other: GoalieStats) -> GoalieStats:
+        """The same goalie's stats over both games; jersey number as of
+        `other`, the later one."""
+        return GoalieStats(
+            player_id=self.player_id,
+            team_id=self.team_id,
+            jersey_number=other.jersey_number,
+            shots_against=self.shots_against + other.shots_against,
+            goals_against=self.goals_against + other.goals_against,
+            high_danger_shots_against=self.high_danger_shots_against
+            + other.high_danger_shots_against,
+            high_danger_goals_against=self.high_danger_goals_against
+            + other.high_danger_goals_against,
+            time_in_net_ms=self.time_in_net_ms + other.time_in_net_ms,
+        )
+
 
 def goalie_stats(
     data: GameData, *, strength_state: str | None = ALL_SITUATIONS
 ) -> list[GoalieStats]:
     """Every rostered goalie's SV%/GAA/HD SV%, defaulting to all
     situations -- unlike every other stat here -- since that's how these
-    are conventionally reported. Not gated by `opponent_shifts_complete`
-    (ticket 18 gates only on-ice skater stats)."""
+    are conventionally reported. Not gated by `opponent_shifts_complete`,
+    which gates only on-ice skater and line/unit stats."""
     on_goal = _on_goal(_shots(data, strength_state))
     on_ice = _on_ice_at_shots(data)
     intervals = _on_ice_intervals(data)
@@ -301,11 +414,319 @@ def goalie_stats(
                 high_danger_shots_against=len(high_danger),
                 high_danger_goals_against=len(_goals(high_danger)),
                 time_in_net_ms=_time_on_ice(
-                    intervals.get(entry.player_id, []), live, strength_state
+                    intervals.get(entry.player_id, []),
+                    live,
+                    lambda strength: _matches(strength, strength_state),
                 ),
             )
         )
     return results
+
+
+class UnitStrength(enum.Enum):
+    """`unit_stats`' default strength filter: each unit at its natural
+    context (see CONTEXT.md's Game unit assignment entry)."""
+
+    NATURAL = "natural"
+
+
+NATURAL_STRENGTH = UnitStrength.NATURAL
+
+_STRENGTH_PATTERN = re.compile(r"(\d+)v(\d+)")
+
+
+@dataclass(frozen=True)
+class UnitStats:
+    """One line/unit's stats: only what happened while *every* member was
+    on the ice at once -- the intersection of their on-ice intervals, not
+    the union or each member's own (see CONTEXT.md's Game unit assignment
+    entry). `time_together_ms` is live game-clock time at the active
+    strength filter, like goalie minutes. Over several games,
+    `player_ids` is every player who held this unit slot in any of them."""
+
+    team_id: int
+    unit_type: UnitType
+    unit_number: int
+    player_ids: frozenset[int]
+    corsi: ForAgainst
+    fenwick: ForAgainst
+    goals: ForAgainst
+    time_together_ms: int
+
+    @property
+    def plus_minus(self) -> int:
+        return self.goals.differential
+
+    def __add__(self, other: UnitStats) -> UnitStats:
+        return UnitStats(
+            team_id=self.team_id,
+            unit_type=self.unit_type,
+            unit_number=self.unit_number,
+            player_ids=self.player_ids | other.player_ids,
+            corsi=self.corsi + other.corsi,
+            fenwick=self.fenwick + other.fenwick,
+            goals=self.goals + other.goals,
+            time_together_ms=self.time_together_ms + other.time_together_ms,
+        )
+
+
+@dataclass(frozen=True)
+class ExcludedUnit:
+    team_id: int
+    unit_type: UnitType
+    unit_number: int
+    player_ids: frozenset[int]
+    reason: str
+
+    def __add__(self, other: ExcludedUnit) -> ExcludedUnit:
+        return ExcludedUnit(
+            team_id=self.team_id,
+            unit_type=self.unit_type,
+            unit_number=self.unit_number,
+            player_ids=self.player_ids | other.player_ids,
+            reason=other.reason,
+        )
+
+
+@dataclass(frozen=True)
+class UnitReport:
+    units: list[UnitStats]
+    excluded: list[ExcludedUnit]
+
+
+UnitKey = tuple[int, UnitType, int]
+
+
+def unit_stats(
+    data: GameData,
+    *,
+    strength_state: str | None | UnitStrength = NATURAL_STRENGTH,
+) -> UnitReport:
+    """Every assigned unit's on-ice stats. By default each unit is filtered
+    to its natural context -- forward lines and defense pairs at 5v5, power
+    play units whenever their team has more skaters, penalty kill units
+    whenever it has fewer -- or to one explicit `strength_state` for every
+    unit. Units of a team whose shifts can't be trusted for on-ice
+    attribution are excluded and listed, like `skater_stats`' skaters."""
+    shots = _shots(data, ALL_SITUATIONS)
+    on_ice = _on_ice_at_shots(data)
+    intervals = _on_ice_intervals(data)
+    live = _live_segments(data)
+    units: list[UnitStats] = []
+    excluded: list[ExcludedUnit] = []
+    for (team_id, unit_type, number), members in _units(data).items():
+        if not _on_ice_eligible(data, team_id):
+            excluded.append(
+                ExcludedUnit(
+                    team_id=team_id,
+                    unit_type=unit_type,
+                    unit_number=number,
+                    player_ids=members,
+                    reason=OPPONENT_SHIFTS_INCOMPLETE,
+                )
+            )
+            continue
+        strength_filter = _unit_strength_filter(
+            data, team_id, unit_type, strength_state
+        )
+        together_shots = [
+            shot
+            for shot in shots
+            if strength_filter(shot.strength_state) and members <= on_ice[shot.id]
+        ]
+        together: list[Interval] | None = None
+        for player_id in members:
+            own = intervals.get(player_id, [])
+            together = own if together is None else _intersect(together, own)
+        units.append(
+            UnitStats(
+                team_id=team_id,
+                unit_type=unit_type,
+                unit_number=number,
+                player_ids=members,
+                corsi=_for_against(together_shots, team_id),
+                fenwick=_for_against(_unblocked(together_shots), team_id),
+                goals=_for_against(_goals(together_shots), team_id),
+                time_together_ms=_time_on_ice(together or [], live, strength_filter),
+            )
+        )
+    return UnitReport(units=units, excluded=excluded)
+
+
+def _units(data: GameData) -> dict[UnitKey, frozenset[int]]:
+    """Each assigned unit's members: home team's units first, then by unit
+    type (in `UnitType` order) and number."""
+    members: dict[UnitKey, set[int]] = {}
+    for assignment in data.unit_assignments:
+        key = (assignment.team_id, assignment.unit_type, assignment.unit_number)
+        members.setdefault(key, set()).add(assignment.player_id)
+    unit_types = list(UnitType)
+
+    def order(key: UnitKey) -> tuple[bool, int, int]:
+        team_id, unit_type, number = key
+        return team_id != data.game.home_team_id, unit_types.index(unit_type), number
+
+    return {key: frozenset(members[key]) for key in sorted(members, key=order)}
+
+
+def _unit_strength_filter(
+    data: GameData,
+    team_id: int,
+    unit_type: UnitType,
+    strength_state: str | None | UnitStrength,
+) -> StrengthFilter:
+    if not isinstance(strength_state, UnitStrength):
+        return lambda strength: _matches(strength, strength_state)
+    if unit_type in (UnitType.FORWARD_LINE, UnitType.DEFENSE_PAIR):
+        return lambda strength: strength == EVEN_STRENGTH
+    is_home = team_id == data.game.home_team_id
+    want_more = unit_type is UnitType.POWER_PLAY
+
+    def natural(strength: str | None) -> bool:
+        # Strength states read "{home}v{away}" (see TaggingSession).
+        match = _STRENGTH_PATTERN.fullmatch(strength or "")
+        if match is None:
+            return False
+        home, away = int(match[1]), int(match[2])
+        own, other = (home, away) if is_home else (away, home)
+        return own > other if want_more else own < other
+
+    return natural
+
+
+# -- multi-game aggregation (ticket 19) ---------------------------------
+#
+# Each `combined_*` function aggregates its single-game counterpart over a
+# hand-picked set of games by summing counts first and computing every
+# percentage from the sums (never averaging per-game percentages), and
+# returns the same result type, so anything that renders or rolls up one
+# game's results (e.g. `position_rollup`) takes several games' just as well.
+
+
+@dataclass(frozen=True)
+class GameCoverage:
+    """Which selected games a team's on-ice stats (individual and
+    line/unit) were computed over, by game id: a game where that team's
+    shifts can't be trusted (see `_on_ice_eligible`) is excluded, and
+    reported here rather than silently narrowing the aggregate (see
+    ADR-0002). Team-wide and goalie stats are never narrowed."""
+
+    included: tuple[int, ...]
+    excluded: tuple[int, ...]
+
+
+def on_ice_coverage(games: Sequence[GameData]) -> dict[int, GameCoverage]:
+    """Per team playing in any of `games`, in first-seen order."""
+    coverage: dict[int, tuple[list[int], list[int]]] = {}
+    for data in games:
+        for team_id in (data.game.home_team_id, data.game.away_team_id):
+            if team_id is None:
+                continue
+            included, excluded = coverage.setdefault(team_id, ([], []))
+            eligible = _on_ice_eligible(data, team_id)
+            (included if eligible else excluded).append(data.game.id)
+    return {
+        team_id: GameCoverage(tuple(included), tuple(excluded))
+        for team_id, (included, excluded) in coverage.items()
+    }
+
+
+def combined_team_stats(
+    games: Sequence[GameData],
+    team_id: int,
+    *,
+    strength_state: str | None = EVEN_STRENGTH,
+) -> TeamStats:
+    """`team_stats` summed over the selected games `team_id` played in."""
+    total = TeamStats(
+        team_id=team_id,
+        corsi=ForAgainst(0, 0),
+        fenwick=ForAgainst(0, 0),
+        goals=ForAgainst(0, 0),
+        shots_on_goal=ForAgainst(0, 0),
+        shot_quality=ShotQuality(
+            attempts=0,
+            by_type={},
+            by_context=dict.fromkeys(SHOT_CONTEXTS, 0),
+            high_danger=0,
+            located=0,
+        ),
+    )
+    for data in games:
+        if team_id in (data.game.home_team_id, data.game.away_team_id):
+            total += team_stats(data, team_id, strength_state=strength_state)
+    return total
+
+
+def combined_skater_stats(
+    games: Sequence[GameData], *, strength_state: str | None = EVEN_STRENGTH
+) -> SkaterReport:
+    """`skater_stats` summed per player and team over whichever selected
+    games each was included in (see `on_ice_coverage`). A skater is listed
+    as excluded only when no selected game included them."""
+    skaters: dict[tuple[int, int], SkaterStats] = {}
+    excluded: dict[tuple[int, int], ExcludedSkater] = {}
+    for data in games:
+        report = skater_stats(data, strength_state=strength_state)
+        for stats in report.skaters:
+            _accumulate(skaters, (stats.player_id, stats.team_id), stats)
+        for skater in report.excluded:
+            excluded[(skater.player_id, skater.team_id)] = skater
+    return SkaterReport(
+        skaters=list(skaters.values()),
+        excluded=[skater for key, skater in excluded.items() if key not in skaters],
+    )
+
+
+def combined_goalie_stats(
+    games: Sequence[GameData], *, strength_state: str | None = ALL_SITUATIONS
+) -> list[GoalieStats]:
+    """`goalie_stats` summed per goalie and team over the selected games."""
+    goalies: dict[tuple[int, int], GoalieStats] = {}
+    for data in games:
+        for stats in goalie_stats(data, strength_state=strength_state):
+            _accumulate(goalies, (stats.player_id, stats.team_id), stats)
+    return list(goalies.values())
+
+
+def combined_unit_stats(
+    games: Sequence[GameData],
+    *,
+    strength_state: str | None | UnitStrength = NATURAL_STRENGTH,
+) -> UnitReport:
+    """`unit_stats` summed per unit slot -- (team, unit type, number), even
+    if who filled it changed between games -- over whichever selected games
+    its team was included in. A unit is listed as excluded only when no
+    selected game included it."""
+    units: dict[UnitKey, UnitStats] = {}
+    excluded: dict[UnitKey, ExcludedUnit] = {}
+    for data in games:
+        report = unit_stats(data, strength_state=strength_state)
+        for stats in report.units:
+            _accumulate(units, _unit_key(stats), stats)
+        for unit in report.excluded:
+            _accumulate(excluded, _unit_key(unit), unit)
+    return UnitReport(
+        units=list(units.values()),
+        excluded=[unit for key, unit in excluded.items() if key not in units],
+    )
+
+
+class _Summable(Protocol):
+    def __add__(self, other: Self, /) -> Self: ...
+
+
+_S = TypeVar("_S", bound=_Summable)
+_K = TypeVar("_K", bound=Hashable)
+
+
+def _accumulate(totals: dict[_K, _S], key: _K, value: _S) -> None:
+    previous = totals.get(key)
+    totals[key] = value if previous is None else previous + value
+
+
+def _unit_key(unit: UnitStats | ExcludedUnit) -> UnitKey:
+    return unit.team_id, unit.unit_type, unit.unit_number
 
 
 def _is_high_danger(data: GameData, shot: ShotAttempt) -> bool:
@@ -388,17 +809,30 @@ def _live_segments(data: GameData) -> list[_LiveSegment]:
     return segments
 
 
+StrengthFilter = Callable[[str | None], bool]
+
+
 def _time_on_ice(
     intervals: list[Interval],
     segments: list[_LiveSegment],
-    strength_state: str | None,
+    strength_filter: StrengthFilter,
 ) -> int:
     return sum(
         max(0, min(end, segment.end) - max(start, segment.start))
         for start, end in intervals
         for segment in segments
-        if _matches(segment.strength_state, strength_state)
+        if strength_filter(segment.strength_state)
     )
+
+
+def _intersect(a: list[Interval], b: list[Interval]) -> list[Interval]:
+    """The stretches covered by both interval lists at once."""
+    return [
+        (max(a_start, b_start), min(a_end, b_end))
+        for a_start, a_end in a
+        for b_start, b_end in b
+        if max(a_start, b_start) < min(a_end, b_end)
+    ]
 
 
 def _on_ice_eligible(data: GameData, team_id: int) -> bool:
@@ -605,6 +1039,10 @@ def _goals(shots: list[ShotAttempt]) -> list[ShotAttempt]:
 
 def _ratio(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
+
+
+def _add_counts(a: dict[_K, int], b: dict[_K, int]) -> dict[_K, int]:
+    return {key: a.get(key, 0) + b.get(key, 0) for key in a | b}
 
 
 def _for_against(shots: list[ShotAttempt], team_id: int) -> ForAgainst:
