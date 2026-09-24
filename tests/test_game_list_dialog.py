@@ -86,3 +86,25 @@ def test_cancel_button_rejects_without_a_selection(qtbot, game_setup_service):
 
     assert dialog.selected_game_id is None
     assert dialog.result() == dialog.DialogCode.Rejected
+
+
+def test_multi_select_lists_only_games_with_both_sides_and_returns_every_pick(
+    qtbot, game_setup_service
+):
+    home = game_setup_service.create_team("Icebreakers")
+    away = game_setup_service.create_team("Rivals")
+    first = game_setup_service.create_game()
+    game_setup_service.create_game()  # no sides yet -- nothing to show stats for
+    second = game_setup_service.create_game()
+    for game in (first, second):
+        game_setup_service.set_side_team(game.id, "home", home.id)
+        game_setup_service.set_side_team(game.id, "away", away.id)
+    dialog = GameListDialog(game_setup_service, multi_select=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.table.rowCount() == 2
+    dialog.table.selectAll()
+    dialog.open_button.click()
+
+    assert sorted(dialog.selected_game_ids) == [first.id, second.id]
+    assert dialog.result() == dialog.DialogCode.Accepted

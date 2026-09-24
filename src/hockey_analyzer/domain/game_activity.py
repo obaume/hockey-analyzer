@@ -56,7 +56,12 @@ def _touch_game_updated_at(session: Session, flush_context, instances) -> None:
         if isinstance(obj, Game):
             obj.updated_at = now
         elif isinstance(obj, (Event, GameRosterEntry, GameUnitAssignment)):
-            touched_game_ids.add(obj.game_id)
+            if obj.game_id is not None:
+                touched_game_ids.add(obj.game_id)
+            # Attached via the `game` relationship rather than by id (e.g.
+            # a league import's batch): no game_id until this flush.
+            elif obj.game is not None:
+                obj.game.updated_at = now
     for game_id in touched_game_ids:
         game = session.get(Game, game_id)
         if game is not None:

@@ -8,7 +8,7 @@ never requires footage to already be open (see CONTEXT.md's Game entry).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -38,9 +38,15 @@ from hockey_analyzer.domain.video_timestamp import (
     format_video_timestamp,
     parse_video_timestamp,
 )
+from hockey_analyzer.league_import import (
+    LeagueImportService,
+    LeagueSource,
+    SihfHttpSource,
+)
 from hockey_analyzer.ui.game_list_dialog import GameListDialog
 from hockey_analyzer.ui.game_setup_dialog import GameSetupDialog
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
+from hockey_analyzer.ui.league_import_dialog import LeagueImportDialog
 from hockey_analyzer.ui.playback_controller import (
     DEFAULT_SPEED_STEPS,
     PlaybackController,
@@ -88,8 +94,16 @@ class MainWindow(QMainWindow):
         | None = None,
         game_list_dialog_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
+        league_import_dialog_factory: Callable[
+            [LeagueImportService], LeagueImportDialog
+        ]
+        | None = None,
+        league_source: LeagueSource | None = None,
         units_dialog_factory: UnitsDialogFactory | None = None,
-        stats_dialog_factory: Callable[[GameData, QWidget], StatsDialog] | None = None,
+        stats_dialog_factory: Callable[[Sequence[GameData], QWidget], StatsDialog]
+        | None = None,
+        stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
+        | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -123,8 +137,15 @@ class MainWindow(QMainWindow):
         )
         self._game_setup_dialog_factory = game_setup_dialog_factory or GameSetupDialog
         self._game_list_dialog_factory = game_list_dialog_factory or GameListDialog
+        self._league_import_dialog_factory = (
+            league_import_dialog_factory or LeagueImportDialog
+        )
+        self._league_source = league_source or SihfHttpSource()
         self._units_dialog_factory = units_dialog_factory or UnitsDialog
         self._stats_dialog_factory = stats_dialog_factory or StatsDialog
+        self._stats_game_picker_factory = stats_game_picker_factory or (
+            lambda service: GameListDialog(service, multi_select=True)
+        )
         self._video_missing_notice = (
             video_missing_notice
             if video_missing_notice is not None
@@ -200,6 +221,8 @@ class MainWindow(QMainWindow):
         game_menu = self.menuBar().addMenu("&Game")
         self.new_game_action = game_menu.addAction("New Game…")
         self.new_game_action.triggered.connect(self._new_game)
+        self.import_game_action = game_menu.addAction("Import from League Link…")
+        self.import_game_action.triggered.connect(self._import_game)
         self.select_game_action = game_menu.addAction("Select Game…")
         self.select_game_action.triggered.connect(self._select_game)
         # Units (ticket 17) belong to one game and one team per side, so
@@ -213,12 +236,18 @@ class MainWindow(QMainWindow):
         self.stats_action = game_menu.addAction("Stats…")
         self.stats_action.triggered.connect(self._show_stats)
         self.stats_action.setEnabled(False)
+        # Stats over a hand-picked set of games (ticket 19) -- picks its
+        # own games, so it doesn't depend on the active one.
+        self.multi_game_stats_action = game_menu.addAction("Multi-Game Stats…")
+        self.multi_game_stats_action.triggered.connect(self._show_multi_game_stats)
         # No db_session means there's nowhere to persist a Game -- keep
         # this window in its ticket-13 video-only mode rather than
         # offering actions that would have nothing to write to.
         if self._game_setup_service is None:
             self.new_game_action.setEnabled(False)
+            self.import_game_action.setEnabled(False)
             self.select_game_action.setEnabled(False)
+            self.multi_game_stats_action.setEnabled(False)
 
     def _install_tagging_panel(self, tagging_session: TaggingSession) -> None:
         if self.tagging_panel is not None:
@@ -270,6 +299,24 @@ class MainWindow(QMainWindow):
             return
         self._activate_game(dialog.game_id)
 
+    def _import_game(self) -> None:
+        """Ticket 22: the league-link path to a new Game. Lands on the same
+        activation as New Game -- the imported game, or the existing one
+        a duplicate import pointed the user at -- and falls back to New
+        Game's blank manual setup when the league data couldn't be read,
+        rather than blocking game creation."""
+        if self._db_session is None:
+            return
+        dialog = self._league_import_dialog_factory(
+            LeagueImportService(self._db_session, self._league_source)
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.fall_back_to_manual:
+            self._new_game()
+            return
+        self._activate_game(dialog.game_id)
+
     def _edit_units(self) -> None:
         if self._game_setup_service is None or self._active_game_id is None:
             return
@@ -289,7 +336,19 @@ class MainWindow(QMainWindow):
         if self._db_session is None or self._active_game_id is None:
             return
         data = load_game_data(self._db_session, self._active_game_id)
-        self._stats_dialog_factory(data, self).exec()
+        self._stats_dialog_factory([data], self).exec()
+
+    def _show_multi_game_stats(self) -> None:
+        if self._game_setup_service is None:
+            return
+        picker = self._stats_game_picker_factory(self._game_setup_service)
+        if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_game_ids:
+            return
+        games = [
+            load_game_data(self._db_session, game_id)
+            for game_id in picker.selected_game_ids
+        ]
+        self._stats_dialog_factory(games, self).exec()
 
     def _select_game(self) -> None:
         if self._game_setup_service is None:
