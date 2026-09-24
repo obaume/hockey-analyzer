@@ -7,7 +7,13 @@ from __future__ import annotations
 import pytest
 
 from hockey_analyzer.domain import stats_engine
-from hockey_analyzer.domain.enums import EventType, Position, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import (
+    EventType,
+    Position,
+    ShotOutcome,
+    ShotType,
+    UnitType,
+)
 from hockey_analyzer.domain.game_data import load_game_data
 
 
@@ -45,3 +51,28 @@ def test_a_tagged_game_loads_into_stats(session, game_and_teams, tagging_session
 def test_loading_an_unknown_game_raises(session):
     with pytest.raises(KeyError):
         load_game_data(session, 999)
+
+
+def test_unit_assignments_load_with_the_game(
+    session, game_and_teams, tagging_session, game_setup_service
+):
+    game, home, away = game_and_teams
+    game.home_team_id, game.away_team_id = home.id, away.id
+    kim = tagging_session.resolve_or_create_roster_entry(home.id, 14)
+    game_setup_service.assign_unit(
+        game_id=game.id,
+        team_id=home.id,
+        player_id=kim.player_id,
+        unit_type=UnitType.POWER_PLAY,
+        unit_number=1,
+    )
+
+    data = load_game_data(session, game.id)
+
+    (unit,) = stats_engine.unit_stats(data).units
+    assert (unit.team_id, unit.unit_type, unit.unit_number) == (
+        home.id,
+        UnitType.POWER_PLAY,
+        1,
+    )
+    assert unit.player_ids == {kim.player_id}
