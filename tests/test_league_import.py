@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -12,14 +13,18 @@ from sihf_fixtures import (
 )
 from sqlalchemy import func, select
 
-from hockey_analyzer.domain.enums import Position, Side
+from hockey_analyzer.domain.enums import Position, RinkType, Side
+from hockey_analyzer.domain.game_setup import SameTeamBothSidesError
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
 from hockey_analyzer.league_import import (
+    AlreadyImportedError,
+    ImportResolution,
     InvalidGameLinkError,
     LeagueImportService,
     LeagueSourceError,
     ManualEntryFallbackError,
     PlayerMatchStatus,
+    PlayerRosteredTwiceError,
     TeamMatchStatus,
 )
 
@@ -394,3 +399,298 @@ def test_pdf_failure_signals_fallback_to_manual_entry(session, pdf):
 
     with pytest.raises(ManualEntryFallbackError):
         service.propose(GAME_LINK)
+
+
+# -- confirming a reviewed proposal ---------------------------------------------
+
+
+def _as_proposed(proposal, **overrides):
+    """The resolution a review screen submits when the user changes
+    nothing but `overrides`."""
+    return replace(ImportResolution.as_proposed(proposal), **overrides)
+
+
+def test_confirming_creates_the_game_with_its_league_metadata(service, session):
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(
+        proposal, _as_proposed(proposal, user_team=Side.HOME, rink_type=RinkType.NHL)
+    )
+
+    stored = session.get(Game, game.id)
+    assert stored.league_id == "20270009263101"
+    assert stored.date == date(2026, 9, 5)
+    assert stored.venue == "Centre Sportif de la Patinoire"
+    assert (stored.home_score, stored.away_score) == (7, 1)
+    assert stored.period_scores == proposal.period_scores
+    assert stored.rink_type == RinkType.NHL
+
+
+def test_confirming_creates_new_teams_from_the_scraped_names_and_league_ids(
+    service, session
+):
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal, user_team=Side.AWAY))
+
+    home, away = game.home_team, game.away_team
+    assert (home.name, home.league_id) == ("HC Château-d'Oex", "10-4-103010")
+    assert (away.name, away.league_id) == ("HC Monthey", "10-4-104254")
+    assert (home.is_user_team, away.is_user_team) == (False, True)
+
+
+def test_confirming_writes_every_roster_row_as_shown(service, session):
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal))
+
+    written = {
+        (entry.team_id, entry.jersey_number, entry.player.full_name, entry.position)
+        for entry in game.roster_entries
+    }
+    expected = {
+        (
+            game.home_team_id if row.side == Side.HOME else game.away_team_id,
+            row.jersey_number,
+            row.full_name,
+            row.position,
+        )
+        for row in proposal.roster
+    }
+    assert written == expected
+    assert len(game.roster_entries) == len(proposal.roster)
+
+
+def test_confirming_links_a_league_id_matched_team_instead_of_creating_one(
+    service, session
+):
+    existing = Team(name="Château", league_id="10-4-103010")
+    session.add(existing)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal))
+
+    assert game.home_team_id == existing.id
+    assert session.scalar(select(func.count()).select_from(Team)) == 2
+
+
+def test_a_confirmed_name_match_learns_the_teams_league_id(service, session):
+    existing = Team(name="HC Monthey")
+    session.add(existing)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    assert proposal.away.status == TeamMatchStatus.NEEDS_CONFIRMATION
+
+    game = service.confirm(proposal, _as_proposed(proposal, away_team_id=existing.id))
+
+    assert game.away_team_id == existing.id
+    # So the next import of this team links silently.
+    assert session.get(Team, existing.id).league_id == "10-4-104254"
+    assert service.propose(GAME_LINK).away.status == TeamMatchStatus.LINKED
+
+
+def test_an_unconfirmed_name_match_creates_a_new_team(service, session):
+    existing = Team(name="HC Monthey")
+    session.add(existing)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal))
+
+    assert game.away_team_id != existing.id
+    assert session.get(Team, existing.id).league_id is None
+
+
+def test_user_team_prefill_comes_only_from_a_linked_flagged_team(service, session):
+    session.add(Team(name="Château", league_id="10-4-103010", is_user_team=True))
+    session.commit()
+
+    resolution = ImportResolution.as_proposed(service.propose(GAME_LINK))
+
+    assert resolution.user_team == Side.HOME
+
+
+def test_user_team_is_not_prefilled_when_nothing_is_known(service):
+    resolution = ImportResolution.as_proposed(service.propose(GAME_LINK))
+
+    assert resolution.user_team is None
+
+
+def test_user_team_is_not_prefilled_when_both_linked_teams_are_flagged(
+    service, session
+):
+    session.add_all(
+        [
+            Team(name="A", league_id="10-4-103010", is_user_team=True),
+            Team(name="B", league_id="10-4-104254", is_user_team=True),
+        ]
+    )
+    session.commit()
+
+    resolution = ImportResolution.as_proposed(service.propose(GAME_LINK))
+
+    assert resolution.user_team is None
+
+
+def test_the_user_team_answer_flags_the_chosen_team(service, session):
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal, user_team=Side.AWAY))
+
+    assert game.away_team.is_user_team is True
+
+
+@pytest.mark.parametrize("answer", [Side.AWAY, None], ids=["other side", "neither"])
+def test_the_user_team_answer_never_unflags_a_team(service, session, answer):
+    # Several teams may be the user's (CONTEXT.md's Team): a per-game
+    # answer isn't a reason to take the flag off one.
+    mine = Team(name="Château", league_id="10-4-103010", is_user_team=True)
+    session.add(mine)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+
+    service.confirm(proposal, _as_proposed(proposal, user_team=answer))
+
+    assert session.get(Team, mine.id).is_user_team is True
+
+
+def test_answering_neither_team_flags_no_new_team(service, session):
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal, user_team=None))
+
+    assert (game.home_team.is_user_team, game.away_team.is_user_team) == (
+        False,
+        False,
+    )
+
+
+def test_confirming_links_matched_players_and_creates_the_rest(service, session):
+    exact = Player(full_name="Galley Noham")
+    near_miss = Player(full_name="Memeteau Mathias")
+    session.add_all([exact, near_miss])
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    player_ids = list(ImportResolution.as_proposed(proposal).player_ids)
+    # The user overrides the near-miss row's default "new player".
+    near_miss_row = proposal.roster.index(_row(proposal, "Mémeteau Matthias"))
+    player_ids[near_miss_row] = near_miss.id
+
+    game = service.confirm(
+        proposal, _as_proposed(proposal, player_ids=tuple(player_ids))
+    )
+
+    by_jersey = {
+        (entry.team_id, entry.jersey_number): entry.player_id
+        for entry in game.roster_entries
+    }
+    assert by_jersey[(game.away_team_id, 21)] == exact.id
+    assert by_jersey[(game.home_team_id, 69)] == near_miss.id
+    players = session.scalar(select(func.count()).select_from(Player))
+    assert players == 2 + len(proposal.roster) - 2
+
+
+def test_new_players_never_get_the_game_position_as_their_own(service, session):
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal))
+
+    assert all(entry.player.position is None for entry in game.roster_entries)
+    assert all(entry.position is not None for entry in game.roster_entries)
+
+
+def test_confirming_an_already_imported_game_is_refused(service, session):
+    proposal = service.propose(GAME_LINK)
+    first = service.confirm(proposal, _as_proposed(proposal))
+    counts_before = _row_counts(session)
+
+    with pytest.raises(AlreadyImportedError) as refused:
+        service.confirm(proposal, _as_proposed(proposal))
+
+    assert refused.value.existing_game_id == first.id
+    assert _row_counts(session) == counts_before
+
+
+def test_linking_both_sides_to_one_team_is_refused(service, session):
+    team = Team(name="HC Monthey")
+    session.add(team)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    counts_before = _row_counts(session)
+
+    with pytest.raises(SameTeamBothSidesError):
+        service.confirm(
+            proposal,
+            _as_proposed(proposal, home_team_id=team.id, away_team_id=team.id),
+        )
+
+    assert _row_counts(session) == counts_before
+
+
+def test_linking_one_player_to_two_rows_is_refused(service, session):
+    player = Player(full_name="Someone")
+    session.add(player)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    player_ids = (player.id, player.id) + (None,) * (len(proposal.roster) - 2)
+    counts_before = _row_counts(session)
+
+    with pytest.raises(PlayerRosteredTwiceError):
+        service.confirm(proposal, _as_proposed(proposal, player_ids=player_ids))
+
+    assert _row_counts(session) == counts_before
+
+
+def test_a_failure_partway_through_writes_nothing(service, session):
+    existing = Team(name="HC Monthey")
+    session.add(existing)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    # The last row links a player that doesn't exist -- found only after
+    # the teams, game and earlier rows were already staged.
+    player_ids = (None,) * (len(proposal.roster) - 1) + (9999,)
+    counts_before = _row_counts(session)
+
+    with pytest.raises(KeyError):
+        service.confirm(
+            proposal,
+            _as_proposed(proposal, away_team_id=existing.id, player_ids=player_ids),
+        )
+
+    assert _row_counts(session) == counts_before
+    assert session.get(Team, existing.id).league_id is None
+
+
+def test_creating_a_second_team_with_a_known_league_id_is_refused(service, session):
+    session.add(Team(name="Château", league_id="10-4-103010"))
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    counts_before = _row_counts(session)
+
+    with pytest.raises(ValueError):
+        service.confirm(proposal, _as_proposed(proposal, home_team_id=None))
+
+    assert _row_counts(session) == counts_before
+
+
+# -- review-screen override lists -------------------------------------------------
+
+
+def test_linkable_teams_leave_out_other_league_teams(service, session):
+    unlinked = Team(name="B Unlinked")
+    same = Team(name="A Same", league_id="10-4-104254")
+    session.add_all([unlinked, same, Team(name="C Other", league_id="10-9-1")])
+    session.commit()
+
+    linkable = service.linkable_teams("10-4-104254")
+
+    assert [team.team_id for team in linkable] == [same.id, unlinked.id]
+
+
+def test_known_players_lists_everyone_by_name(service, session):
+    bob, amy = Player(full_name="Bob"), Player(full_name="Amy")
+    session.add_all([bob, amy])
+    session.commit()
+
+    assert [p.player_id for p in service.known_players()] == [amy.id, bob.id]

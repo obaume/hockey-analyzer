@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QDialog
 
 from hockey_analyzer.domain.enums import EventType, Side
 from hockey_analyzer.domain.models import Event
+from hockey_analyzer.league_import import LeagueImportService
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -826,6 +827,114 @@ def test_stats_action_stays_disabled_until_both_sides_are_set(
     window.new_game_action.trigger()
 
     assert window.stats_action.isEnabled() is False
+
+
+# -- Import from League Link: the same activation path as New Game ---------
+
+
+class _FakeLeagueImportDialog:
+    """Stands in for LeagueImportDialog.exec() -- see _FakeGameSetupDialog."""
+
+    def __init__(self, *, game_id=None, fall_back_to_manual=False, accepted=True):
+        self.game_id = game_id
+        self.fall_back_to_manual = fall_back_to_manual
+        self._accepted = accepted
+
+    def exec(self) -> QDialog.DialogCode:
+        return (
+            QDialog.DialogCode.Accepted
+            if self._accepted
+            else QDialog.DialogCode.Rejected
+        )
+
+
+def _make_import_window(qtbot, session, import_dialog, **kwargs):
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        league_import_dialog_factory=lambda service: import_dialog,
+        **kwargs,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def test_import_action_is_disabled_without_db_session(qtbot):
+    window = _make_window(qtbot)
+
+    assert window.import_game_action.isEnabled() is False
+
+
+def test_import_action_activates_the_imported_game(qtbot, session, game_setup_service):
+    game = game_setup_service.create_game()
+    home = game_setup_service.create_team("Icebreakers")
+    away = game_setup_service.create_team("Rivals")
+    game_setup_service.set_side_team(game.id, Side.HOME, home.id)
+    game_setup_service.set_side_team(game.id, Side.AWAY, away.id)
+    window = _make_import_window(
+        qtbot, session, _FakeLeagueImportDialog(game_id=game.id)
+    )
+
+    window.import_game_action.trigger()
+
+    assert window.tagging_panel is not None
+    assert window.stats_action.isEnabled()
+
+
+def test_import_action_hands_the_dialog_a_league_import_service(qtbot, session):
+    received = []
+
+    def factory(service):
+        received.append(service)
+        return _FakeLeagueImportDialog(accepted=False)
+
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        league_import_dialog_factory=factory,
+    )
+    qtbot.addWidget(window)
+
+    window.import_game_action.trigger()
+
+    assert isinstance(received[0], LeagueImportService)
+
+
+def test_unreadable_league_data_falls_back_to_manual_setup(
+    qtbot, session, game_setup_service
+):
+    game = game_setup_service.create_game()
+    opened = []
+
+    def manual_factory(service):
+        opened.append(service)
+        return _FakeGameSetupDialog(game_id=game.id)
+
+    window = _make_import_window(
+        qtbot,
+        session,
+        _FakeLeagueImportDialog(fall_back_to_manual=True),
+        game_setup_dialog_factory=manual_factory,
+    )
+
+    window.import_game_action.trigger()
+
+    assert len(opened) == 1
+    assert window.units_action.isEnabled() is False
+
+
+def test_cancelling_the_import_dialog_does_nothing(qtbot, session):
+    window = _make_import_window(
+        qtbot, session, _FakeLeagueImportDialog(accepted=False)
+    )
+
+    window.import_game_action.trigger()
+
+    assert window.tagging_panel is None
 
 
 class _FakeGamePicker(_FakeGameListDialog):
