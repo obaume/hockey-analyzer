@@ -80,6 +80,7 @@ _POSITION_COLUMNS = (
     "FF%",
     "+/-",
     "CF/skater",
+    "CA/skater",
     "OZS",
     "DZS",
     "ZS%",
@@ -97,7 +98,7 @@ _UNIT_COLUMNS = (
     "GF",
     "GA",
     "+/-",
-    "TOI",
+    "MIN",
     "Note",
 )
 _UNIT_TYPE_LABELS = {
@@ -133,11 +134,6 @@ def _number(value: float | None, digits: int = 0) -> str:
 
 def _signed(value: int) -> str:
     return f"{value:+d}" if value else "0"
-
-
-def _minutes(ms: int) -> str:
-    seconds = ms // 1000
-    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def _unit_label(unit_type: UnitType, number: int) -> str:
@@ -393,6 +389,7 @@ class StatsDialog(QDialog):
             *_for_against_rows("F", stats.fenwick).values(),
             _signed(stats.plus_minus),
             _number(stats.per_skater(stats.corsi.for_), 1),
+            _number(stats.per_skater(stats.corsi.against), 1),
             str(zone_starts.offensive),
             str(zone_starts.defensive),
             _percent(zone_starts.percentage),
@@ -424,12 +421,17 @@ class StatsDialog(QDialog):
             str(stats.goals.for_),
             str(stats.goals.against),
             _signed(stats.plus_minus),
-            _minutes(stats.time_together_ms),
+            _number(stats.time_together_ms / 60_000, 1),
             "",
         ]
 
     def _players_text(self, player_ids: frozenset[int]) -> str:
-        return ", ".join(sorted(self._labels[player_id] for player_id in player_ids))
+        return ", ".join(
+            sorted(
+                self._labels.get(player_id, f"Player {player_id}")
+                for player_id in player_ids
+            )
+        )
 
     def _fill_by_side(
         self,

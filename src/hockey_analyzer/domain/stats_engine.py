@@ -1,6 +1,8 @@
-"""StatsEngine (ticket 18): pure query functions turning one tagged game's
+"""StatsEngine (tickets 18, 19): pure query functions turning tagged games'
 `GameData` into the stats CONTEXT.md defines -- Corsi/Fenwick, PDO, zone
-starts, +/-, and goalie SV%/GAA/HD SV%. No GUI, database, or file-I/O
+starts, +/-, goalie SV%/GAA/HD SV% (ticket 18), plus per-position rollups,
+line/unit stats, and `combined_*` sum-then-compute aggregates over a
+hand-picked set of games (ticket 19). No GUI, database, or file-I/O
 dependency: domain objects in, frozen result objects out.
 """
 
@@ -386,8 +388,8 @@ def goalie_stats(
 ) -> list[GoalieStats]:
     """Every rostered goalie's SV%/GAA/HD SV%, defaulting to all
     situations -- unlike every other stat here -- since that's how these
-    are conventionally reported. Not gated by `opponent_shifts_complete`
-    (ticket 18 gates only on-ice skater stats)."""
+    are conventionally reported. Not gated by `opponent_shifts_complete`,
+    which gates only on-ice skater and line/unit stats."""
     on_goal = _on_goal(_shots(data, strength_state))
     on_ice = _on_ice_at_shots(data)
     intervals = _on_ice_intervals(data)
