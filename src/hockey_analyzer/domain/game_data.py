@@ -12,18 +12,25 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from hockey_analyzer.domain.models import Event, Game, GameRosterEntry
+from hockey_analyzer.domain.models import (
+    Event,
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+)
 
 
 @dataclass(frozen=True)
 class GameData:
     """One game's snapshot: the `Game` row (sides, rink type,
     `opponent_shifts_complete`), its events in video order, and its roster
-    entries with each entry's `Player` attached (for `Position`)."""
+    entries with each entry's `Player` attached (for `Position`), and its
+    line/unit assignments (for ticket 19's unit stats)."""
 
     game: Game
     events: Sequence[Event]
     roster: Sequence[GameRosterEntry]
+    unit_assignments: Sequence[GameUnitAssignment] = ()
 
 
 def load_game_data(db_session: Session, game_id: int) -> GameData:
@@ -41,4 +48,19 @@ def load_game_data(db_session: Session, game_id: int) -> GameData:
         .options(selectinload(GameRosterEntry.player))
         .order_by(GameRosterEntry.team_id, GameRosterEntry.jersey_number)
     )
-    return GameData(game=game, events=list(events), roster=list(roster))
+    unit_assignments = db_session.scalars(
+        select(GameUnitAssignment)
+        .where(GameUnitAssignment.game_id == game_id)
+        .order_by(
+            GameUnitAssignment.team_id,
+            GameUnitAssignment.unit_type,
+            GameUnitAssignment.unit_number,
+            GameUnitAssignment.player_id,
+        )
+    )
+    return GameData(
+        game=game,
+        events=list(events),
+        roster=list(roster),
+        unit_assignments=list(unit_assignments),
+    )

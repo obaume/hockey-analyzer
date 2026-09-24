@@ -5,146 +5,16 @@ so each test states exactly the events its expected numbers come from."""
 from __future__ import annotations
 
 import pytest
+from stats_fixtures import AWAY, HOME, GameBuilder
 
 from hockey_analyzer.domain import stats_engine
-from hockey_analyzer.domain.enums import Position, RinkType, ShotOutcome, ShotType
-from hockey_analyzer.domain.game_data import GameData
-from hockey_analyzer.domain.models import (
-    Faceoff,
-    Game,
-    GameRosterEntry,
-    PeriodEnd,
-    PeriodStart,
-    Player,
-    ShiftChange,
-    ShotAttempt,
-    Stoppage,
-)
-
-HOME = 1
-AWAY = 2
-
-# Fixed "attacking toward" x for each side's shots in period 1; teams
-# switch ends for period 2. Shot coordinates below are placed well inside
-# the relevant offensive zone unless a test says otherwise.
-HOME_NET_X = 80.0
-AWAY_NET_X = -80.0
-
-
-class _Builder:
-    """Accumulates one game's events/roster, assigning ids and timestamps
-    in the order they're added (so insertion order == video order unless a
-    test passes `at=` explicitly)."""
-
-    def __init__(self, *, opponent_shifts_complete=False, rink_type=RinkType.IIHF):
-        self.game = Game(
-            id=1,
-            home_team_id=HOME,
-            away_team_id=AWAY,
-            rink_type=rink_type,
-            opponent_shifts_complete=opponent_shifts_complete,
-        )
-        self.events = []
-        self.roster = []
-        self._next_id = 1
-        self._clock = 0
-
-    def _add(self, event, at):
-        if at is None:
-            self._clock += 1000
-            at = self._clock
-        else:
-            self._clock = max(self._clock, at)
-        event.id = self._next_id
-        self._next_id += 1
-        event.game_id = self.game.id
-        event.video_timestamp = at
-        self.events.append(event)
-        return event
-
-    def player(self, team_id, jersey, *, position=Position.CENTER, name=None):
-        player_id = len(self.roster) + 100
-        player = Player(id=player_id, full_name=name, position=position)
-        self.roster.append(
-            GameRosterEntry(
-                game_id=self.game.id,
-                player_id=player_id,
-                team_id=team_id,
-                jersey_number=jersey,
-                player=player,
-            )
-        )
-        return player_id
-
-    def shot(
-        self,
-        team_id,
-        outcome=ShotOutcome.SAVED,
-        *,
-        strength="5v5",
-        at=None,
-        x=None,
-        y=0.0,
-        shot_type=ShotType.WRIST,
-        **context,
-    ):
-        if x is None:
-            x = HOME_NET_X - 30 if team_id == HOME else AWAY_NET_X + 30
-        return self._add(
-            ShotAttempt(
-                shot_team_id=team_id,
-                shot_outcome=outcome,
-                shot_type=shot_type,
-                shot_x=x,
-                shot_y=y,
-                shooter_unknown=True,
-                strength_state=strength,
-                **{f"shot_{flag}": value for flag, value in context.items()},
-            ),
-            at,
-        )
-
-    def shift(self, team_id, player_id, on, *, at=None, unknown=False):
-        return self._add(
-            ShiftChange(
-                shift_team_id=team_id,
-                shift_player_id=None if unknown else player_id,
-                shift_player_unknown=unknown,
-                shift_on_ice=on,
-            ),
-            at,
-        )
-
-    def faceoff(self, x, *, at=None, strength="5v5"):
-        return self._add(
-            Faceoff(
-                faceoff_x=x,
-                faceoff_y=0.0,
-                faceoff_participant_a_unknown=True,
-                faceoff_participant_b_unknown=True,
-                strength_state=strength,
-            ),
-            at,
-        )
-
-    def stoppage(self, *, at=None):
-        return self._add(Stoppage(), at)
-
-    def period_start(self, number, *, at=None):
-        return self._add(PeriodStart(period_number=number), at)
-
-    def period_end(self, number, *, at=None):
-        return self._add(PeriodEnd(period_number=number), at)
-
-    def build(self):
-        return GameData(game=self.game, events=list(self.events), roster=self.roster)
-
+from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType
 
 # -- team Corsi / Fenwick ---------------------------------------------
 
 
 def test_team_corsi_counts_every_attempt_and_fenwick_excludes_blocked():
-    game = _Builder()
+    game = GameBuilder()
     game.shot(HOME, ShotOutcome.GOAL)
     game.shot(HOME, ShotOutcome.SAVED)
     game.shot(HOME, ShotOutcome.MISSED)
@@ -162,7 +32,7 @@ def test_team_corsi_counts_every_attempt_and_fenwick_excludes_blocked():
 
 
 def test_team_stats_filter_by_strength_state_defaulting_to_5v5():
-    game = _Builder()
+    game = GameBuilder()
     game.shot(HOME, strength="5v5")
     game.shot(HOME, strength="5v4")
     game.shot(AWAY, strength="4v5")
@@ -179,7 +49,7 @@ def test_team_stats_filter_by_strength_state_defaulting_to_5v5():
 
 
 def test_shot_with_no_team_set_counts_for_nobody():
-    game = _Builder()
+    game = GameBuilder()
     game.shot(HOME)
     game.shot(AWAY).shot_team_id = None
 
@@ -192,7 +62,7 @@ def test_shot_with_no_team_set_counts_for_nobody():
 
 
 def test_pdo_is_shooting_plus_save_percentage_over_shots_on_goal_only():
-    game = _Builder()
+    game = GameBuilder()
     # Home: 1 goal on 4 shots on goal (misses/blocks don't count) = .250
     game.shot(HOME, ShotOutcome.GOAL)
     for _ in range(3):
@@ -213,7 +83,7 @@ def test_pdo_is_shooting_plus_save_percentage_over_shots_on_goal_only():
 
 
 def test_pdo_is_undefined_without_shots_on_goal_both_ways():
-    game = _Builder()
+    game = GameBuilder()
     game.shot(HOME, ShotOutcome.GOAL)
     game.shot(AWAY, ShotOutcome.MISSED)
 
@@ -236,7 +106,7 @@ def _skater(data, player_id, **kwargs):
 
 
 def test_on_ice_corsi_counts_only_attempts_during_the_players_shifts():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(HOME)  # before Kim's shift
     game.shift(HOME, kim, on=True)
@@ -253,7 +123,7 @@ def test_on_ice_corsi_counts_only_attempts_during_the_players_shifts():
 
 
 def test_a_shift_change_at_the_same_instant_as_a_shot_applies_in_log_order():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shift(HOME, kim, on=True, at=1000)
     game.shot(HOME, at=5000)
@@ -263,7 +133,7 @@ def test_a_shift_change_at_the_same_instant_as_a_shot_applies_in_log_order():
 
 
 def test_plus_minus_counts_on_ice_goals_strictly_at_the_active_filter():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shift(HOME, kim, on=True)
     game.shot(HOME, ShotOutcome.GOAL, strength="5v5")
@@ -279,7 +149,7 @@ def test_plus_minus_counts_on_ice_goals_strictly_at_the_active_filter():
 
 
 def test_goalies_are_not_reported_as_skaters():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     goalie = game.player(HOME, 30, position=Position.GOALIE)
 
@@ -303,7 +173,7 @@ def _one_shift_each(game):
 
 
 def test_opponent_skaters_are_excluded_and_reported_until_shifts_are_complete():
-    game = _Builder(opponent_shifts_complete=False)
+    game = GameBuilder(opponent_shifts_complete=False)
     home_player, away_player = _one_shift_each(game)
 
     report = stats_engine.skater_stats(game.build())
@@ -314,7 +184,7 @@ def test_opponent_skaters_are_excluded_and_reported_until_shifts_are_complete():
 
 
 def test_opponent_skaters_get_individual_stats_once_shifts_are_complete():
-    game = _Builder(opponent_shifts_complete=True)
+    game = GameBuilder(opponent_shifts_complete=True)
     home_player, away_player = _one_shift_each(game)
 
     report = stats_engine.skater_stats(game.build())
@@ -326,7 +196,7 @@ def test_opponent_skaters_get_individual_stats_once_shifts_are_complete():
 
 
 def test_team_stats_are_never_gated_by_opponent_shift_completeness():
-    game = _Builder(opponent_shifts_complete=False)
+    game = GameBuilder(opponent_shifts_complete=False)
     _one_shift_each(game)
 
     away = stats_engine.team_stats(game.build(), AWAY)
@@ -338,7 +208,7 @@ def test_team_stats_are_never_gated_by_opponent_shift_completeness():
 
 
 def test_unknown_shift_player_is_reported_per_team_without_touching_known_stats():
-    game = _Builder(opponent_shifts_complete=True)
+    game = GameBuilder(opponent_shifts_complete=True)
     home_player, away_player = _one_shift_each(game)
     game.shift(HOME, None, on=True, unknown=True)
     unset = game.shift(HOME, home_player, on=True)
@@ -355,7 +225,7 @@ def test_unknown_shift_player_is_reported_per_team_without_touching_known_stats(
 
 
 def test_unknown_shooter_does_not_degrade_on_ice_stats():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shift(HOME, kim, on=True)
     game.shot(HOME, ShotOutcome.GOAL)  # the builder's shooters are unknown
@@ -376,7 +246,7 @@ def _zone_starts(data, player_id, **kwargs):
 
 
 def test_zone_starts_count_faceoff_anchored_shift_starts_by_zone():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(HOME)  # establishes home attacking toward +x
     game.stoppage()
@@ -398,7 +268,7 @@ def test_zone_starts_count_faceoff_anchored_shift_starts_by_zone():
 
 
 def test_on_the_fly_shift_starts_are_excluded_not_bucketed():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(HOME)
     game.faceoff(OFFENSIVE_DOT_FOR_HOME)  # play is live from here
@@ -412,7 +282,7 @@ def test_on_the_fly_shift_starts_are_excluded_not_bucketed():
 
 
 def test_neutral_zone_faceoff_starts_are_excluded_from_the_denominator():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(HOME)
     game.stoppage()
@@ -430,7 +300,7 @@ def test_neutral_zone_faceoff_starts_are_excluded_from_the_denominator():
 
 
 def test_goal_and_period_start_each_stop_play_for_zone_start_purposes():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.period_start(1)
     game.shift(HOME, kim, on=True)  # opening shift, before the first draw
@@ -447,7 +317,7 @@ def test_goal_and_period_start_each_stop_play_for_zone_start_purposes():
 
 
 def test_player_changed_off_before_the_draw_gets_no_zone_start():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(HOME)
     game.stoppage()
@@ -461,7 +331,7 @@ def test_player_changed_off_before_the_draw_gets_no_zone_start():
 
 
 def test_attacking_direction_is_inferred_per_period_from_shot_locations():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.period_start(1)
     game.shot(HOME, x=60.0)
@@ -482,7 +352,7 @@ def test_attacking_direction_is_inferred_per_period_from_shot_locations():
 
 
 def test_attacking_direction_falls_back_to_opposite_of_the_other_teams():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(AWAY, x=-60.0)  # only the away team shot: it attacks -x
     game.stoppage()
@@ -493,7 +363,7 @@ def test_attacking_direction_falls_back_to_opposite_of_the_other_teams():
 
 
 def test_zone_start_with_no_way_to_tell_direction_is_reported_undetermined():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.stoppage()
     game.shift(HOME, kim, on=True)
@@ -506,7 +376,7 @@ def test_zone_start_with_no_way_to_tell_direction_is_reported_undetermined():
 
 
 def test_zone_starts_follow_the_faceoffs_strength_state():
-    game = _Builder()
+    game = GameBuilder()
     kim = game.player(HOME, 14)
     game.shot(HOME)
     game.stoppage()
@@ -530,7 +400,7 @@ def _goalie(data, player_id, **kwargs):
 
 
 def test_save_percentage_counts_shots_on_goal_faced_while_in_net():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
     game.shot(AWAY, ShotOutcome.SAVED)  # before he's tagged on
     game.shift(HOME, goalie, on=True)
@@ -550,7 +420,7 @@ def test_save_percentage_counts_shots_on_goal_faced_while_in_net():
 
 
 def test_goalie_stats_default_to_all_situations_with_5v5_override():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
     game.shift(HOME, goalie, on=True)
     game.shot(AWAY, ShotOutcome.SAVED, strength="5v5")
@@ -562,7 +432,7 @@ def test_goalie_stats_default_to_all_situations_with_5v5_override():
 
 
 def test_goals_against_average_uses_derived_game_clock_minutes():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
     game.period_start(1, at=0)
     game.shift(HOME, goalie, on=True, at=0)
@@ -581,7 +451,7 @@ def test_goals_against_average_uses_derived_game_clock_minutes():
 
 
 def test_filtered_goals_against_average_uses_minutes_at_that_strength_only():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
     game.shift(HOME, goalie, on=True, at=0)
     game.faceoff(0.0, at=0, strength="5v5")
@@ -604,7 +474,7 @@ def test_filtered_goals_against_average_uses_minutes_at_that_strength_only():
 
 
 def test_strength_change_during_live_play_splits_the_goalies_minutes():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
     game.shift(HOME, goalie, on=True, at=0)
     game.faceoff(69.0, at=0, strength="5v4")
@@ -622,7 +492,7 @@ def test_strength_change_during_live_play_splits_the_goalies_minutes():
 
 
 def test_goals_against_average_is_undefined_with_no_time_in_net():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
 
     stats = _goalie(game.build(), goalie)
@@ -633,7 +503,7 @@ def test_goals_against_average_is_undefined_with_no_time_in_net():
 
 
 def test_high_danger_save_percentage_uses_only_high_danger_shots():
-    game = _Builder()
+    game = GameBuilder()
     goalie = game.player(HOME, 30, position=Position.GOALIE)
     game.shift(HOME, goalie, on=True)
     # Away attacks -x; the net mouth is at x=-85.4 on an IIHF rink.
@@ -650,7 +520,7 @@ def test_high_danger_save_percentage_uses_only_high_danger_shots():
 
 
 def test_goalie_stats_are_computed_for_both_teams_regardless_of_the_flag():
-    game = _Builder(opponent_shifts_complete=False)
+    game = GameBuilder(opponent_shifts_complete=False)
     home_goalie = game.player(HOME, 30, position=Position.GOALIE)
     away_goalie = game.player(AWAY, 35, position=Position.GOALIE)
     game.shift(HOME, home_goalie, on=True)
@@ -667,7 +537,7 @@ def test_goalie_stats_are_computed_for_both_teams_regardless_of_the_flag():
 
 
 def test_shot_quality_breaks_a_teams_attempts_down_by_type_context_and_danger():
-    game = _Builder()
+    game = GameBuilder()
     game.shot(HOME, shot_type=ShotType.WRIST, x=80.0, rush=True)  # high danger
     game.shot(HOME, shot_type=ShotType.WRIST, x=50.0, screened=True)
     game.shot(HOME, shot_type=ShotType.SLAP, x=40.0, rebound=True, one_timer=True)
