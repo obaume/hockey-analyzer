@@ -752,3 +752,73 @@ def test_units_action_is_disabled_again_when_no_game_ends_up_active(
     window.new_game_action.trigger()
 
     assert window.units_action.isEnabled() is False
+
+
+class _FakeStatsDialog:
+    """Stands in for StatsDialog.exec() -- records the GameData it was
+    opened with."""
+
+    def __init__(self, data, parent=None) -> None:
+        self.data = data
+        self.parent = parent
+        self.executed = False
+
+    def exec(self) -> QDialog.DialogCode:
+        self.executed = True
+        return QDialog.DialogCode.Accepted
+
+
+def _window_with_stats_dialog(qtbot, session, opened, *, setup_dialog=None):
+    def factory(data, parent=None):
+        dialog = _FakeStatsDialog(data, parent)
+        opened.append(dialog)
+        return dialog
+
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: setup_dialog,
+        stats_dialog_factory=factory,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def test_stats_action_is_disabled_with_no_active_game(qtbot, session):
+    window = _window_with_stats_dialog(qtbot, session, [])
+
+    assert window.stats_action.isEnabled() is False
+
+
+def test_stats_action_opens_the_stats_view_for_the_active_game(
+    qtbot, session, game_setup_service
+):
+    game, home, _away = _game_with_sides(game_setup_service)
+    opened = []
+    window = _window_with_stats_dialog(
+        qtbot, session, opened, setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+    window.new_game_action.trigger()
+    assert window.stats_action.isEnabled() is True
+
+    window.stats_action.trigger()
+
+    assert opened[0].executed is True
+    assert opened[0].parent is window
+    assert opened[0].data.game.id == game.id
+    assert opened[0].data.game.home_team_id == home.id
+
+
+def test_stats_action_stays_disabled_until_both_sides_are_set(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service, both_sides=False)
+    window = _window_with_stats_dialog(
+        qtbot, session, [], setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+
+    window.new_game_action.trigger()
+
+    assert window.stats_action.isEnabled() is False
