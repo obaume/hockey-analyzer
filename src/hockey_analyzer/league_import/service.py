@@ -2,15 +2,17 @@
 staged, unsaved `ImportProposal` -- which local `Team`s and `Player`s the
 game's teams and roster rows would link to, and which would be created --
 for the review screen (ticket 22) to present and the user to confirm as a
-batch. Nothing here writes to the database: every lookup is a read, and
+batch. Proposing never writes to the database: every lookup is a read, and
 the proposal is plain data, not ORM objects (see CONTEXT.md's Team/Player
-entries and ticket 11's import flow).
+entries and ticket 11's import flow). Only `confirm` writes -- the
+reviewed proposal, all of it, in a single commit.
 """
 
 from __future__ import annotations
 
 import enum
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date as date_
 from difflib import SequenceMatcher
@@ -20,8 +22,9 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import Position, Side
-from hockey_analyzer.domain.models import Game, Player, Team
+from hockey_analyzer.domain.enums import Position, RinkType, Side
+from hockey_analyzer.domain.game_setup import SameTeamBothSidesError
+from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
 from hockey_analyzer.league_import.sihf import (
     LeagueSourceError,
     ScrapedPlayer,
@@ -47,6 +50,28 @@ class ManualEntryFallbackError(Exception):
     the caller should fall back to blank manual game/roster entry
     (ticket 14's `GameSetupService` path) rather than block game
     creation."""
+
+
+class AlreadyImportedError(Exception):
+    """Raised instead of importing a league game a local `Game` was already
+    created from -- the caller should point the user at that game rather
+    than create a duplicate (ticket 11)."""
+
+    def __init__(self, existing_game_id: int) -> None:
+        super().__init__(
+            f"this league game is already imported as game {existing_game_id}"
+        )
+        self.existing_game_id = existing_game_id
+
+
+class PlayerRosteredTwiceError(Exception):
+    """Raised instead of linking the same existing `Player` to two roster
+    rows of one import -- a player can't hold two roster spots in one
+    game, so one of the two links is a matching mistake."""
+
+    def __init__(self, player_id: int) -> None:
+        super().__init__(f"player {player_id} is linked to more than one roster row")
+        self.player_id = player_id
 
 
 class TeamMatchStatus(enum.StrEnum):
@@ -153,11 +178,53 @@ class ImportProposal:
         return [row for row in self.roster if row.side == side]
 
 
+@dataclass(frozen=True)
+class ImportResolution:
+    """The user's answers to an `ImportProposal`'s judgment calls, as the
+    review screen submits them to `LeagueImportService.confirm`."""
+
+    # Per side: the existing `Team` to link, or None to create a new one
+    # from the proposal's scraped name/league_id.
+    home_team_id: int | None
+    away_team_id: int | None
+    # Which side's team is the user's own -- always an explicit answer,
+    # never inferred from home/away (ticket 11). Applied to both teams:
+    # the chosen side's gets `is_user_team` set, the other's cleared.
+    # None means neither.
+    user_team: Side | None
+    # One per `ImportProposal.roster` row, same order: the existing
+    # `Player` to link, or None to create a new one from the row's name.
+    player_ids: tuple[int | None, ...]
+    # Set once at creation, like the manual path (ADR-0008) -- the league
+    # site doesn't say which rink standard a game was played under.
+    rink_type: RinkType = RinkType.IIHF
+
+    @classmethod
+    def as_proposed(cls, proposal: ImportProposal) -> ImportResolution:
+        """Every proposed link taken as-is, anything unmatched created
+        new, and `user_team` pre-filled from whichever linked team is
+        already flagged as the user's -- only when that's unambiguous."""
+        flagged = [
+            side
+            for side in (Side.HOME, Side.AWAY)
+            if proposal.team(side).status == TeamMatchStatus.LINKED
+            and proposal.team(side).is_user_team
+        ]
+        return cls(
+            home_team_id=proposal.home.team_id,
+            away_team_id=proposal.away.team_id,
+            user_team=flagged[0] if len(flagged) == 1 else None,
+            player_ids=tuple(row.player_id for row in proposal.roster),
+        )
+
+    def team_id(self, side: Side) -> int | None:
+        return self.home_team_id if side == Side.HOME else self.away_team_id
+
+
 class LeagueImportService:
     """Takes an already-open SQLAlchemy `Session` and a `LeagueSource`.
-    Unlike `GameSetupService`, it never writes or commits: `propose` only
-    reads, and writing a confirmed proposal is the review screen's job
-    (ticket 22)."""
+    `propose` only reads; `confirm` writes a reviewed proposal as one
+    batch -- never write-then-edit (ticket 11's import flow)."""
 
     def __init__(self, db_session: Session, source: LeagueSource) -> None:
         self._db = db_session
@@ -203,6 +270,136 @@ class LeagueImportService:
             team_league_ids_found=bool(league_ids),
             roster=roster,
         )
+
+    def linkable_teams(self, league_id: str | None) -> tuple[TeamCandidate, ...]:
+        """Every existing `Team` a side scraped with `league_id` could be
+        linked to instead -- the review screen's override beyond the
+        proposal's own candidates. A team already carrying a different
+        league_id is provably another league team, so it's left out."""
+        return tuple(
+            TeamCandidate(team.id, team.name, team.is_user_team)
+            for team in self._db.scalars(select(Team).order_by(Team.name))
+            if team.league_id is None or team.league_id == league_id
+        )
+
+    def known_players(self) -> tuple[PlayerCandidate, ...]:
+        """Every existing `Player`, for the review screen's searchable
+        override of a roster row's link."""
+        return tuple(
+            PlayerCandidate(player.id, player.full_name or f"Player {player.id}")
+            for player in self._db.scalars(select(Player).order_by(Player.full_name))
+        )
+
+    def confirm(self, proposal: ImportProposal, resolution: ImportResolution) -> Game:
+        """Create the `Game`, any new `Team`s and `Player`s, and every
+        `GameRosterEntry` exactly as reviewed, in a single commit: a
+        refusal or failure anywhere writes nothing at all."""
+        self._check_confirmable(proposal, resolution)
+        try:
+            teams = {
+                side: self._confirmed_team(proposal.team(side), resolution)
+                for side in (Side.HOME, Side.AWAY)
+            }
+            game = Game(
+                league_id=proposal.league_id,
+                date=proposal.date,
+                venue=proposal.venue,
+                home_score=proposal.home_score,
+                away_score=proposal.away_score,
+                period_scores=proposal.period_scores,
+                rink_type=resolution.rink_type,
+                home_team=teams[Side.HOME],
+                away_team=teams[Side.AWAY],
+            )
+            self._db.add(game)
+            for row, player_id in zip(
+                proposal.roster, resolution.player_ids, strict=True
+            ):
+                # A new Player gets its name only: the row's position is
+                # this game's lineup slot, never Player.position
+                # (CONTEXT.md's Game roster entry).
+                player = (
+                    Player(full_name=row.full_name)
+                    if player_id is None
+                    else self._existing(Player, player_id)
+                )
+                self._db.add(
+                    GameRosterEntry(
+                        game=game,
+                        player=player,
+                        team=teams[row.side],
+                        jersey_number=row.jersey_number,
+                        position=row.position,
+                    )
+                )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return game
+
+    def _check_confirmable(
+        self, proposal: ImportProposal, resolution: ImportResolution
+    ) -> None:
+        """The refusals detectable without adding anything to the
+        session."""
+        existing_game_id = self._db.scalar(
+            select(Game.id).where(Game.league_id == proposal.league_id)
+        )
+        if existing_game_id is not None:
+            raise AlreadyImportedError(existing_game_id)
+        if len(resolution.player_ids) != len(proposal.roster):
+            raise ValueError(
+                f"expected {len(proposal.roster)} player choices, "
+                f"got {len(resolution.player_ids)}"
+            )
+        home_id, away_id = resolution.home_team_id, resolution.away_team_id
+        if home_id is not None and home_id == away_id:
+            raise SameTeamBothSidesError(home_id)
+        linked = Counter(p for p in resolution.player_ids if p is not None)
+        for player_id, count in linked.items():
+            if count > 1:
+                raise PlayerRosteredTwiceError(player_id)
+
+    def _confirmed_team(
+        self, proposed: TeamProposal, resolution: ImportResolution
+    ) -> Team:
+        is_user_team = resolution.user_team == proposed.side
+        team_id = resolution.team_id(proposed.side)
+        if team_id is None:
+            if proposed.league_id is not None and self._db.scalar(
+                select(Team.id).where(Team.league_id == proposed.league_id)
+            ):
+                raise ValueError(
+                    f"a team with league_id {proposed.league_id} already "
+                    "exists; link it instead of creating a new one"
+                )
+            team = Team(
+                name=proposed.name,
+                league_id=proposed.league_id,
+                is_user_team=is_user_team,
+            )
+            self._db.add(team)
+            return team
+        team = self._existing(Team, team_id)
+        if proposed.league_id is not None:
+            if team.league_id is None:
+                # A confirmed name match: remember the link, so this
+                # team's next import links silently by league_id.
+                team.league_id = proposed.league_id
+            elif team.league_id != proposed.league_id:
+                raise ValueError(
+                    f"team {team_id} is league team {team.league_id}, "
+                    f"not {proposed.league_id}"
+                )
+        team.is_user_team = is_user_team
+        return team
+
+    def _existing(self, model: type[Team] | type[Player], id_: int):
+        row = self._db.get(model, id_)
+        if row is None:
+            raise KeyError(f"no {model.__name__} with id {id_}")
+        return row
 
     def _fetch_team_league_ids(self, game_id: str) -> dict[Side, str]:
         """Empty if the game page is lost -- it only ever contributes team
