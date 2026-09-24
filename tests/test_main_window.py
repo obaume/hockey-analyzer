@@ -634,3 +634,87 @@ def test_selecting_a_different_game_while_one_is_already_active_swaps_the_taggin
 
     assert session.query(Event).filter_by(game_id=game_b.id).count() == 1
     assert session.query(Event).filter_by(game_id=game_a.id).count() == 0
+
+
+# -- Game > Units: register the active game's units (ticket 17) -------------
+
+
+class _FakeUnitsDialog:
+    """Stands in for UnitsDialog.exec() -- see _FakeGameSetupDialog.
+    Records what the window opened it for."""
+
+    def __init__(self, service, **game_ids) -> None:
+        self.game_ids = game_ids
+        self.executed = False
+
+    def exec(self) -> QDialog.DialogCode:
+        self.executed = True
+        return QDialog.DialogCode.Accepted
+
+
+def _window_with_units_dialog(qtbot, session, opened, *, setup_dialog=None):
+    def factory(service, **game_ids):
+        dialog = _FakeUnitsDialog(service, **game_ids)
+        opened.append(dialog)
+        return dialog
+
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: setup_dialog,
+        units_dialog_factory=factory,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def _game_with_sides(game_setup_service, *, both_sides=True):
+    game = game_setup_service.create_game()
+    home = game_setup_service.create_team("Icebreakers")
+    away = game_setup_service.create_team("Rivals")
+    game_setup_service.set_side_team(game.id, Side.HOME, home.id)
+    if both_sides:
+        game_setup_service.set_side_team(game.id, Side.AWAY, away.id)
+    return game, home, away
+
+
+def test_units_action_is_disabled_with_no_active_game(qtbot, session):
+    window = _window_with_units_dialog(qtbot, session, [])
+
+    assert window.units_action.isEnabled() is False
+
+
+def test_units_action_opens_the_units_dialog_for_the_active_game(
+    qtbot, session, game_setup_service
+):
+    game, home, away = _game_with_sides(game_setup_service)
+    opened = []
+    window = _window_with_units_dialog(
+        qtbot, session, opened, setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+    window.new_game_action.trigger()
+    assert window.units_action.isEnabled() is True
+
+    window.units_action.trigger()
+
+    assert opened[0].executed is True
+    assert opened[0].game_ids == {
+        "game_id": game.id,
+        "home_team_id": home.id,
+        "away_team_id": away.id,
+    }
+
+
+def test_units_action_stays_disabled_until_both_sides_are_set(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service, both_sides=False)
+    window = _window_with_units_dialog(
+        qtbot, session, [], setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+
+    window.new_game_action.trigger()
+
+    assert window.units_action.isEnabled() is False

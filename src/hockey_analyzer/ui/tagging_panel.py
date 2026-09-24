@@ -42,6 +42,7 @@ from hockey_analyzer.domain.tagging_session import (
     TaggingSession,
     TeamSide,
     Unit,
+    roster_entry_label,
 )
 from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
@@ -461,7 +462,7 @@ class TaggingPanel(QWidget):
         }
         roster: dict[TeamSide, list[tuple[str, int]]] = {
             side: [
-                (self._session.describe_roster_entry(entry), entry.jersey_number)
+                (roster_entry_label(entry), entry.jersey_number)
                 for entry in self._session.list_roster(side)
             ]
             for side in Side

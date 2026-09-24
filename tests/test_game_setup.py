@@ -697,3 +697,42 @@ def test_set_player_units_assigns_moves_and_unassigns_in_one_call(game_setup_ser
         UnitType.FORWARD_LINE: 2,
         UnitType.POWER_PLAY: 1,
     }
+
+
+def test_unit_members_lists_one_units_players(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+    line_1 = [_rostered_player(game_setup_service, game, team, n) for n in (14, 17)]
+    line_2 = _rostered_player(game_setup_service, game, team, 9)
+    for player_id, number in ((line_1[0], 1), (line_1[1], 1), (line_2, 2)):
+        game_setup_service.assign_unit(
+            game_id=game.id,
+            team_id=team.id,
+            player_id=player_id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=number,
+        )
+
+    members = game_setup_service.unit_members(
+        game_id=game.id,
+        team_id=team.id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+
+    assert sorted(members) == sorted(line_1)
+
+
+def test_unit_members_is_empty_for_an_undeclared_unit(game_setup_service):
+    game = game_setup_service.create_game()
+    team = game_setup_service.create_team("Icebreakers")
+
+    assert (
+        game_setup_service.unit_members(
+            game_id=game.id,
+            team_id=team.id,
+            unit_type=UnitType.PENALTY_KILL,
+            unit_number=1,
+        )
+        == []
+    )

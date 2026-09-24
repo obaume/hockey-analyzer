@@ -330,6 +330,19 @@ class GameSetupService:
             for assignment in self._db.scalars(stmt)
         }
 
+    def unit_members(
+        self, *, game_id: int, team_id: int, unit_type: UnitType, unit_number: int
+    ) -> list[int]:
+        """The player ids on one team's unit (e.g. Forward line 1) in
+        `game_id` -- empty for a unit nobody has been put on yet."""
+        stmt = select(GameUnitAssignment.player_id).where(
+            GameUnitAssignment.game_id == game_id,
+            GameUnitAssignment.team_id == team_id,
+            GameUnitAssignment.unit_type == unit_type,
+            GameUnitAssignment.unit_number == unit_number,
+        )
+        return list(self._db.scalars(stmt))
+
     def _unit_assignment(
         self, game_id: int, player_id: int, unit_type: UnitType
     ) -> GameUnitAssignment | None:

@@ -144,6 +144,13 @@ def unit_label(unit_type: UnitType, unit_number: int) -> str:
     return f"{UNIT_TYPE_LABELS[unit_type]} {unit_number}"
 
 
+def roster_entry_label(entry: GameRosterEntry) -> str:
+    """e.g. "#14 Jordan Kim", or just "#14" for a nameless player -- how
+    a rostered player is listed wherever a tagger picks one."""
+    name = entry.player.full_name
+    return f"#{entry.jersey_number} {name}" if name else f"#{entry.jersey_number}"
+
+
 class Unit(NamedTuple):
     """One declared unit on one side of the game (e.g. that side's
     Forward-Line 1), with every player holding a `GameUnitAssignment` to
@@ -498,11 +505,6 @@ class TaggingSession:
             .order_by(GameRosterEntry.jersey_number)
         )
         return list(self._db.scalars(stmt))
-
-    def describe_roster_entry(self, entry: GameRosterEntry) -> str:
-        """e.g. "#14 Jordan Kim", or just "#14" for a nameless player."""
-        name = entry.player.full_name
-        return f"#{entry.jersey_number} {name}" if name else f"#{entry.jersey_number}"
 
     def log_unit_change(
         self, unit: Unit, video_timestamp: int, *, on_ice: bool

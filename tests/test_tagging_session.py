@@ -22,7 +22,11 @@ from hockey_analyzer.domain.models import (
     Team,
 )
 from hockey_analyzer.domain.rink import high_danger, zone
-from hockey_analyzer.domain.tagging_session import TaggingSession, Unit
+from hockey_analyzer.domain.tagging_session import (
+    TaggingSession,
+    Unit,
+    roster_entry_label,
+)
 
 # -- log_event: instant capture -------------------------------------------
 
@@ -962,7 +966,7 @@ def test_list_roster_returns_one_sides_roster_by_jersey_number(tagging_session):
     assert [entry.jersey_number for entry in roster] == [7, 23]
 
 
-def test_describe_roster_entry_includes_the_name_when_known(tagging_session):
+def test_roster_entry_label_includes_the_name_when_known(tagging_session):
     named = tagging_session.resolve_or_create_roster_entry(
         tagging_session.home_team_id, 14, full_name="Jordan Kim"
     )
@@ -970,5 +974,5 @@ def test_describe_roster_entry_includes_the_name_when_known(tagging_session):
         tagging_session.home_team_id, 9
     )
 
-    assert tagging_session.describe_roster_entry(named) == "#14 Jordan Kim"
-    assert tagging_session.describe_roster_entry(nameless) == "#9"
+    assert roster_entry_label(named) == "#14 Jordan Kim"
+    assert roster_entry_label(nameless) == "#9"
