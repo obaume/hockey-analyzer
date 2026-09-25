@@ -35,6 +35,11 @@ from hockey_analyzer.clip_encoder import FfmpegClipEncoder, probe_footage
 from hockey_analyzer.domain.clip_export import ClipEncodingError
 from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.game_setup import GameSetupService
+from hockey_analyzer.domain.report_bundle import (
+    Report,
+    ReportBundleError,
+    read_bundle,
+)
 from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.domain.video_timestamp import (
     format_video_timestamp,
@@ -54,6 +59,8 @@ from hockey_analyzer.ui.playback_controller import (
     DEFAULT_SPEED_STEPS,
     PlaybackController,
 )
+from hockey_analyzer.ui.report_export_dialog import REPORT_FILE_FILTER
+from hockey_analyzer.ui.report_view import ReportViewerDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.stats_dialog import StatsDialog
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
@@ -79,6 +86,14 @@ class UnitsDialogFactory(Protocol):
     ) -> UnitsDialog: ...
 
 
+class ReportViewerFactory(Protocol):
+    """`ReportViewerDialog`'s constructor shape, as `_open_report` calls it."""
+
+    def __call__(
+        self, report: Report, *, title: str, parent: QWidget | None = None
+    ) -> ReportViewerDialog: ...
+
+
 def _clip_export_dialog(data: GameData, parent: QWidget) -> ClipExportDialog:
     """Probes the footage for its length (padding windows clamp to it),
     then opens the dialog over the real ffmpeg encoder."""
@@ -93,6 +108,7 @@ def _clip_export_dialog(data: GameData, parent: QWidget) -> ClipExportDialog:
 
 JUMP_SECONDS = 5
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
+OPEN_REPORT_FILE_FILTER = f"{REPORT_FILE_FILTER};;All files (*)"
 
 
 class MainWindow(QMainWindow):
@@ -122,6 +138,9 @@ class MainWindow(QMainWindow):
         clip_export_dialog_factory: Callable[[GameData, QWidget], ClipExportDialog]
         | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
+        report_file_dialog: Callable[[], str] | None = None,
+        report_viewer_factory: ReportViewerFactory | None = None,
+        report_error_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -170,6 +189,11 @@ class MainWindow(QMainWindow):
             video_missing_notice
             if video_missing_notice is not None
             else self._show_video_missing_notice
+        )
+        self._report_file_dialog = report_file_dialog or self._show_open_report_dialog
+        self._report_viewer_factory = report_viewer_factory or ReportViewerDialog
+        self._report_error_notice = (
+            report_error_notice or self._show_report_error_notice
         )
         # The Game currently being tagged/played in this window, if any --
         # set by New Game/Select Game, and used to attach a video path to
@@ -237,6 +261,10 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         self.open_video_action = file_menu.addAction("Open Video…")
         self.open_video_action.triggered.connect(self._open_video)
+        # A report bundle (ticket 26) is self-contained -- opening one
+        # never touches this install's games, so it needs no db_session.
+        self.open_report_action = file_menu.addAction("Open Report…")
+        self.open_report_action.triggered.connect(self._open_report)
 
         game_menu = self.menuBar().addMenu("&Game")
         self.new_game_action = game_menu.addAction("New Game…")
@@ -466,6 +494,30 @@ class MainWindow(QMainWindow):
     def _show_open_file_dialog(self) -> str:
         path, _ = QFileDialog.getOpenFileName(self, "Open video", "", VIDEO_FILE_FILTER)
         return path
+
+    def _open_report(self) -> None:
+        path = self._report_file_dialog()
+        if not path:
+            return
+        try:
+            report = read_bundle(path)
+        except (ReportBundleError, OSError) as error:
+            # BundleTooNewError's own message already says to update the
+            # app; an older bundle opens best-effort instead (read_bundle).
+            self._report_error_notice(str(error))
+            return
+        self._report_viewer_factory(
+            report, title=f"Report -- {Path(path).name}", parent=self
+        ).exec()
+
+    def _show_open_report_dialog(self) -> str:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open report", "", OPEN_REPORT_FILE_FILTER
+        )
+        return path
+
+    def _show_report_error_notice(self, message: str) -> None:
+        QMessageBox.warning(self, "Can't open report", message)
 
     def _show_video_missing_notice(self, path: str) -> None:
         QMessageBox.warning(

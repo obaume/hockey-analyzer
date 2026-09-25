@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from table_helpers import column, row, table_rows
 
 from hockey_analyzer.domain.enums import (
     EventType,
@@ -11,6 +12,8 @@ from hockey_analyzer.domain.enums import (
     UnitType,
 )
 from hockey_analyzer.domain.game_data import load_game_data
+from hockey_analyzer.domain.report_bundle import StrengthFilters
+from hockey_analyzer.domain.stats_engine import ALL_SITUATIONS
 from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.ui.stats_dialog import StatsDialog
 
@@ -88,41 +91,8 @@ def _dialog(qtbot, *games):
     return dialog
 
 
-def _table(table):
-    """A QTableWidget as {row header: [cell texts]}."""
-    return {
-        table.verticalHeaderItem(row).text(): [
-            table.item(row, column).text() for column in range(table.columnCount())
-        ]
-        for row in range(table.rowCount())
-    }
-
-
-def _column(table, header):
-    return next(
-        column
-        for column in range(table.columnCount())
-        if table.horizontalHeaderItem(column).text() == header
-    )
-
-
 def _skater_row(dialog, label):
-    return _row(dialog.skater_table, "Player", label)
-
-
-def _row(table, key_column, *key):
-    """The row whose cells under `key_column` (and the columns after it,
-    for a multi-part key) read `key`, as {column header: cell text}."""
-    first = _column(table, key_column)
-    row = next(
-        row
-        for row in range(table.rowCount())
-        if tuple(table.item(row, first + i).text() for i in range(len(key))) == key
-    )
-    return {
-        table.horizontalHeaderItem(column).text(): table.item(row, column).text()
-        for column in range(table.columnCount())
-    }
+    return row(dialog.skater_table, "Player", label)
 
 
 def _select(combo, label):
@@ -138,7 +108,7 @@ def test_team_table_shows_both_sides_at_5v5_by_default(qtbot, tagged_game):
         for column in range(dialog.team_table.columnCount())
     ]
     assert headers == ["Icebreakers", "Rivals"]
-    rows = _table(dialog.team_table)
+    rows = table_rows(dialog.team_table)
     assert rows["CF"] == ["1", "1"]
     assert rows["CF%"] == ["50.0%", "50.0%"]
     # 5v5: Icebreakers scored on their only shot on goal and saved Rivals'.
@@ -153,7 +123,7 @@ def test_changing_the_skater_filter_recomputes_team_and_skater_stats(
 
     _select(dialog.skater_strength_combo, "All situations")
 
-    assert _table(dialog.team_table)["CF"] == ["2", "1"]
+    assert table_rows(dialog.team_table)["CF"] == ["2", "1"]
     assert _skater_row(dialog, "#14 Jordan Kim")["+/-"] == "+2"
 
 
@@ -174,15 +144,17 @@ def test_goalie_table_defaults_to_all_situations(qtbot, tagged_game):
     dialog = _dialog(qtbot, data)
 
     assert dialog.goalie_strength_combo.currentText() == "All situations"
-    goalies = _table(dialog.goalie_table)
+    goalies = table_rows(dialog.goalie_table)
     # Home goalie #30 faced one saved shot; away #35 two goals.
-    assert goalies["#30"][_column(dialog.goalie_table, "SV%")] == "1.000"
-    assert goalies["#35"][_column(dialog.goalie_table, "SV%")] == ".000"
-    assert goalies["#35"][_column(dialog.goalie_table, "GA")] == "2"
+    assert goalies["#30"][column(dialog.goalie_table, "SV%")] == "1.000"
+    assert goalies["#35"][column(dialog.goalie_table, "SV%")] == ".000"
+    assert goalies["#35"][column(dialog.goalie_table, "GA")] == "2"
 
     _select(dialog.goalie_strength_combo, "5v5")
 
-    assert _table(dialog.goalie_table)["#35"][_column(dialog.goalie_table, "GA")] == "1"
+    assert (
+        table_rows(dialog.goalie_table)["#35"][column(dialog.goalie_table, "GA")] == "1"
+    )
 
 
 def test_caveat_line_is_hidden_when_every_shift_change_is_resolved(qtbot, tagged_game):
@@ -217,7 +189,7 @@ def test_shot_quality_table_shows_type_counts_and_high_danger_share(qtbot, tagge
     data, _kim = tagged_game
     dialog = _dialog(qtbot, data)
 
-    rows = _table(dialog.shot_quality_table)
+    rows = table_rows(dialog.shot_quality_table)
     assert rows["Wrist"] == ["1", "1"]
     assert rows["High-danger share"] == ["100.0%", "0.0%"]
 
@@ -229,13 +201,13 @@ def test_positions_tab_rolls_skaters_up_by_team_and_position(qtbot, tagged_game)
     data, _kim = tagged_game
     dialog = _dialog(qtbot, data)
 
-    centers = _row(dialog.position_table, "Team", "Icebreakers", "C")
+    centers = row(dialog.position_table, "Team", "Icebreakers", "C")
     assert (centers["Skaters"], centers["CF"], centers["CA"]) == ("1", "1", "1")
     assert centers["+/-"] == "+1"
 
     _select(dialog.skater_strength_combo, "All situations")
 
-    assert _row(dialog.position_table, "Team", "Icebreakers", "C")["CF"] == "2"
+    assert row(dialog.position_table, "Team", "Icebreakers", "C")["CF"] == "2"
 
 
 def test_units_tab_shows_each_unit_at_its_natural_strength(qtbot, tagged_game):
@@ -243,18 +215,18 @@ def test_units_tab_shows_each_unit_at_its_natural_strength(qtbot, tagged_game):
     dialog = _dialog(qtbot, data)
 
     assert dialog.unit_strength_combo.currentText() == "Unit default"
-    line = _row(dialog.unit_table, "Team", "Icebreakers", "Forward-Line 1")
-    power_play = _row(dialog.unit_table, "Team", "Icebreakers", "Power-Play 1")
+    line = row(dialog.unit_table, "Team", "Icebreakers", "Forward-Line 1")
+    power_play = row(dialog.unit_table, "Team", "Icebreakers", "Power-Play 1")
     assert line["Players"] == "#14 Jordan Kim"
     assert (line["CF"], line["CA"]) == ("1", "1")  # 5v5 only
     assert (power_play["CF"], power_play["GF"]) == ("1", "1")  # the 5v4 goal
-    rivals = _row(dialog.unit_table, "Team", "Rivals", "Forward-Line 1")
+    rivals = row(dialog.unit_table, "Team", "Rivals", "Forward-Line 1")
     assert rivals["CF"] == "—"
     assert "opponent shifts" in rivals["Note"]
 
     _select(dialog.unit_strength_combo, "5v5")
 
-    power_play = _row(dialog.unit_table, "Team", "Icebreakers", "Power-Play 1")
+    power_play = row(dialog.unit_table, "Team", "Icebreakers", "Power-Play 1")
     assert (power_play["CF"], power_play["CA"]) == ("1", "1")
 
 
@@ -282,12 +254,53 @@ def test_multi_game_view_sums_games_and_reports_included_and_excluded_games(
 
     assert "2 games" in dialog.windowTitle()
     # Team stats are never narrowed: both games' 5v5 attempts, summed.
-    assert _table(dialog.team_table)["CF"] == ["2", "2"]
+    assert table_rows(dialog.team_table)["CF"] == ["2", "2"]
     assert _skater_row(dialog, "#14 Jordan Kim")["CF"] == "2"
     # Rivals' on-ice stats come from the flagged game only.
     assert _skater_row(dialog, "#91")["CF"] == "1"
-    assert _row(dialog.unit_table, "Team", "Rivals", "Forward-Line 1")["CF"] == "1"
+    assert row(dialog.unit_table, "Team", "Rivals", "Forward-Line 1")["CF"] == "1"
     assert dialog.coverage_label.isHidden() is False
     coverage = dialog.coverage_label.text()
     assert f"Rivals: 1 of 2 games (excluded: Game #{unflagged.game.id})" in coverage
     assert "Icebreakers: 2 of 2 games" in coverage
+
+
+# -- ticket 26: exporting what's on screen as a report bundle -----------
+
+
+class _FakeExportDialog:
+    def __init__(self, games, *, filters, parent=None):
+        self.games = games
+        self.filters = filters
+        self.parent = parent
+        self.executed = False
+
+    def exec(self):
+        self.executed = True
+
+
+def test_export_hands_the_games_and_current_filters_to_the_report_export(
+    qtbot, tagged_game
+):
+    data, _kim = tagged_game
+    opened = []
+
+    def factory(games, *, filters, parent=None):
+        opened.append(_FakeExportDialog(games, filters=filters, parent=parent))
+        return opened[-1]
+
+    dialog = StatsDialog([data], export_dialog_factory=factory)
+    qtbot.addWidget(dialog)
+    _select(dialog.skater_strength_combo, "All situations")
+    _select(dialog.unit_strength_combo, "5v4")
+    _select(dialog.goalie_strength_combo, "5v5")
+
+    dialog.export_button.click()
+
+    (export,) = opened
+    assert export.executed is True
+    assert export.parent is dialog
+    assert [game.game.id for game in export.games] == [data.game.id]
+    assert export.filters == StrengthFilters(
+        team=ALL_SITUATIONS, skaters=ALL_SITUATIONS, goalies="5v5", units="5v4"
+    )

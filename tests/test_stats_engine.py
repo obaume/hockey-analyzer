@@ -362,6 +362,32 @@ def test_attacking_direction_falls_back_to_opposite_of_the_other_teams():
     assert _zone_starts(game.build(), kim).offensive == 1
 
 
+def test_oriented_shots_turn_every_attempt_toward_its_teams_attacking_end():
+    game = GameBuilder()
+    game.period_start(1)
+    first = game.shot(HOME, x=60.0, y=5.0)
+    game.period_end(1)
+    game.period_start(2)
+    switched = game.shot(HOME, x=-70.0, y=5.0)  # ends switched: rink turned
+    second = game.shot(HOME, x=-50.0, y=0.0)
+    away = game.shot(AWAY, x=40.0, y=-3.0)  # away attacks +x in period 2
+
+    assert stats_engine.oriented_shots(game.build()) == [
+        (first, 60.0, 5.0),
+        (switched, 70.0, -5.0),
+        (second, 50.0, 0.0),
+        (away, 40.0, -3.0),
+    ]
+
+
+def test_oriented_shots_leave_out_attempts_whose_direction_is_undetermined():
+    game = GameBuilder()
+    game.shot(HOME, x=0.0)  # on the center line: votes for neither end
+    game.shot(AWAY).shot_x = None  # no location at all
+
+    assert stats_engine.oriented_shots(game.build()) == []
+
+
 def test_zone_start_with_no_way_to_tell_direction_is_reported_undetermined():
     game = GameBuilder()
     kim = game.player(HOME, 14)
