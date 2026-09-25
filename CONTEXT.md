@@ -136,6 +136,10 @@ A single exported video segment covering one `Event`'s **padding window** (see b
 
 The buffer of footage included before and after an `Event`'s video timestamp when generating a **Clip**. Set once per export (a single before/after value applied to every clip that export produces) rather than per individual clip — tunable per export, but not worth a per-clip review step for the marginal gain, since events of the same type need roughly the same lead-in/lead-out. Defaults to a fixed value when the user doesn't override it.
 
+### Clip preview
+
+Playback, while choosing what to export, of one candidate `Event`'s **padding window** straight from the game's source footage — before any **Clip** exists. Not a Clip itself: nothing is encoded, so it can differ from the exported file in encoding details, but never in which stretch of footage it covers. Available for every event matching the export's filter, whether or not it's currently selected, since previewing is how the user decides what to select. Covers one event at a time; there is no preview of a whole **Highlight reel**.
+
 ### Highlight reel
 
 The alternative output shape for a clip export: instead of one file per selected `Event`, all selected clips are concatenated into a single video file. Chosen per export, not a global setting — the same filtered selection of events can be exported either way depending on who it's going to (e.g. individual clips to text one player, a reel to send the whole team).
