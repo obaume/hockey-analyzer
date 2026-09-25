@@ -224,14 +224,14 @@ class TaggingPanel(QWidget):
         self._build_edit_panel()
 
         main_layout = QHBoxLayout()
-        
+
         layout = QVBoxLayout()
         layout.addLayout(log_row)
         layout.addWidget(self.event_table, stretch=1)
-        
+
         main_layout.addLayout(layout)
         main_layout.addWidget(self.edit_group)
-        
+
         self.setLayout(main_layout)
 
         self.edit_group.setVisible(False)

@@ -5,11 +5,11 @@ and output paths."""
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, call
 
 import pytest
+from clip_fixtures import ALICE, AWAY, BOB, CARL, SECOND, ClipGame
 
 from hockey_analyzer.domain import clip_export
 from hockey_analyzer.domain.clip_export import (
@@ -23,123 +23,11 @@ from hockey_analyzer.domain.clip_export import (
     select_clips,
 )
 from hockey_analyzer.domain.enums import EventSource, EventType, ShotOutcome, ShotType
-from hockey_analyzer.domain.game_data import GameData
-from hockey_analyzer.domain.models import (
-    Faceoff,
-    Game,
-    GameRosterEntry,
-    Penalty,
-    PeriodStart,
-    Player,
-    ShiftChange,
-    ShotAttempt,
-    Stoppage,
-    Team,
-)
+from hockey_analyzer.domain.models import ShotAttempt, Stoppage
 
-SECOND = 1000
 FOOTAGE_MS = 3600 * SECOND
 OUT = Path("exports")
 NO_PADDING = Padding(before_ms=0, after_ms=0)
-
-HOME = 1
-AWAY = 2
-ALICE = 100
-BOB = 101
-CARL = 102
-
-
-class _Game:
-    """One game's events and roster. Events get ids in the order added;
-    `at` is in seconds of footage. A period 1 start and opening faceoff at
-    0s are logged up front so every event has a game clock."""
-
-    def __init__(self, *, user_side=HOME, game_date=date(2026, 9, 20)):
-        home = Team(id=HOME, name="Ice Breakers", is_user_team=user_side == HOME)
-        away = Team(id=AWAY, name="Rivals HC", is_user_team=user_side == AWAY)
-        self.game = Game(
-            id=1,
-            date=game_date,
-            home_team_id=HOME,
-            away_team_id=AWAY,
-            home_team=home,
-            away_team=away,
-            video_path="C:/footage/game.mp4",
-        )
-        self.events = []
-        self.roster = [
-            self._entry(ALICE, HOME, 9, "Alice Müller"),
-            self._entry(BOB, HOME, 17, "Bob Smith"),
-            self._entry(CARL, AWAY, 4, None),
-        ]
-        self.add(PeriodStart(period_number=1), at=0)
-        self.opening_faceoff = self.faceoff(at=0)
-
-    def _entry(self, player_id, team_id, jersey, name):
-        return GameRosterEntry(
-            game_id=self.game.id,
-            player_id=player_id,
-            team_id=team_id,
-            jersey_number=jersey,
-            player=Player(id=player_id, full_name=name),
-        )
-
-    def add(self, event, *, at, confirmed=True, source=EventSource.MANUAL):
-        event.id = len(self.events) + 1
-        event.game_id = self.game.id
-        event.video_timestamp = at * SECOND
-        event.confirmed = confirmed
-        event.source = source
-        self.events.append(event)
-        return event
-
-    def shot(
-        self,
-        at,
-        *,
-        shooter=None,
-        assists=(),
-        outcome=ShotOutcome.SAVED,
-        team=HOME,
-        **kw,
-    ):
-        assist1, assist2 = (*assists, None, None)[:2]
-        return self.add(
-            ShotAttempt(
-                shot_team_id=team,
-                shot_outcome=outcome,
-                shot_type=ShotType.WRIST,
-                shooter_id=shooter,
-                shooter_unknown=shooter is None,
-                assist1_id=assist1,
-                assist2_id=assist2,
-            ),
-            at=at,
-            **kw,
-        )
-
-    def faceoff(self, at, *, a=None, b=None):
-        return self.add(
-            Faceoff(
-                faceoff_participant_a_id=a,
-                faceoff_participant_a_unknown=a is None,
-                faceoff_participant_b_id=b,
-                faceoff_participant_b_unknown=b is None,
-            ),
-            at=at,
-        )
-
-    def penalty(self, at, *, player):
-        return self.add(Penalty(penalty_team_id=AWAY, penalty_player_id=player), at=at)
-
-    def shift(self, at, *, player, on=True):
-        return self.add(
-            ShiftChange(shift_team_id=HOME, shift_player_id=player, shift_on_ice=on),
-            at=at,
-        )
-
-    def data(self):
-        return GameData(game=self.game, events=self.events, roster=self.roster)
 
 
 def _ids(events):
@@ -158,7 +46,7 @@ def _plan(game, selection, **kw):
 
 
 def test_no_filter_matches_every_event_in_video_order():
-    game = _Game()
+    game = ClipGame()
     late = game.shot(50)
     early = game.shot(20)
 
@@ -168,7 +56,7 @@ def test_no_filter_matches_every_event_in_video_order():
 
 
 def test_event_type_filter():
-    game = _Game()
+    game = ClipGame()
     shot = game.shot(20)
     game.penalty(30, player=CARL)
 
@@ -178,7 +66,7 @@ def test_event_type_filter():
 
 
 def test_outcome_filter_matches_only_shot_attempts_with_that_outcome():
-    game = _Game()
+    game = ClipGame()
     goal = game.shot(20, outcome=ShotOutcome.GOAL)
     game.shot(30, outcome=ShotOutcome.MISSED)
     game.penalty(40, player=CARL)
@@ -203,7 +91,7 @@ def test_outcome_filter_matches_only_shot_attempts_with_that_outcome():
     ],
 )
 def test_player_filter_matches_the_player_in_any_role(make_event):
-    game = _Game()
+    game = ClipGame()
     event = make_event(game)
     game.shot(30, shooter=BOB)
 
@@ -213,7 +101,7 @@ def test_player_filter_matches_the_player_in_any_role(make_event):
 
 
 def test_filters_combine_with_and_semantics():
-    game = _Game()
+    game = ClipGame()
     alice_goal = game.shot(20, shooter=ALICE, outcome=ShotOutcome.GOAL)
     game.shot(30, shooter=ALICE, outcome=ShotOutcome.SAVED)
     game.shot(40, shooter=BOB, outcome=ShotOutcome.GOAL)
@@ -232,7 +120,7 @@ def test_filters_combine_with_and_semantics():
 
 
 def test_unconfirmed_vision_events_are_candidates():
-    game = _Game()
+    game = ClipGame()
     vision = game.shot(20, shooter=ALICE, confirmed=False, source=EventSource.VISION)
 
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -244,7 +132,7 @@ def test_unconfirmed_vision_events_are_candidates():
 
 
 def test_every_candidate_is_selected_by_default():
-    game = _Game()
+    game = ClipGame()
     game.shot(20, shooter=ALICE)
     game.shot(30, shooter=ALICE)
 
@@ -254,7 +142,7 @@ def test_every_candidate_is_selected_by_default():
 
 
 def test_deselected_candidates_drop_out_of_the_selection_but_stay_candidates():
-    game = _Game()
+    game = ClipGame()
     first = game.shot(20, shooter=ALICE)
     second = game.shot(30, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -268,7 +156,7 @@ def test_deselected_candidates_drop_out_of_the_selection_but_stay_candidates():
 
 
 def test_a_deselected_candidate_can_be_picked_again():
-    game = _Game()
+    game = ClipGame()
     first = game.shot(20, shooter=ALICE)
     second = game.shot(30, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -279,7 +167,7 @@ def test_a_deselected_candidate_can_be_picked_again():
 
 
 def test_only_candidates_can_be_picked():
-    game = _Game()
+    game = ClipGame()
     game.shot(20, shooter=ALICE)
     other = game.shot(30, shooter=BOB)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -294,7 +182,7 @@ def test_only_candidates_can_be_picked():
 
 
 def test_zero_matches_disables_export():
-    game = _Game()
+    game = ClipGame()
     game.shot(20, shooter=BOB)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -305,7 +193,7 @@ def test_zero_matches_disables_export():
 
 
 def test_deselecting_every_match_disables_export():
-    game = _Game()
+    game = ClipGame()
     shot = game.shot(20, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -315,7 +203,7 @@ def test_deselecting_every_match_disables_export():
 
 
 def test_running_a_disabled_plan_is_refused_without_encoding():
-    game = _Game()
+    game = ClipGame()
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
     encoder = Mock(spec=ClipEncoder)
 
@@ -325,7 +213,7 @@ def test_running_a_disabled_plan_is_refused_without_encoding():
 
 
 def test_there_is_no_cap_on_match_count():
-    game = _Game()
+    game = ClipGame()
     for second in range(10, 510):
         game.shot(second, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -339,7 +227,7 @@ def test_there_is_no_cap_on_match_count():
 
 
 def test_padding_widens_each_clip_around_its_event():
-    game = _Game()
+    game = ClipGame()
     shot = game.shot(100, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -351,7 +239,7 @@ def test_padding_widens_each_clip_around_its_event():
 
 
 def test_padding_defaults_when_not_overridden():
-    game = _Game()
+    game = ClipGame()
     game.shot(100, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -371,7 +259,7 @@ def test_padding_defaults_when_not_overridden():
 
 
 def test_padding_clamps_at_footage_start():
-    game = _Game()
+    game = ClipGame()
     shot = game.shot(2, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -383,7 +271,7 @@ def test_padding_clamps_at_footage_start():
 
 
 def test_padding_clamps_at_footage_end():
-    game = _Game()
+    game = ClipGame()
     shot = game.shot(98, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -408,7 +296,7 @@ def test_negative_padding_is_rejected():
 
 
 def test_per_clip_filenames_carry_event_type_player_and_game_clock():
-    game = _Game()
+    game = ClipGame()
     game.shot(125, shooter=ALICE)
     game.penalty(200, player=CARL)
     game.faceoff(300, a=CARL, b=BOB)
@@ -425,7 +313,7 @@ def test_per_clip_filenames_carry_event_type_player_and_game_clock():
 
 
 def test_player_name_is_slugged_for_the_filename():
-    game = _Game()
+    game = ClipGame()
     game.shot(125, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -435,7 +323,7 @@ def test_player_name_is_slugged_for_the_filename():
 
 
 def test_per_clip_filenames_omit_the_player_when_not_player_scoped():
-    game = _Game()
+    game = ClipGame()
     game.shot(125, shooter=ALICE, outcome=ShotOutcome.GOAL)
     selection = select_clips(game.data(), ClipFilter(shot_outcome=ShotOutcome.GOAL))
 
@@ -445,7 +333,7 @@ def test_per_clip_filenames_omit_the_player_when_not_player_scoped():
 
 
 def test_clips_sharing_a_game_clock_get_distinct_filenames():
-    game = _Game()
+    game = ClipGame()
     game.add(Stoppage(), at=60)
     game.shift(70, player=ALICE, on=False)
     game.shift(75, player=ALICE, on=True)
@@ -462,7 +350,7 @@ def test_clips_sharing_a_game_clock_get_distinct_filenames():
 
 
 def test_events_without_a_game_clock_fall_back_to_the_video_timestamp():
-    game = _Game()
+    game = ClipGame()
     game.events.clear()
     game.add(
         ShotAttempt(
@@ -478,7 +366,7 @@ def test_events_without_a_game_clock_fall_back_to_the_video_timestamp():
 
 
 def test_per_clip_plan_has_one_output_per_selected_event_in_video_order():
-    game = _Game()
+    game = ClipGame()
     late = game.shot(90, shooter=ALICE)
     early = game.shot(30, shooter=ALICE)
     skipped = game.shot(60, shooter=ALICE)
@@ -498,7 +386,7 @@ def test_per_clip_plan_has_one_output_per_selected_event_in_video_order():
 
 
 def test_reel_is_one_output_of_every_selected_clip_in_chronological_order():
-    game = _Game()
+    game = ClipGame()
     late = game.shot(90, shooter=ALICE)
     early = game.shot(30, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -518,7 +406,7 @@ def test_reel_is_one_output_of_every_selected_clip_in_chronological_order():
 
 
 def test_reel_filename_carries_date_opponent_and_filter_summary():
-    game = _Game()
+    game = ClipGame()
     game.shot(30, shooter=ALICE, outcome=ShotOutcome.GOAL)
     selection = select_clips(
         game.data(),
@@ -538,7 +426,7 @@ def test_reel_filename_carries_date_opponent_and_filter_summary():
 
 
 def test_reel_opponent_is_the_side_that_is_not_the_user_team():
-    game = _Game(user_side=AWAY)
+    game = ClipGame(user_side=AWAY)
     game.shot(30)
     selection = select_clips(game.data(), ClipFilter(event_type=EventType.SHOT_ATTEMPT))
 
@@ -548,7 +436,7 @@ def test_reel_opponent_is_the_side_that_is_not_the_user_team():
 
 
 def test_reel_filename_placeholders_for_missing_game_details():
-    game = _Game(game_date=None)
+    game = ClipGame(game_date=None)
     game.game.home_team = game.game.away_team = None
     selection = select_clips(game.data(), ClipFilter())
 
@@ -561,7 +449,7 @@ def test_reel_filename_placeholders_for_missing_game_details():
 
 
 def test_run_export_encodes_each_clip_from_the_game_footage():
-    game = _Game()
+    game = ClipGame()
     first = game.shot(30, shooter=ALICE)
     second = game.penalty(90, player=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -586,7 +474,7 @@ def test_run_export_encodes_each_clip_from_the_game_footage():
 
 
 def test_run_export_encodes_a_reel_as_one_call_with_every_segment():
-    game = _Game()
+    game = ClipGame()
     first = game.shot(30, shooter=ALICE)
     second = game.shot(90, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
@@ -606,7 +494,7 @@ def test_run_export_encodes_a_reel_as_one_call_with_every_segment():
 
 
 def test_planning_needs_the_game_footage_attached():
-    game = _Game()
+    game = ClipGame()
     game.game.video_path = None
     selection = select_clips(game.data(), ClipFilter())
 
@@ -615,7 +503,7 @@ def test_planning_needs_the_game_footage_attached():
 
 
 def test_an_event_past_the_footage_end_clamps_to_an_empty_clip_at_the_end():
-    game = _Game()
+    game = ClipGame()
     shot = game.shot(120, shooter=ALICE)
     selection = select_clips(game.data(), ClipFilter(player_id=ALICE))
 
@@ -632,7 +520,7 @@ def test_an_event_past_the_footage_end_clamps_to_an_empty_clip_at_the_end():
 
 
 def test_an_opponent_with_no_sluggable_name_is_unknown():
-    game = _Game()
+    game = ClipGame()
     game.game.away_team.name = "!!"
     selection = select_clips(game.data(), ClipFilter())
 
