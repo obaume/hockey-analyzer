@@ -35,9 +35,6 @@ _TABLES = (
 )
 
 
-_game = named_game
-
-
 def _view(qtbot, report):
     view = ReportView(report)
     qtbot.addWidget(view)
@@ -45,7 +42,7 @@ def _view(qtbot, report):
 
 
 def test_game_report_shows_both_teams_stats(qtbot):
-    view = _view(qtbot, build_game_report(_game(), summary=""))
+    view = _view(qtbot, build_game_report(named_game(), summary=""))
 
     assert column_headers(view.team_table) == ["Icebreakers", "Rivals"]
     assert table_rows(view.team_table)["CF"] == ["1", "1"]
@@ -56,7 +53,7 @@ def _select(combo, label):
 
 
 def test_game_report_shows_exactly_what_the_live_stats_view_showed(qtbot):
-    data = _game()
+    data = named_game()
     live = StatsDialog([data])
     qtbot.addWidget(live)
     _select(live.skater_strength_combo, "All situations")
@@ -82,7 +79,7 @@ def test_game_report_shows_exactly_what_the_live_stats_view_showed(qtbot):
 
 
 def test_a_report_opened_from_its_bundle_file_renders_identically(qtbot, tmp_path):
-    report = build_game_report(_game(), summary="Read me.")
+    report = build_game_report(named_game(), summary="Read me.")
     path = tmp_path / "game.hockeyreport"
     write_bundle(path, report)
 
@@ -99,7 +96,7 @@ def test_each_stat_group_names_the_strength_filter_it_was_frozen_at(qtbot):
     view = _view(
         qtbot,
         build_game_report(
-            _game(),
+            named_game(),
             summary="",
             filters=StrengthFilters(
                 team="5v5", skaters="5v5", goalies=ALL_SITUATIONS, units="5v4"
@@ -114,7 +111,7 @@ def test_each_stat_group_names_the_strength_filter_it_was_frozen_at(qtbot):
 
 
 def test_stats_degraded_by_unknown_players_carry_a_caveat(qtbot):
-    data = _game()
+    data = named_game()
     builder_game = GameBuilder(game_id=data.game.id)
     stub = builder_game.shift(HOME, None, True, unknown=True)
     stub.id = 999
@@ -130,15 +127,15 @@ def test_stats_degraded_by_unknown_players_carry_a_caveat(qtbot):
 
 
 def test_no_caveat_line_when_every_shift_change_is_resolved(qtbot):
-    view = _view(qtbot, build_game_report(_game(), summary=""))
+    view = _view(qtbot, build_game_report(named_game(), summary=""))
 
     assert view.caveat_label.isHidden() is True
 
 
 def test_coverage_names_the_games_excluded_for_incomplete_opponent_shifts(qtbot):
-    unflagged = _game(game_id=1)
+    unflagged = named_game(game_id=1)
     unflagged.game.date = datetime.date(2026, 1, 10)
-    flagged = _game(game_id=2, opponent_shifts_complete=True)
+    flagged = named_game(game_id=2, opponent_shifts_complete=True)
     flagged.game.date = datetime.date(2026, 1, 17)
 
     view = _view(qtbot, build_team_report([unflagged, flagged], AWAY, summary=""))
@@ -148,7 +145,7 @@ def test_coverage_names_the_games_excluded_for_incomplete_opponent_shifts(qtbot)
 
 
 def test_a_single_game_report_still_says_when_a_team_was_excluded(qtbot):
-    view = _view(qtbot, build_game_report(_game(), summary=""))
+    view = _view(qtbot, build_game_report(named_game(), summary=""))
 
     assert view.coverage_label.isHidden() is False
     assert "Rivals: 0 of 1 games (excluded: " in view.coverage_label.text()
@@ -156,7 +153,7 @@ def test_a_single_game_report_still_says_when_a_team_was_excluded(qtbot):
 
 def test_a_single_game_report_with_full_coverage_has_no_coverage_line(qtbot):
     view = _view(
-        qtbot, build_game_report(_game(opponent_shifts_complete=True), summary="")
+        qtbot, build_game_report(named_game(opponent_shifts_complete=True), summary="")
     )
 
     assert view.coverage_label.isHidden() is True
@@ -169,7 +166,7 @@ def _tab(view, title):
 
 def test_stat_groups_an_older_bundle_lacks_are_marked_not_included(qtbot):
     report = dataclasses.replace(
-        build_game_report(_game(), summary=""), skater_stats=None, unit_stats=None
+        build_game_report(named_game(), summary=""), skater_stats=None, unit_stats=None
     )
 
     view = _view(qtbot, report)
@@ -193,7 +190,7 @@ def _png(width, height):
 
 def test_charts_show_as_the_images_baked_at_export(qtbot):
     report = build_game_report(
-        _game(), summary="", charts=[Chart("shot-map", _png(40, 20))]
+        named_game(), summary="", charts=[Chart("shot-map", _png(40, 20))]
     )
 
     view = _view(qtbot, report)
@@ -204,7 +201,7 @@ def test_charts_show_as_the_images_baked_at_export(qtbot):
 
 
 def test_a_report_without_charts_has_no_charts_tab(qtbot):
-    view = _view(qtbot, build_game_report(_game(), summary=""))
+    view = _view(qtbot, build_game_report(named_game(), summary=""))
 
     assert view.chart_labels == []
     assert "Charts" not in [
@@ -213,10 +210,10 @@ def test_a_report_without_charts_has_no_charts_tab(qtbot):
 
 
 def _two_games():
-    first = _game(game_id=1)
+    first = named_game(game_id=1)
     first.game.date = datetime.date(2026, 1, 10)
     first.game.home_score, first.game.away_score = 3, 2
-    second = _game(game_id=2, opponent_shifts_complete=True)
+    second = named_game(game_id=2, opponent_shifts_complete=True)
     return [first, second]
 
 
@@ -235,7 +232,7 @@ def test_header_names_a_team_reports_subject_and_lists_every_game(qtbot):
     assert view.title_label.text() == "Team report: Rivals -- 2 games"
     games = view.games_label.text()
     assert "2026-01-10 · Icebreakers 3–2 Rivals" in games
-    assert "Game 2 · Icebreakers vs Rivals" in games
+    assert "Game #2 · Icebreakers vs Rivals" in games
 
 
 def test_team_report_shows_only_the_subject_teams_stats(qtbot):
@@ -263,3 +260,26 @@ def test_player_report_shows_only_the_subject_player(qtbot):
     assert view.skater_table.item(0, 0).text() == "#14 Jordan Kim"
     assert view.unit_table.rowCount() == 1
     assert view.goalie_table.rowCount() == 0
+
+
+def test_coverage_naming_a_game_missing_from_the_game_list_still_opens(qtbot):
+    report = build_team_report(_two_games(), AWAY, summary="")
+    damaged = dataclasses.replace(report, games=report.games[1:])
+
+    view = _view(qtbot, damaged)
+
+    assert "Rivals: 1 of 2 games (excluded: Game #1)" in view.coverage_label.text()
+
+
+def test_player_report_without_the_players_rows_keeps_every_teams_caveats(qtbot):
+    games = _two_games()
+    kim = games[0].roster[0].player_id
+    report = dataclasses.replace(
+        build_player_report(games, kim, summary=""),
+        skater_stats=None,
+        goalie_stats=None,
+    )
+
+    view = _view(qtbot, report)
+
+    assert "Rivals: 1 of 2 games" in view.coverage_label.text()

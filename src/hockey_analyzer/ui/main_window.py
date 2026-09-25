@@ -34,7 +34,6 @@ from sqlalchemy.orm import Session
 from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.domain.report_bundle import (
-    BUNDLE_EXTENSION,
     Report,
     ReportBundleError,
     read_bundle,
@@ -57,6 +56,7 @@ from hockey_analyzer.ui.playback_controller import (
     DEFAULT_SPEED_STEPS,
     PlaybackController,
 )
+from hockey_analyzer.ui.report_export_dialog import REPORT_FILE_FILTER
 from hockey_analyzer.ui.report_view import ReportViewerDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
 from hockey_analyzer.ui.stats_dialog import StatsDialog
@@ -93,7 +93,7 @@ class ReportViewerFactory(Protocol):
 
 JUMP_SECONDS = 5
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
-REPORT_FILE_FILTER = f"Hockey Analyzer report (*{BUNDLE_EXTENSION});;All files (*)"
+OPEN_REPORT_FILE_FILTER = f"{REPORT_FILE_FILTER};;All files (*)"
 
 
 class MainWindow(QMainWindow):
@@ -456,7 +456,7 @@ class MainWindow(QMainWindow):
 
     def _show_open_report_dialog(self) -> str:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open report", "", REPORT_FILE_FILTER
+            self, "Open report", "", OPEN_REPORT_FILE_FILTER
         )
         return path
 

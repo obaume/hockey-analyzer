@@ -48,13 +48,13 @@ from hockey_analyzer.domain.stats_engine import (
 from hockey_analyzer.domain.tagging_session import roster_entry_label
 from hockey_analyzer.ui.report_export_dialog import ReportExportDialog
 from hockey_analyzer.ui.stat_tables import (
+    ALL_SITUATIONS_LABEL,
+    UNIT_DEFAULT_LABEL,
     StatTables,
     coverage_text,
+    team_names,
     unresolved_caveat_text,
 )
-
-_ALL_SITUATIONS_LABEL = "All situations"
-_UNIT_DEFAULT_LABEL = "Unit default"
 
 
 def _game_label(game: Game) -> str:
@@ -88,18 +88,8 @@ class StatsDialog(QDialog):
         )
         self.resize(900, 600)
         self._games = list(games)
-        # Every team playing in any selected game, in first-seen order,
-        # home side first; later games' names win (a team may be renamed).
-        team_names: dict[int, str] = {}
-        for data in self._games:
-            game = data.game
-            for team_id, team, fallback in (
-                (game.home_team_id, game.home_team, "Home"),
-                (game.away_team_id, game.away_team, "Away"),
-            ):
-                if team_id is not None:
-                    team_names[team_id] = team.name if team is not None else fallback
-        self._sides = list(team_names.items())
+        names = team_names(self._games)
+        self._sides = list(names.items())
         # A player's label as of the latest selected game they played in.
         labels = {
             entry.player_id: roster_entry_label(entry)
@@ -118,7 +108,7 @@ class StatsDialog(QDialog):
         self.skater_strength_combo = self._strength_combo(strengths, EVEN_STRENGTH)
         self.goalie_strength_combo = self._strength_combo(strengths, ALL_SITUATIONS)
         self.unit_strength_combo = self._strength_combo(strengths, NATURAL_STRENGTH)
-        self.unit_strength_combo.insertItem(0, _UNIT_DEFAULT_LABEL, NATURAL_STRENGTH)
+        self.unit_strength_combo.insertItem(0, UNIT_DEFAULT_LABEL, NATURAL_STRENGTH)
         self.unit_strength_combo.setCurrentIndex(0)
 
         unresolved: dict[int, int] = {}
@@ -141,7 +131,7 @@ class StatsDialog(QDialog):
         self.coverage_label.setHidden(len(self._games) < 2)
 
         self.tables = StatTables(
-            team_name=lambda team_id: team_names.get(team_id, ""),
+            team_name=lambda team_id: names.get(team_id, ""),
             player_label=lambda player_id: labels.get(player_id, f"Player {player_id}"),
         )
         self.team_table = self.tables.team_table
@@ -192,7 +182,7 @@ class StatsDialog(QDialog):
     ) -> QComboBox:
         combo = QComboBox()
         combo.addItem(EVEN_STRENGTH, EVEN_STRENGTH)
-        combo.addItem(_ALL_SITUATIONS_LABEL, ALL_SITUATIONS)
+        combo.addItem(ALL_SITUATIONS_LABEL, ALL_SITUATIONS)
         for strength in other_strengths:
             combo.addItem(strength, strength)
         combo.setCurrentIndex(combo.findData(default))

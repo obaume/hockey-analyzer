@@ -7,6 +7,8 @@ embedded here -- `domain/rink.py` remains the sole source of truth for the
 geometry `zone`/`high_danger` derive from (ADR-0008); this module never
 computes or asserts any rink geometry of its own beyond picking which
 `hockey_rink` template to draw, by the tagged game's `RinkType`.
+`build_rink` is also what a report's baked shot-map chart draws on
+(`report_charts`, ticket 26).
 
 Coordinate system matches `hockey_analyzer.domain.rink`: origin at center
 ice, x along the long axis in feet, y across the width -- `hockey_rink`'s

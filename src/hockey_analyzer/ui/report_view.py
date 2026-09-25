@@ -12,6 +12,8 @@ game report shows both sides, as the live single-game view does.
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -36,6 +38,8 @@ from hockey_analyzer.domain.stats_engine import (
     UnitStrength,
 )
 from hockey_analyzer.ui.stat_tables import (
+    ALL_SITUATIONS_LABEL,
+    UNIT_DEFAULT_LABEL,
     StatTables,
     coverage_text,
     unresolved_caveat_text,
@@ -51,9 +55,9 @@ _KIND_TITLES = {
 def _strength_label(strength: str | None | UnitStrength) -> str:
     """Worded as the live stats view's filter combos word it."""
     if isinstance(strength, UnitStrength):
-        return "Unit default"
+        return UNIT_DEFAULT_LABEL
     if strength == ALL_SITUATIONS:
-        return "All situations"
+        return ALL_SITUATIONS_LABEL
     return strength
 
 
@@ -177,7 +181,8 @@ class ReportView(QWidget):
     def _subject_team_ids(self) -> set[int]:
         """The teams whose rows this report shows: both sides of a game
         report, a team report's subject, or every team a player report's
-        subject played for."""
+        subject played for -- or, when an older bundle has no row saying
+        which team that was, every team, so no caveat is hidden."""
         report = self._report
         if report.subject_team_id is not None:
             return {report.subject_team_id}
@@ -189,12 +194,22 @@ class ReportView(QWidget):
             rows += report.skater_stats.stats.excluded
         if report.goalie_stats is not None:
             rows += report.goalie_stats.stats
-        return {row.team_id for row in rows if row.player_id == self._player_id}
+        teams = {row.team_id for row in rows if row.player_id == self._player_id}
+        return teams or set(report.teams)
 
-    def _is_shown(self, team_id: int, player_id: int | None = None) -> bool:
+    def _is_shown(
+        self, team_id: int, player_ids: Collection[int] | None = None
+    ) -> bool:
+        """Whether a row for `team_id` belongs in this report; a player or
+        unit row (`player_ids`) also has to involve a player report's
+        subject."""
         if team_id not in self._team_ids:
             return False
-        return self._player_id is None or player_id in (None, self._player_id)
+        return (
+            self._player_id is None
+            or player_ids is None
+            or self._player_id in player_ids
+        )
 
     def _show_stats(self) -> None:
         report = self._report
@@ -217,12 +232,12 @@ class ReportView(QWidget):
                     skaters=[
                         s
                         for s in skaters.skaters
-                        if self._is_shown(s.team_id, s.player_id)
+                        if self._is_shown(s.team_id, {s.player_id})
                     ],
                     excluded=[
                         s
                         for s in skaters.excluded
-                        if self._is_shown(s.team_id, s.player_id)
+                        if self._is_shown(s.team_id, {s.player_id})
                     ],
                 )
             )
@@ -230,8 +245,16 @@ class ReportView(QWidget):
             units = report.unit_stats.stats
             self.tables.show_units(
                 UnitReport(
-                    units=[u for u in units.units if self._shows_unit(u)],
-                    excluded=[u for u in units.excluded if self._shows_unit(u)],
+                    units=[
+                        u
+                        for u in units.units
+                        if self._is_shown(u.team_id, u.player_ids)
+                    ],
+                    excluded=[
+                        u
+                        for u in units.excluded
+                        if self._is_shown(u.team_id, u.player_ids)
+                    ],
                 )
             )
         if report.goalie_stats is not None:
@@ -239,14 +262,9 @@ class ReportView(QWidget):
                 [
                     g
                     for g in report.goalie_stats.stats
-                    if self._is_shown(g.team_id, g.player_id)
+                    if self._is_shown(g.team_id, {g.player_id})
                 ]
             )
-
-    def _shows_unit(self, unit) -> bool:
-        if unit.team_id not in self._team_ids:
-            return False
-        return self._player_id is None or self._player_id in unit.player_ids
 
     def _title(self) -> str:
         report = self._report
@@ -280,8 +298,15 @@ class ReportView(QWidget):
         return "" if team is None else team.name
 
     def _game_label(self, game_id: int) -> str:
-        game = next(game for game in self._report.games if game.game_id == game_id)
-        return game.date.isoformat() if game.date else f"Game {game_id}"
+        """The game's date, else its number in this report's game list --
+        also for a game id missing from that list (an older or damaged
+        bundle), rather than failing to open."""
+        game = next(
+            (game for game in self._report.games if game.game_id == game_id), None
+        )
+        if game is not None and game.date is not None:
+            return game.date.isoformat()
+        return f"Game #{game_id}"
 
     def _player_label(self, player_id: int) -> str:
         """As the live view labels a rostered player ("#14 Jordan Kim")."""

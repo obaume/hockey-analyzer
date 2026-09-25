@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -35,6 +36,7 @@ from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.report_bundle import (
     BUNDLE_EXTENSION,
     Report,
+    ReportKind,
     StrengthFilters,
     build_game_report,
     build_player_report,
@@ -44,11 +46,20 @@ from hockey_analyzer.domain.report_bundle import (
 from hockey_analyzer.domain.tagging_session import roster_entry_label
 from hockey_analyzer.ui.report_charts import shot_map_chart
 from hockey_analyzer.ui.report_view import ReportViewerDialog
+from hockey_analyzer.ui.stat_tables import team_names
 
-_TEAM = "team"
-_PLAYER = "player"
+REPORT_FILE_FILTER = f"Hockey Analyzer report (*{BUNDLE_EXTENSION})"
 # Characters Windows (the strictest target) refuses in a file name.
 _UNSAFE_FILE_CHARS = str.maketrans({char: "-" for char in '<>:"/\\|?*'})
+
+
+class _Subject(NamedTuple):
+    """One "Report about" choice for a multi-game report."""
+
+    kind: ReportKind  # TEAM or PLAYER
+    id: int  # the team's or player's database id
+    name: str
+    team_id: int  # the team's own id, or the player's (latest) team's
 
 
 class ReportExportDialog(QDialog):
@@ -72,30 +83,31 @@ class ReportExportDialog(QDialog):
         self._error_notice = error_notice or self._show_error
         self.exported_path: Path | None = None
 
-        # Every team, then every rostered player, in first-seen order --
-        # as the live stats view lists them. Data is (kind, database id).
-        self._team_names: dict[int, str] = {}
-        for data in self._games:
-            game = data.game
-            for team_id, team, fallback in (
-                (game.home_team_id, game.home_team, "Home"),
-                (game.away_team_id, game.away_team, "Away"),
-            ):
-                if team_id is not None:
-                    self._team_names[team_id] = (
-                        team.name if team is not None else fallback
-                    )
-        players: dict[int, str] = {}
+        # Every team, then every rostered player (as of the latest game
+        # they played in), in first-seen order -- as the live stats view
+        # lists them.
+        self._team_names = team_names(self._games)
+        players: dict[int, _Subject] = {}
         for data in self._games:
             for entry in data.roster:
-                team = self._team_names.get(entry.team_id, "")
-                players[entry.player_id] = f"{roster_entry_label(entry)} ({team})"
+                players[entry.player_id] = _Subject(
+                    ReportKind.PLAYER,
+                    entry.player_id,
+                    roster_entry_label(entry),
+                    entry.team_id,
+                )
+        self._subjects = [
+            _Subject(ReportKind.TEAM, team_id, name, team_id)
+            for team_id, name in self._team_names.items()
+        ] + list(players.values())
 
         self.subject_combo = QComboBox()
-        for team_id, name in self._team_names.items():
-            self.subject_combo.addItem(f"Team: {name}", (_TEAM, team_id))
-        for player_id, label in players.items():
-            self.subject_combo.addItem(f"Player: {label}", (_PLAYER, player_id))
+        for subject in self._subjects:
+            if subject.kind is ReportKind.TEAM:
+                self.subject_combo.addItem(f"Team: {subject.name}")
+            else:
+                team = self._team_names.get(subject.team_id, "")
+                self.subject_combo.addItem(f"Player: {subject.name} ({team})")
         form = QFormLayout()
         form.addRow("Report about", self.subject_combo)
         self.subject_combo.setHidden(len(self._games) < 2)
@@ -135,32 +147,35 @@ class ReportExportDialog(QDialog):
 
     def report(self) -> Report:
         """The report as it would be exported right now."""
-        kind, subject_id = self._subject()
-        right_team_id = subject_id if kind == _TEAM else None
-        chart = shot_map_chart(self._games, right_team_id=right_team_id)
+        subject = self._subject()
+        # The shot map attacks right for the report's own side: the team,
+        # or the player's team.
+        chart = shot_map_chart(
+            self._games, right_team_id=None if subject is None else subject.team_id
+        )
         common = {
             "summary": self._summary(),
             "filters": self._filters,
             "charts": [] if chart is None else [chart],
         }
-        if kind == _TEAM:
-            return build_team_report(self._games, subject_id, **common)
-        if kind == _PLAYER:
-            return build_player_report(self._games, subject_id, **common)
-        return build_game_report(self._games[0], **common)
+        if subject is None:
+            return build_game_report(self._games[0], **common)
+        if subject.kind is ReportKind.TEAM:
+            return build_team_report(self._games, subject.id, **common)
+        return build_player_report(self._games, subject.id, **common)
 
-    def _subject(self) -> tuple[str | None, int | None]:
+    def _subject(self) -> _Subject | None:
+        """None for a single game, whose report is about both sides."""
         if len(self._games) < 2:
-            return None, None
-        kind, subject_id = self.subject_combo.currentData()
-        return kind, subject_id
+            return None
+        return self._subjects[self.subject_combo.currentIndex()]
 
     def _summary(self) -> str:
         return self.summary_edit.toPlainText()
 
     def _suggested_name(self) -> str:
-        kind, subject_id = self._subject()
-        if kind is None:
+        subject = self._subject()
+        if subject is None:
             game = self._games[0].game
             home = self._team_names.get(game.home_team_id, "Home")
             away = self._team_names.get(game.away_team_id, "Away")
@@ -168,8 +183,7 @@ class ReportExportDialog(QDialog):
             if game.date is not None:
                 name = f"{game.date.isoformat()} {name}"
         else:
-            subject = self.subject_combo.currentText().split(": ", 1)[1]
-            name = f"{subject} -- {len(self._games)} games"
+            name = f"{subject.name} -- {len(self._games)} games"
         return name.translate(_UNSAFE_FILE_CHARS) + BUNDLE_EXTENSION
 
     def _export(self) -> None:
@@ -192,7 +206,7 @@ class ReportExportDialog(QDialog):
             self,
             "Export report",
             suggested_name,
-            f"Hockey Analyzer report (*{BUNDLE_EXTENSION})",
+            REPORT_FILE_FILTER,
         )
         return path
 

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QTabWidget, QWidge
 
 from hockey_analyzer.domain import stats_engine
 from hockey_analyzer.domain.enums import ShotType, UnitType
+from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.stats_engine import (
     ForAgainst,
     GameCoverage,
@@ -31,6 +32,25 @@ from hockey_analyzer.domain.stats_engine import (
 )
 
 MISSING = "—"
+# How a strength filter reads wherever one is picked or shown.
+ALL_SITUATIONS_LABEL = "All situations"
+UNIT_DEFAULT_LABEL = "Unit default"
+
+
+def team_names(games: Sequence[GameData]) -> dict[int, str]:
+    """Every team playing in any of `games`, in first-seen order, home
+    side first; a later game's name wins (a team may be renamed)."""
+    names: dict[int, str] = {}
+    for data in games:
+        game = data.game
+        for team_id, team, fallback in (
+            (game.home_team_id, game.home_team, "Home"),
+            (game.away_team_id, game.away_team, "Away"),
+        ):
+            if team_id is not None:
+                names[team_id] = team.name if team is not None else fallback
+    return names
+
 
 _SKATER_COLUMNS = (
     "Player",

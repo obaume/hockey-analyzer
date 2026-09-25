@@ -934,6 +934,24 @@ def _attacking_directions(
     return directions
 
 
+def oriented_shots(data: GameData) -> list[tuple[ShotAttempt, float, float]]:
+    """Every located shot attempt with its (x, y) turned so its own team
+    attacks toward +x -- i.e. the rink rotated half a turn for any period
+    that team attacked -x -- so attempts from different periods (and
+    games) can be drawn at one end. An attempt whose team's direction that
+    period is unknown is left out, never guessed."""
+    timeline = _timeline(data)
+    directions = _attacking_directions(data, timeline)
+    oriented = []
+    for period, event in _with_periods(timeline):
+        if not (isinstance(event, ShotAttempt) and _is_located(event)):
+            continue
+        direction = directions.get((event.shot_team_id, period))
+        if direction is not None:
+            oriented.append((event, event.shot_x * direction, event.shot_y * direction))
+    return oriented
+
+
 def _zone_starts(data: GameData, strength_state: str | None) -> dict[int, ZoneStarts]:
     """Faceoff-anchored shift starts per player. A shift is anchored when
     it begins while play is dead (see `stops_play`; also before the
