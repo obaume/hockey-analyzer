@@ -2,6 +2,9 @@
 name = "hockey-analyzer"
 version = "0.1.0"
 description = "Local, offline hockey game tagging and analytics"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "SQLAlchemy>=2.0",
@@ -13,6 +16,9 @@ dependencies = [
     # Reads the league site's game PDF export -- see
     # docs/adr/0005-pdf-export-as-primary-league-import-source.md.
     "pypdf>=4.0",
+    # Ships a static ffmpeg binary for clip export -- see
+    # docs/adr/0010-bundled-ffmpeg-for-clip-encoding.md.
+    "imageio-ffmpeg>=0.5",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +32,7 @@ dev = [
 hockey-analyzer = "hockey_analyzer.app:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -1007,6 +1007,25 @@ def _report_window(qtbot, path, opened, errors):
     def viewer(report, *, title, parent):
         opened.append(_FakeReportViewer(report, title, parent))
         return opened[-1]
+class _FakeClipExportDialog:
+    """Stands in for ClipExportDialog.exec() -- records the game data it
+    was opened with."""
+
+    def __init__(self, data, parent=None) -> None:
+        self.data = data
+        self.parent = parent
+        self.executed = False
+
+    def exec(self) -> QDialog.DialogCode:
+        self.executed = True
+        return QDialog.DialogCode.Accepted
+
+
+def _window_with_clip_export(qtbot, session, opened, *, game_id, **kw):
+    def factory(data, parent=None):
+        dialog = _FakeClipExportDialog(data, parent)
+        opened.append(dialog)
+        return dialog
 
     window = MainWindow(
         controller=Mock(spec=PlaybackController),
@@ -1085,3 +1104,77 @@ def test_cancelling_open_report_does_nothing(qtbot):
 
     assert opened == []
     assert errors == []
+def test_export_clips_is_disabled_with_no_active_game(qtbot, session):
+    window = _window_with_clip_export(qtbot, session, [], game_id=None)
+
+    assert window.export_clips_action.isEnabled() is False
+
+
+def test_export_clips_opens_the_export_dialog_for_the_active_games_footage(
+    qtbot, session, game_setup_service, tmp_path
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    footage = tmp_path / "game.mp4"
+    footage.touch()
+    game_setup_service.set_video_path(game.id, str(footage))
+    opened = []
+    window = _window_with_clip_export(qtbot, session, opened, game_id=game.id)
+    window.new_game_action.trigger()
+    assert window.export_clips_action.isEnabled() is True
+
+    window.export_clips_action.trigger()
+
+    assert opened[0].executed is True
+    assert opened[0].parent is window
+    assert opened[0].data.game.id == game.id
+
+
+def test_export_clips_waits_for_footage_to_be_attached(
+    qtbot, session, game_setup_service, tmp_path
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    footage = tmp_path / "game.mp4"
+    footage.touch()
+    window = _window_with_clip_export(
+        qtbot, session, [], game_id=game.id, file_dialog=lambda: str(footage)
+    )
+    window.new_game_action.trigger()
+    assert window.export_clips_action.isEnabled() is False
+
+    window.open_video_action.trigger()
+
+    assert window.export_clips_action.isEnabled() is True
+
+
+def test_export_clips_stays_disabled_until_both_sides_are_set(
+    qtbot, session, game_setup_service, tmp_path
+):
+    game, _home, _away = _game_with_sides(game_setup_service, both_sides=False)
+    footage = tmp_path / "game.mp4"
+    footage.touch()
+    game_setup_service.set_video_path(game.id, str(footage))
+    window = _window_with_clip_export(qtbot, session, [], game_id=game.id)
+
+    window.new_game_action.trigger()
+
+    assert window.export_clips_action.isEnabled() is False
+
+
+def test_export_clips_reports_footage_that_has_gone_missing(
+    qtbot, session, game_setup_service, tmp_path
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    footage = tmp_path / "game.mp4"
+    footage.touch()
+    game_setup_service.set_video_path(game.id, str(footage))
+    notices, opened = [], []
+    window = _window_with_clip_export(
+        qtbot, session, opened, game_id=game.id, video_missing_notice=notices.append
+    )
+    window.new_game_action.trigger()
+    footage.unlink()
+
+    window.export_clips_action.trigger()
+
+    assert notices == [str(footage)]
+    assert opened == []
