@@ -180,3 +180,25 @@ def test_resuming_a_suspended_scope_re_arms_its_bindings():
 
     assert handled is True
     assert calls == ["toggle_home"]
+
+
+def test_dispatch_can_be_confined_to_one_scope():
+    registry = ShortcutRegistry()
+    calls = []
+    registry.enter_scope("tagging")
+    registry.register("7", "tagging", lambda: calls.append("tagging"))
+    registry.enter_scope("clip_preview")
+    registry.register("P", "clip_preview", lambda: calls.append("preview"))
+
+    assert registry.dispatch("7", scope="clip_preview") is False
+    assert registry.dispatch("P", scope="clip_preview") is True
+    assert calls == ["preview"]
+
+
+def test_dispatch_confined_to_a_suspended_scope_handles_nothing():
+    registry = ShortcutRegistry()
+    registry.enter_scope("clip_preview")
+    registry.register("P", "clip_preview", lambda: None)
+    registry.suspend_scope("clip_preview")
+
+    assert registry.dispatch("P", scope="clip_preview") is False

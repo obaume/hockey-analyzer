@@ -4,6 +4,7 @@ import json
 import zipfile
 from unittest.mock import Mock
 
+from clip_fixtures import FakeEncoder, FakePreviewPlayer
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
@@ -17,6 +18,7 @@ from hockey_analyzer.domain.report_bundle import (
     write_bundle,
 )
 from hockey_analyzer.league_import import LeagueImportService
+from hockey_analyzer.ui.clip_export_dialog import ClipExportDialog
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -1021,12 +1023,13 @@ def _report_window(qtbot, path, opened, errors):
 
 
 class _FakeClipExportDialog:
-    """Stands in for ClipExportDialog.exec() -- records the game data it
-    was opened with."""
+    """Stands in for ClipExportDialog.exec() -- records the game data and
+    shortcut registry it was opened with."""
 
-    def __init__(self, data, parent=None) -> None:
+    def __init__(self, data, parent=None, shortcuts=None) -> None:
         self.data = data
         self.parent = parent
+        self.shortcuts = shortcuts
         self.executed = False
 
     def exec(self) -> QDialog.DialogCode:
@@ -1034,19 +1037,19 @@ class _FakeClipExportDialog:
         return QDialog.DialogCode.Accepted
 
 
-def _window_with_clip_export(qtbot, session, opened, *, game_id, **kw):
-    def factory(data, parent=None):
-        dialog = _FakeClipExportDialog(data, parent)
+def _window_with_clip_export(qtbot, session, opened, *, game_id, factory=None, **kw):
+    def fake_factory(data, parent, shortcuts):
+        dialog = _FakeClipExportDialog(data, parent, shortcuts)
         opened.append(dialog)
         return dialog
 
+    kw.setdefault("controller", Mock(spec=PlaybackController))
+    kw.setdefault("player", FakePlayer())
+    kw.setdefault("shortcuts", ShortcutRegistry())
     window = MainWindow(
-        controller=Mock(spec=PlaybackController),
-        player=FakePlayer(),
-        shortcuts=ShortcutRegistry(),
         db_session=session,
         game_setup_dialog_factory=lambda service: _FakeGameSetupDialog(game_id=game_id),
-        clip_export_dialog_factory=factory,
+        clip_export_dialog_factory=factory or fake_factory,
         **kw,
     )
     qtbot.addWidget(window)
@@ -1194,3 +1197,86 @@ def test_export_clips_reports_footage_that_has_gone_missing(
 
     assert notices == [str(footage)]
     assert opened == []
+
+
+class _SeekRecordingPlayer(FakePlayer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.seeks: list[int] = []
+
+    def setPosition(self, ms: int) -> None:
+        self.seeks.append(ms)
+
+
+def test_export_clips_quiets_main_playback_while_the_dialog_is_open(
+    qtbot, session, game_setup_service, tmp_path
+):
+    """The real dialog, over fakes, closed as soon as it's shown: main
+    playback is paused and its keys suspended under it, then handed back
+    with the main playhead where it was."""
+    game, _home, _away = _game_with_sides(game_setup_service)
+    footage = tmp_path / "game.mp4"
+    footage.touch()
+    game_setup_service.set_video_path(game.id, str(footage))
+    controller = Mock(spec=PlaybackController)
+    main_player = _SeekRecordingPlayer()
+    seen_while_open = []
+
+    def factory(data, parent, shortcuts):
+        dialog = ClipExportDialog(
+            data,
+            footage_duration_ms=60_000,
+            encoder=FakeEncoder(),
+            shortcuts=shortcuts,
+            player=FakePreviewPlayer(),
+            parent=parent,
+        )
+
+        def exec_():
+            seen_while_open.append(
+                (controller.pause.called, shortcuts.dispatch("Space"))
+            )
+            dialog.reject()
+            return QDialog.DialogCode.Rejected
+
+        dialog.exec = exec_
+        return dialog
+
+    window = _window_with_clip_export(
+        qtbot,
+        session,
+        [],
+        game_id=game.id,
+        factory=factory,
+        controller=controller,
+        player=main_player,
+    )
+    window.new_game_action.trigger()
+
+    window.export_clips_action.trigger()
+
+    assert seen_while_open == [(True, False)]
+    qtbot.keyClick(window, Qt.Key.Key_Space)
+    controller.toggle_play_pause.assert_called_once()
+    controller.seek.assert_not_called()
+    controller.jump.assert_not_called()
+    assert main_player.seeks == []
+
+
+def test_export_clips_hands_the_dialog_the_apps_shortcut_registry(
+    qtbot, session, game_setup_service, tmp_path
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    footage = tmp_path / "game.mp4"
+    footage.touch()
+    game_setup_service.set_video_path(game.id, str(footage))
+    shortcuts = ShortcutRegistry()
+    opened = []
+    window = _window_with_clip_export(
+        qtbot, session, opened, game_id=game.id, shortcuts=shortcuts
+    )
+    window.new_game_action.trigger()
+
+    window.export_clips_action.trigger()
+
+    assert opened[0].shortcuts is shortcuts

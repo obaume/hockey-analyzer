@@ -5,6 +5,11 @@ and re-plans on every change, so what the export button would write is
 always exactly `plan_export`'s answer -- the dialog decides nothing about
 segments or filenames itself. The encoder is injected; the app passes
 `FfmpegClipEncoder`.
+
+Beside the list, a Clip preview (ticket 50) plays the highlighted
+candidate's padding window from the source footage. While the dialog is
+open it holds the shortcut registry: the main window's `playback` scope
+is suspended and P plays/pauses the preview (see ADR-0007).
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -47,6 +53,7 @@ from hockey_analyzer.domain.clip_export import (
     OutputShape,
     Padding,
     involved_players,
+    padding_window,
     plan_export,
     run_export,
     select_clips,
@@ -57,6 +64,23 @@ from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import Event, ShotAttempt
 from hockey_analyzer.domain.tagging_session import roster_entry_label
 from hockey_analyzer.domain.video_timestamp import format_video_timestamp
+from hockey_analyzer.ui.clip_preview import ClipPreview, PreviewPlayer
+from hockey_analyzer.ui.keys import key_string, key_string_from_event
+from hockey_analyzer.ui.shortcuts import PLAYBACK_SCOPE, ShortcutRegistry
+
+CLIP_PREVIEW_SCOPE = "clip_preview"
+_PLAY_PAUSE_KEY = key_string(Qt.Key.Key_P)
+
+
+def _dispatch_preview_key(shortcuts: ShortcutRegistry, event: QKeyEvent) -> bool:
+    """Only the dialog's own scope: the main window's tagging keys stay
+    active underneath (it's modal, not closed) and must not log events
+    from here."""
+    if shortcuts.dispatch(key_string_from_event(event), scope=CLIP_PREVIEW_SCOPE):
+        event.accept()
+        return True
+    return False
+
 
 _E = TypeVar("_E", bound=enum.Enum)
 
@@ -88,6 +112,20 @@ def _clock_label(event: Event, clock: GameClock | None) -> str:
     return f"P{clock.period} {minutes}:{seconds:02d}"
 
 
+class _CandidateList(QListWidget):
+    """Offers each key to the shortcut registry first, so P reaches the
+    preview instead of the list's type-ahead search; Space and the arrow
+    keys aren't registered and keep their native check/navigate meaning."""
+
+    def __init__(self, shortcuts: ShortcutRegistry) -> None:
+        super().__init__()
+        self._shortcuts = shortcuts
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if not _dispatch_preview_key(self._shortcuts, event):
+            super().keyPressEvent(event)
+
+
 class ClipExportDialog(QDialog):
     def __init__(
         self,
@@ -95,11 +133,15 @@ class ClipExportDialog(QDialog):
         *,
         footage_duration_ms: int,
         encoder: ClipEncoder,
+        shortcuts: ShortcutRegistry,
+        player: PreviewPlayer | None = None,
         notice: Callable[[str, str], None] | None = None,
         choose_directory: Callable[[str], str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._shortcuts = shortcuts
+        self._holds_shortcuts = False
         self._notice = notice if notice is not None else self._show_notice
         self._choose_directory = (
             choose_directory
@@ -146,8 +188,10 @@ class ClipExportDialog(QDialog):
         filters.addRow("Event", self.event_type_combo)
         filters.addRow("Shot outcome", self.outcome_combo)
 
-        self.candidate_list = QListWidget()
+        self.candidate_list = _CandidateList(shortcuts)
         self.candidate_list.itemChanged.connect(self._on_candidate_toggled)
+        # The highlighted row, not its checkbox, drives the preview.
+        self.candidate_list.currentRowChanged.connect(self._preview_current)
         self.summary_label = QLabel()
 
         self.per_clip_radio = QRadioButton("One file per clip")
@@ -164,6 +208,8 @@ class ClipExportDialog(QDialog):
 
         self.padding_before_spin = _padding_spin(DEFAULT_PADDING.before_ms)
         self.padding_after_spin = _padding_spin(DEFAULT_PADDING.after_ms)
+        for spin in (self.padding_before_spin, self.padding_after_spin):
+            spin.valueChanged.connect(self._preview_current)
         padding_row = QHBoxLayout()
         padding_row.addWidget(QLabel("before"))
         padding_row.addWidget(self.padding_before_spin)
@@ -197,15 +243,53 @@ class ClipExportDialog(QDialog):
         buttons_row.addWidget(self.export_button)
         buttons_row.addWidget(self.cancel_button)
 
+        self.preview = ClipPreview(player=player)
+
+        left = QVBoxLayout()
+        left.addLayout(filters)
+        left.addWidget(self.candidate_list)
+        left.addWidget(self.summary_label)
+        left.addLayout(output)
+        columns = QHBoxLayout()
+        columns.addLayout(left, stretch=2)
+        columns.addWidget(self.preview, stretch=3)
         layout = QVBoxLayout()
-        layout.addLayout(filters)
-        layout.addWidget(self.candidate_list)
-        layout.addWidget(self.summary_label)
-        layout.addLayout(output)
+        layout.addLayout(columns, stretch=1)
         layout.addLayout(buttons_row)
         self.setLayout(layout)
+        # Wide enough that the preview beside the list is big enough
+        # to judge a play.
+        self.resize(1200, 620)
 
+        self._hold_shortcuts()
         self._show_candidates()
+
+    def _hold_shortcuts(self) -> None:
+        """Main-window transport keys go quiet under the dialog, and P
+        drives the preview instead; `done` hands them back."""
+        self._shortcuts.suspend_scope(PLAYBACK_SCOPE)
+        self._shortcuts.enter_scope(CLIP_PREVIEW_SCOPE)
+        self._shortcuts.register(
+            _PLAY_PAUSE_KEY, CLIP_PREVIEW_SCOPE, self.preview.toggle_play_pause
+        )
+        self._holds_shortcuts = True
+
+    def _release_shortcuts(self) -> None:
+        if not self._holds_shortcuts:
+            return
+        self._holds_shortcuts = False
+        self._shortcuts.unregister(_PLAY_PAUSE_KEY, CLIP_PREVIEW_SCOPE)
+        self._shortcuts.exit_scope(CLIP_PREVIEW_SCOPE)
+        self._shortcuts.resume_scope(PLAYBACK_SCOPE)
+
+    def done(self, result: int) -> None:
+        self.preview.clear()
+        self._release_shortcuts()
+        super().done(result)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if not _dispatch_preview_key(self._shortcuts, event):
+            super().keyPressEvent(event)
 
     def _team_name(self, team_id: int) -> str:
         game = self._data.game
@@ -246,6 +330,27 @@ class ClipExportDialog(QDialog):
     def _output_dir(self) -> str:
         return self.output_dir_edit.text().strip()
 
+    def _padding(self) -> Padding:
+        return Padding(
+            before_ms=round(self.padding_before_spin.value() * 1000),
+            after_ms=round(self.padding_after_spin.value() * 1000),
+        )
+
+    def _preview_current(self) -> None:
+        """(Re)loads the highlighted candidate's padding window, paused at
+        its start -- the same window the export would cut."""
+        row = self.candidate_list.currentRow()
+        video_path = self._data.game.video_path
+        if row < 0 or video_path is None:
+            self.preview.clear()
+            return
+        event = self._selection.candidates[row]
+        self.preview.load(
+            video_path,
+            padding_window(event, self._padding(), self._footage_duration_ms),
+            event.video_timestamp,
+        )
+
     def _plan(self) -> ExportPlan:
         return plan_export(
             self._data,
@@ -257,14 +362,15 @@ class ClipExportDialog(QDialog):
             ),
             footage_duration_ms=self._footage_duration_ms,
             output_dir=Path(self._output_dir()),
-            padding=Padding(
-                before_ms=round(self.padding_before_spin.value() * 1000),
-                after_ms=round(self.padding_after_spin.value() * 1000),
-            ),
+            padding=self._padding(),
         )
 
     def _export(self) -> None:
         plan = self._plan()
+        # Encoding shouldn't compete with playback, and a failed export
+        # leaves the dialog in a clean state.
+        self.candidate_list.setCurrentRow(-1)
+        self.preview.clear()
         progress = QProgressDialog("Exporting clips…", "", 0, len(plan.outputs), self)
         progress.setCancelButton(None)  # ffmpeg can't be stopped mid-file
         progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -310,7 +416,10 @@ class ClipExportDialog(QDialog):
                 else Qt.CheckState.Unchecked
             )
             self.candidate_list.addItem(item)
+        self.candidate_list.setCurrentRow(-1)
         self.candidate_list.blockSignals(False)
+        # No row is highlighted in a fresh list, so nothing to preview.
+        self.preview.clear()
         self._refresh()
 
     def _candidate_label(self, event: Event) -> str:

@@ -1,9 +1,14 @@
-"""A hand-built one-game `GameData` for clip export tests (tickets 23, 24):
-transient ORM objects, no database."""
+"""A hand-built one-game `GameData` for clip export tests (tickets 23, 24,
+50): transient ORM objects, no database; plus recording fakes for the
+encoder and the clip preview's media player."""
 
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+
+from PySide6.QtCore import QUrl
+from PySide6.QtMultimedia import QMediaPlayer
 
 from hockey_analyzer.domain.enums import EventSource, ShotOutcome, ShotType
 from hockey_analyzer.domain.game_data import GameData
@@ -119,3 +124,87 @@ class ClipGame:
 
     def data(self):
         return GameData(game=self.game, events=self.events, roster=self.roster)
+
+
+class FakeEncoder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list, Path]] = []
+
+    def encode(self, source_path, segments, output_path) -> None:
+        self.calls.append((source_path, list(segments), output_path))
+
+
+class _FakeSignal:
+    def __init__(self) -> None:
+        self._slots = []
+
+    def connect(self, slot) -> None:
+        self._slots.append(slot)
+
+    def emit(self, *args) -> None:
+        for slot in self._slots:
+            slot(*args)
+
+
+class FakePreviewPlayer:
+    """Records what the preview asked of it. Seeking lands immediately and
+    reports the new position, as a loaded `QMediaPlayer` does; `advance_to`
+    stands in for playback running on to a later position."""
+
+    def __init__(self) -> None:
+        self.positionChanged = _FakeSignal()
+        self.playbackStateChanged = _FakeSignal()
+        self.mediaStatusChanged = _FakeSignal()
+        self._source = QUrl()
+        self._position = 0
+        self._state = QMediaPlayer.PlaybackState.StoppedState
+        self.calls: list[str] = []
+
+    def setAudioOutput(self, output) -> None:
+        pass
+
+    def setVideoSink(self, sink) -> None:
+        pass
+
+    def source(self) -> QUrl:
+        return self._source
+
+    def setSource(self, url: QUrl) -> None:
+        self.calls.append("setSource")
+        self._source = url
+
+    def position(self) -> int:
+        return self._position
+
+    def setPosition(self, ms: int) -> None:
+        self.calls.append("setPosition")
+        self._position = ms
+        self.positionChanged.emit(ms)
+
+    def playbackState(self) -> QMediaPlayer.PlaybackState:
+        return self._state
+
+    def play(self) -> None:
+        self.calls.append("play")
+        self._set_state(QMediaPlayer.PlaybackState.PlayingState)
+
+    def pause(self) -> None:
+        self.calls.append("pause")
+        self._set_state(QMediaPlayer.PlaybackState.PausedState)
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+        self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+
+    def _set_state(self, state) -> None:
+        if state != self._state:
+            self._state = state
+            self.playbackStateChanged.emit(state)
+
+    @property
+    def playing(self) -> bool:
+        return self._state == QMediaPlayer.PlaybackState.PlayingState
+
+    def advance_to(self, ms: int) -> None:
+        self._position = ms
+        self.positionChanged.emit(ms)
