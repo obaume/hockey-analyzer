@@ -11,8 +11,7 @@ from clip_fixtures import ALICE, CARL, SECOND, ClipGame
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
-from hockey_analyzer.clip_encoder import ClipEncodingError
-from hockey_analyzer.domain.clip_export import ClipSegment
+from hockey_analyzer.domain.clip_export import ClipEncodingError, ClipSegment
 from hockey_analyzer.domain.enums import EventType, ShotOutcome
 from hockey_analyzer.ui.clip_export_dialog import ClipExportDialog
 

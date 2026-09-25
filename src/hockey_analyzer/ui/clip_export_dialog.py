@@ -36,10 +36,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.clip_encoder import ClipEncodingError
 from hockey_analyzer.domain.clip_export import (
     DEFAULT_PADDING,
     ClipEncoder,
+    ClipEncodingError,
     ClipFilter,
     ClipSegment,
     ClipSelection,
@@ -236,9 +236,10 @@ class ClipExportDialog(QDialog):
             if candidates
             else "No events match this filter."
         )
-        self.export_button.setEnabled(
-            selected > 0 and bool(self.output_dir_edit.text().strip())
-        )
+        self.export_button.setEnabled(selected > 0 and bool(self._output_dir()))
+
+    def _output_dir(self) -> str:
+        return self.output_dir_edit.text().strip()
 
     def _plan(self) -> ExportPlan:
         return plan_export(
@@ -250,7 +251,7 @@ class ClipExportDialog(QDialog):
                 else OutputShape.PER_CLIP
             ),
             footage_duration_ms=self._footage_duration_ms,
-            output_dir=Path(self.output_dir_edit.text().strip()),
+            output_dir=Path(self._output_dir()),
             padding=Padding(
                 before_ms=round(self.padding_before_spin.value() * 1000),
                 after_ms=round(self.padding_after_spin.value() * 1000),
@@ -276,7 +277,7 @@ class ClipExportDialog(QDialog):
         noun = "file" if len(paths) == 1 else "files"
         self._notice(
             "Clips exported",
-            f"Exported {len(paths)} {noun} to\n{self.output_dir_edit.text().strip()}",
+            f"Exported {len(paths)} {noun} to\n{self._output_dir()}",
         )
         self.accept()
 
@@ -308,15 +309,15 @@ class ClipExportDialog(QDialog):
         self._refresh()
 
     def _candidate_label(self, event: Event) -> str:
-        what = _event_type_label(event.event_type)
+        event_label = _event_type_label(event.event_type)
         if isinstance(event, ShotAttempt):
-            what += f" ({event.shot_outcome.value})"
+            event_label += f" ({event.shot_outcome.value})"
         players = sorted(
             self._player_labels[player_id]
             for player_id in involved_players(event)
             if player_id in self._player_labels
         )
-        parts = [_clock_label(event, self._clocks.get(event.id)), what, *players]
+        parts = [_clock_label(event, self._clocks.get(event.id)), event_label, *players]
         return " · ".join(parts)
 
 

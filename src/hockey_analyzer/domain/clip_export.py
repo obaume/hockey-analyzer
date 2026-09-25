@@ -213,6 +213,11 @@ def plan_export(
     return ExportPlan(source_path, shape, outputs)
 
 
+class ClipEncodingError(RuntimeError):
+    """A `ClipEncoder` couldn't read the footage or write a clip; the
+    message carries the encoder's own explanation."""
+
+
 class ClipEncoder(Protocol):
     """Cuts `segments` out of `source_path` and writes them, hard-cut in
     order, to one H.264/AAC `.mp4` at `output_path` (ticket 24)."""

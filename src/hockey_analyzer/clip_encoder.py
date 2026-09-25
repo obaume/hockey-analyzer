@@ -22,7 +22,7 @@ from pathlib import Path
 
 import imageio_ffmpeg
 
-from hockey_analyzer.domain.clip_export import ClipSegment
+from hockey_analyzer.domain.clip_export import ClipEncodingError, ClipSegment
 
 _DURATION = re.compile(r"Duration: (\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
 _STREAM = re.compile(r"Stream #\d+:\d+.*?: (Video|Audio): (\w+)")
@@ -44,17 +44,12 @@ _TIME_BASE = re.compile(r"^#tb 0: (\d+)/(\d+)", re.MULTILINE)
 _PACKET = re.compile(r"^0,\s*-?\d+,\s*(-?\d+),", re.MULTILINE)
 
 
-class ClipEncodingError(RuntimeError):
-    """ffmpeg couldn't read the footage or write a clip; the message
-    carries ffmpeg's own explanation."""
-
-
 @dataclass(frozen=True)
 class FootageInfo:
     duration_ms: int
     video_codec: str | None
     audio_codec: str | None
-    pixel_format: str | None = None
+    pixel_format: str | None
 
 
 def probe_footage(path: str | Path) -> FootageInfo:
@@ -125,18 +120,30 @@ def _copy_segments(
     for index, segment in enumerate(segments):
         start_ms = _keyframe_at_or_before(source_path, segment.start_ms)
         part = scratch / f"part{index}.mp4"
-        _concat_copy([(source_path, start_ms, segment.end_ms)], scratch, part)
-        parts.append((str(part), None, None))
+        _concat_copy(
+            [_ConcatEntry(source_path, start_ms, segment.end_ms)], scratch, part
+        )
+        parts.append(_ConcatEntry(str(part)))
     _concat_copy(parts, scratch, output_path)
 
 
+@dataclass(frozen=True)
+class _ConcatEntry:
+    """One file in a concat playlist; `None` points mean the file's own
+    start/end."""
+
+    path: str
+    inpoint_ms: int | None = None
+    outpoint_ms: int | None = None
+
+
 def _concat_copy(
-    entries: Sequence[tuple[str, int | None, int | None]],
+    entries: Sequence[_ConcatEntry],
     scratch: Path,
     output_path: Path,
 ) -> None:
-    """Stream-copies `(file, inpoint_ms, outpoint_ms)` entries, in order,
-    into one `.mp4` via ffmpeg's concat demuxer."""
+    """Stream-copies `entries`, in order, into one `.mp4` via ffmpeg's
+    concat demuxer."""
     playlist = scratch / "playlist.ffconcat"
     playlist.write_text(_playlist(entries), encoding="utf-8")
     concat = ["-f", "concat", "-safe", "0", "-auto_convert", "0"]
@@ -169,24 +176,23 @@ def _is_phone_ready(info: FootageInfo) -> bool:
     streams can be copied as-is."""
     return (
         info.video_codec == "h264"
-        and info.pixel_format == "yuv420p"
+        and info.pixel_format in ("yuv420p", "yuvj420p")
         and info.audio_codec in ("aac", None)
     )
 
 
-def _playlist(entries: Sequence[tuple[str, int | None, int | None]]) -> str:
-    """An ffconcat playlist of `(file, inpoint_ms, outpoint_ms)` entries,
-    `None` meaning the file's own start/end."""
+def _playlist(entries: Sequence[_ConcatEntry]) -> str:
+    """An ffconcat playlist of `entries`."""
     lines = ["ffconcat version 1.0"]
-    for path, inpoint_ms, outpoint_ms in entries:
+    for entry in entries:
         # Inside single quotes everything is literal except the quote
         # itself, which is closed, escaped, and reopened.
-        quoted = Path(path).resolve().as_posix().replace("'", "'\\''")
+        quoted = Path(entry.path).resolve().as_posix().replace("'", "'\\''")
         lines.append(f"file '{quoted}'")
-        if inpoint_ms is not None:
-            lines.append(f"inpoint {_seconds(inpoint_ms)}")
-        if outpoint_ms is not None:
-            lines.append(f"outpoint {_seconds(outpoint_ms)}")
+        if entry.inpoint_ms is not None:
+            lines.append(f"inpoint {_seconds(entry.inpoint_ms)}")
+        if entry.outpoint_ms is not None:
+            lines.append(f"outpoint {_seconds(entry.outpoint_ms)}")
     return "\n".join(lines) + "\n"
 
 

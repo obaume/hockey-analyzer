@@ -31,11 +31,8 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.clip_encoder import (
-    ClipEncodingError,
-    FfmpegClipEncoder,
-    probe_footage,
-)
+from hockey_analyzer.clip_encoder import FfmpegClipEncoder, probe_footage
+from hockey_analyzer.domain.clip_export import ClipEncodingError
 from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.domain.tagging_session import TaggingSession
@@ -122,7 +119,7 @@ class MainWindow(QMainWindow):
         | None = None,
         stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
-        clip_export_dialog_factory: Callable[[GameData, QWidget], QDialog]
+        clip_export_dialog_factory: Callable[[GameData, QWidget], ClipExportDialog]
         | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,

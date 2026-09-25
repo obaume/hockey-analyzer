@@ -11,12 +11,8 @@ from pathlib import Path
 import imageio_ffmpeg
 import pytest
 
-from hockey_analyzer.clip_encoder import (
-    ClipEncodingError,
-    FfmpegClipEncoder,
-    probe_footage,
-)
-from hockey_analyzer.domain.clip_export import ClipSegment
+from hockey_analyzer.clip_encoder import FfmpegClipEncoder, probe_footage
+from hockey_analyzer.domain.clip_export import ClipEncodingError, ClipSegment
 
 SECOND = 1000
 FOOTAGE_MS = 6 * SECOND
@@ -55,6 +51,12 @@ def footage(tmp_path_factory):
             root / "mp3_audio.mkv", video=h264, audio=["-c:a", "libmp3lame"]
         ),
         "silent": _make_footage(root / "silent.mp4", video=h264, audio=None),
+        # Full-range 4:2:0, as many phones and cameras record it.
+        "full_range": _make_footage(
+            root / "full_range.mp4",
+            video=["-c:v", "libx264", "-pix_fmt", "yuvj420p"],
+            audio=["-c:a", "aac"],
+        ),
     }
 
 
@@ -103,7 +105,7 @@ def _video_packet_hashes(path: Path) -> list[str]:
     return [line.rsplit(",", 1)[1].strip() for line in lines]
 
 
-@pytest.mark.parametrize("name", ["phone_ready", "silent"])
+@pytest.mark.parametrize("name", ["phone_ready", "silent", "full_range"])
 def test_h264_aac_footage_passes_through_untouched(footage, tmp_path, name):
     output = tmp_path / "clip.mp4"
 
