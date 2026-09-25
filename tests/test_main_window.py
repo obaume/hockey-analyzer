@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
+import zipfile
 from unittest.mock import Mock
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
+from stats_fixtures import named_game
 
 from hockey_analyzer.domain.enums import EventType, Side
 from hockey_analyzer.domain.models import Event
+from hockey_analyzer.domain.report_bundle import (
+    SCHEMA_VERSION,
+    build_game_report,
+    write_bundle,
+)
 from hockey_analyzer.league_import import LeagueImportService
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
@@ -979,3 +987,101 @@ def test_multi_game_stats_opens_nothing_when_the_picker_is_cancelled(
     window.multi_game_stats_action.trigger()
 
     assert opened == []
+
+
+# -- ticket 26: File > Open Report... opens a report bundle --------------
+
+
+class _FakeReportViewer:
+    def __init__(self, report, title, parent):
+        self.report = report
+        self.title = title
+        self.parent = parent
+        self.executed = False
+
+    def exec(self):
+        self.executed = True
+
+
+def _report_window(qtbot, path, opened, errors):
+    def viewer(report, *, title, parent):
+        opened.append(_FakeReportViewer(report, title, parent))
+        return opened[-1]
+
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        report_file_dialog=lambda: "" if path is None else str(path),
+        report_viewer_factory=viewer,
+        report_error_notice=errors.append,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def test_open_report_shows_the_bundle_without_needing_a_database(qtbot, tmp_path):
+    path = tmp_path / "Rivals.hockeyreport"
+    report = build_game_report(named_game(), summary="From the coach.")
+    write_bundle(path, report)
+    opened, errors = [], []
+    window = _report_window(qtbot, path, opened, errors)
+
+    assert window.open_report_action.isEnabled() is True
+    window.open_report_action.trigger()
+
+    (viewer,) = opened
+    assert viewer.executed is True
+    assert viewer.report == report
+    assert "Rivals.hockeyreport" in viewer.title
+    assert viewer.parent is window
+    assert errors == []
+
+
+def test_open_report_rejects_a_bundle_from_a_newer_app_with_a_clear_message(
+    qtbot, tmp_path
+):
+    path = tmp_path / "future.hockeyreport"
+    with zipfile.ZipFile(path, "w") as bundle:
+        bundle.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "format": "hockey-analyzer-report-bundle",
+                    "schema_version": SCHEMA_VERSION + 1,
+                }
+            ),
+        )
+        bundle.writestr("report.json", "{}")
+    opened, errors = [], []
+    window = _report_window(qtbot, path, opened, errors)
+
+    window.open_report_action.trigger()
+
+    assert opened == []
+    (message,) = errors
+    assert "newer version of Hockey Analyzer" in message
+    assert "Update the app" in message
+
+
+def test_open_report_rejects_a_file_that_is_not_a_report(qtbot, tmp_path):
+    path = tmp_path / "notes.hockeyreport"
+    path.write_text("not a zip")
+    opened, errors = [], []
+    window = _report_window(qtbot, path, opened, errors)
+
+    window.open_report_action.trigger()
+
+    assert opened == []
+    (message,) = errors
+    assert "not a report bundle" in message
+
+
+def test_cancelling_open_report_does_nothing(qtbot):
+    opened, errors = [], []
+    window = _report_window(qtbot, None, opened, errors)
+
+    window.open_report_action.trigger()
+
+    assert opened == []
+    assert errors == []

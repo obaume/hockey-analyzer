@@ -44,7 +44,7 @@ _RINK_CLASSES: dict[RinkType, type] = {
 }
 
 
-def _build_rink(rink_type: RinkType):
+def build_rink(rink_type: RinkType):
     return _RINK_CLASSES[rink_type](ice={"image": _DUMMY_ICE_IMAGE})
 
 
@@ -66,7 +66,7 @@ class RinkDiagramWidget(FigureCanvasQTAgg):
 
         figure.subplots_adjust(left=0, right=1, bottom=0, top=1)
         self._ax = figure.add_subplot(111)
-        _build_rink(rink_type).draw(ax=self._ax, display_range="full")
+        build_rink(rink_type).draw(ax=self._ax, display_range="full")
 
         self.mpl_connect("button_press_event", self._on_click)
 

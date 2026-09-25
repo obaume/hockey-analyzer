@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from table_helpers import column as _column
+from table_helpers import row as _row
+from table_helpers import table_rows as _table
 
 from hockey_analyzer.domain.enums import (
     EventType,
@@ -11,6 +14,8 @@ from hockey_analyzer.domain.enums import (
     UnitType,
 )
 from hockey_analyzer.domain.game_data import load_game_data
+from hockey_analyzer.domain.report_bundle import StrengthFilters
+from hockey_analyzer.domain.stats_engine import ALL_SITUATIONS
 from hockey_analyzer.domain.tagging_session import TaggingSession
 from hockey_analyzer.ui.stats_dialog import StatsDialog
 
@@ -88,41 +93,8 @@ def _dialog(qtbot, *games):
     return dialog
 
 
-def _table(table):
-    """A QTableWidget as {row header: [cell texts]}."""
-    return {
-        table.verticalHeaderItem(row).text(): [
-            table.item(row, column).text() for column in range(table.columnCount())
-        ]
-        for row in range(table.rowCount())
-    }
-
-
-def _column(table, header):
-    return next(
-        column
-        for column in range(table.columnCount())
-        if table.horizontalHeaderItem(column).text() == header
-    )
-
-
 def _skater_row(dialog, label):
     return _row(dialog.skater_table, "Player", label)
-
-
-def _row(table, key_column, *key):
-    """The row whose cells under `key_column` (and the columns after it,
-    for a multi-part key) read `key`, as {column header: cell text}."""
-    first = _column(table, key_column)
-    row = next(
-        row
-        for row in range(table.rowCount())
-        if tuple(table.item(row, first + i).text() for i in range(len(key))) == key
-    )
-    return {
-        table.horizontalHeaderItem(column).text(): table.item(row, column).text()
-        for column in range(table.columnCount())
-    }
 
 
 def _select(combo, label):
@@ -291,3 +263,44 @@ def test_multi_game_view_sums_games_and_reports_included_and_excluded_games(
     coverage = dialog.coverage_label.text()
     assert f"Rivals: 1 of 2 games (excluded: Game #{unflagged.game.id})" in coverage
     assert "Icebreakers: 2 of 2 games" in coverage
+
+
+# -- ticket 26: exporting what's on screen as a report bundle -----------
+
+
+class _FakeExportDialog:
+    def __init__(self, games, *, filters, parent=None):
+        self.games = games
+        self.filters = filters
+        self.parent = parent
+        self.executed = False
+
+    def exec(self):
+        self.executed = True
+
+
+def test_export_hands_the_games_and_current_filters_to_the_report_export(
+    qtbot, tagged_game
+):
+    data, _kim = tagged_game
+    opened = []
+
+    def factory(games, *, filters, parent=None):
+        opened.append(_FakeExportDialog(games, filters=filters, parent=parent))
+        return opened[-1]
+
+    dialog = StatsDialog([data], export_dialog_factory=factory)
+    qtbot.addWidget(dialog)
+    _select(dialog.skater_strength_combo, "All situations")
+    _select(dialog.unit_strength_combo, "5v4")
+    _select(dialog.goalie_strength_combo, "5v5")
+
+    dialog.export_button.click()
+
+    (export,) = opened
+    assert export.executed is True
+    assert export.parent is dialog
+    assert [game.game.id for game in export.games] == [data.game.id]
+    assert export.filters == StrengthFilters(
+        team=ALL_SITUATIONS, skaters=ALL_SITUATIONS, goalies="5v5", units="5v4"
+    )
