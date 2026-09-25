@@ -176,3 +176,17 @@ def test_shot_attempt_differential_is_aggregated_per_stint_over_a_small_game():
         (stint.shot_attempts.for_, stint.shot_attempts.against) for stint in stints
     ] == [(3, 1), (0, 2)]
     assert [stint.shot_attempts.differential for stint in stints] == [2, -2]
+
+
+def test_a_shot_with_no_strength_state_counts_toward_no_stint_like_corsi():
+    game = GameBuilder(opponent_shifts_complete=True)
+    game.faceoff(0.0, at=0)
+    game.shot(HOME, at=2_000)
+    game.shot(HOME, strength=None, at=4_000)
+    game.period_end(1, at=10_000)
+    data = game.build()
+
+    (stint,) = stats_engine.stints(data)
+
+    assert stint.shot_attempts.for_ == 1
+    assert stats_engine.team_stats(data, HOME).corsi.for_ == 1

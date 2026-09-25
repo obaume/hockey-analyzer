@@ -743,11 +743,14 @@ def stints(
     `None`), in video order. A new stint begins at whichever comes first:
     a change to either team's on-ice skaters (from `shift_change` events;
     goalies aren't skaters, so a goalie change alone doesn't cut)
-    or a logged event recording a different strength state -- read the
-    same way `_live_segments` reads it, so `shift_change` events' own
-    strength doesn't count. Computed on demand, never stored. A stint with
-    no live time and no shot attempts (e.g. mid line change at a whistle)
-    carries nothing a regression could use and is left out."""
+    or a logged event recording a different strength state (see
+    `_changes_strength`, which `_live_segments` cuts on too). A shot
+    attempt with no strength state counts toward no stint, as it counts
+    toward no strength-filtered Corsi. Computed on demand, never stored. A
+    stint with no live time and no shot attempts (e.g. mid line change at
+    a whistle) carries nothing a regression could use and is left out.
+    Like every on-ice stat, a `shift_change` naming an unknown player
+    can't move anyone on or off -- see `unresolved_shift_changes`."""
     timeline = _timeline(data)
     if not timeline:
         return []
@@ -768,7 +771,9 @@ def stints(
 
     def cut(at: int) -> None:
         nonlocal start, shots
-        duration = _time_on_ice([(start, at)], live, lambda _: True)
+        duration = _time_on_ice(
+            [(start, at)], live, lambda state: _matches(state, ALL_SITUATIONS)
+        )
         if (duration or shots) and _matches(strength, strength_state):
             results.append(
                 Stint(
@@ -805,16 +810,22 @@ def stints(
                 else:
                     skaters.discard(player_id)
             continue
-        if event.strength_state is not None and event.strength_state != strength:
+        if _changes_strength(event, strength):
             cut(event.video_timestamp)
             strength = event.strength_state
-        if isinstance(event, ShotAttempt) and event.shot_team_id is not None:
+        if (
+            isinstance(event, ShotAttempt)
+            and event.shot_team_id is not None
+            and event.strength_state == strength
+        ):
             shots.append(event)
     cut(_game_end(timeline))
     return results
 
 
 def _skaters(on_ice: dict[int, set[int]], team_id: int | None) -> frozenset[int] | None:
+    """A snapshot of `team_id`'s tracked on-ice skaters, or None when
+    that side isn't tracked (its shifts can't be trusted)."""
     skaters = on_ice.get(team_id) if team_id is not None else None
     return None if skaters is None else frozenset(skaters)
 
@@ -904,16 +915,23 @@ def _live_segments(data: GameData) -> list[_LiveSegment]:
         elif stops_play(event):
             segments.append(_LiveSegment(live_since, event.video_timestamp, strength))
             live_since = None
-        elif (
-            not isinstance(event, ShiftChange)
-            and event.strength_state is not None
-            and event.strength_state != strength
-        ):
+        elif _changes_strength(event, strength):
             segments.append(_LiveSegment(live_since, event.video_timestamp, strength))
             live_since, strength = event.video_timestamp, event.strength_state
     if live_since is not None:
         segments.append(_LiveSegment(live_since, _game_end(timeline), strength))
     return segments
+
+
+def _changes_strength(event: Event, strength: str | None) -> bool:
+    """Whether `event` records a strength state other than `strength`.
+    `shift_change` events never do: theirs is only the tagging UI's
+    mid-change headcount."""
+    return (
+        not isinstance(event, ShiftChange)
+        and event.strength_state is not None
+        and event.strength_state != strength
+    )
 
 
 StrengthFilter = Callable[[str | None], bool]
