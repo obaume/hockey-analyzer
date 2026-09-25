@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy.orm import Session
 
+from hockey_analyzer.clip_encoder import FfmpegClipEncoder, probe_footage
+from hockey_analyzer.domain.clip_export import ClipEncodingError
 from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.domain.tagging_session import TaggingSession
@@ -43,6 +45,7 @@ from hockey_analyzer.league_import import (
     LeagueSource,
     SihfHttpSource,
 )
+from hockey_analyzer.ui.clip_export_dialog import ClipExportDialog
 from hockey_analyzer.ui.game_list_dialog import GameListDialog
 from hockey_analyzer.ui.game_setup_dialog import GameSetupDialog
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
@@ -76,6 +79,18 @@ class UnitsDialogFactory(Protocol):
     ) -> UnitsDialog: ...
 
 
+def _clip_export_dialog(data: GameData, parent: QWidget) -> ClipExportDialog:
+    """Probes the footage for its length (padding windows clamp to it),
+    then opens the dialog over the real ffmpeg encoder."""
+    info = probe_footage(data.game.video_path)
+    return ClipExportDialog(
+        data,
+        footage_duration_ms=info.duration_ms,
+        encoder=FfmpegClipEncoder(),
+        parent=parent,
+    )
+
+
 JUMP_SECONDS = 5
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
 
@@ -103,6 +118,8 @@ class MainWindow(QMainWindow):
         stats_dialog_factory: Callable[[Sequence[GameData], QWidget], StatsDialog]
         | None = None,
         stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
+        | None = None,
+        clip_export_dialog_factory: Callable[[GameData, QWidget], ClipExportDialog]
         | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
@@ -145,6 +162,9 @@ class MainWindow(QMainWindow):
         self._stats_dialog_factory = stats_dialog_factory or StatsDialog
         self._stats_game_picker_factory = stats_game_picker_factory or (
             lambda service: GameListDialog(service, multi_select=True)
+        )
+        self._clip_export_dialog_factory = (
+            clip_export_dialog_factory or _clip_export_dialog
         )
         self._video_missing_notice = (
             video_missing_notice
@@ -236,6 +256,12 @@ class MainWindow(QMainWindow):
         self.stats_action = game_menu.addAction("Stats…")
         self.stats_action.triggered.connect(self._show_stats)
         self.stats_action.setEnabled(False)
+        # Clip export (ticket 24) cuts the active game's own footage, so
+        # it needs footage attached as well as both sides -- see
+        # `_refresh_game_actions`.
+        self.export_clips_action = game_menu.addAction("Export Clips…")
+        self.export_clips_action.triggered.connect(self._export_clips)
+        self.export_clips_action.setEnabled(False)
         # Stats over a hand-picked set of games (ticket 19) -- picks its
         # own games, so it doesn't depend on the active one.
         self.multi_game_stats_action = game_menu.addAction("Multi-Game Stats…")
@@ -269,15 +295,11 @@ class MainWindow(QMainWindow):
         of truth instead of each call site re-deriving and re-passing the
         same three fields."""
         self._active_game_id = game_id
+        self._refresh_game_actions()
         if game_id is None:
-            self.units_action.setEnabled(False)
-            self.stats_action.setEnabled(False)
             return
         game = self._game_setup_service.get_game(game_id)
-        has_both_sides = game.home_team_id is not None and game.away_team_id is not None
-        self.units_action.setEnabled(has_both_sides)
-        self.stats_action.setEnabled(has_both_sides)
-        if has_both_sides:
+        if game.home_team_id is not None and game.away_team_id is not None:
             tagging_session = TaggingSession(
                 self._db_session,
                 game_id=game.id,
@@ -290,6 +312,23 @@ class MainWindow(QMainWindow):
         # setup is finished -- see `_open_video`.
         if game.video_path:
             self._open_stored_video(game.video_path)
+
+    def _refresh_game_actions(self) -> None:
+        """Enables the actions that act on the active game by what it has
+        so far: both sides for units/stats, plus footage for clips."""
+        game = (
+            self._game_setup_service.get_game(self._active_game_id)
+            if self._active_game_id is not None
+            else None
+        )
+        has_both_sides = (
+            game is not None
+            and game.home_team_id is not None
+            and game.away_team_id is not None
+        )
+        self.units_action.setEnabled(has_both_sides)
+        self.stats_action.setEnabled(has_both_sides)
+        self.export_clips_action.setEnabled(has_both_sides and bool(game.video_path))
 
     def _new_game(self) -> None:
         if self._game_setup_service is None:
@@ -337,6 +376,22 @@ class MainWindow(QMainWindow):
             return
         data = load_game_data(self._db_session, self._active_game_id)
         self._stats_dialog_factory([data], self).exec()
+
+    def _export_clips(self) -> None:
+        if self._db_session is None or self._active_game_id is None:
+            return
+        data = load_game_data(self._db_session, self._active_game_id)
+        if not data.game.video_path:
+            return
+        if not Path(data.game.video_path).exists():
+            self._video_missing_notice(data.game.video_path)
+            return
+        try:
+            dialog = self._clip_export_dialog_factory(data, self)
+        except ClipEncodingError as error:
+            QMessageBox.warning(self, "Can't read footage", str(error))
+            return
+        dialog.exec()
 
     def _show_multi_game_stats(self) -> None:
         if self._game_setup_service is None:
@@ -406,6 +461,7 @@ class MainWindow(QMainWindow):
                 and self._game_setup_service is not None
             ):
                 self._game_setup_service.set_video_path(self._active_game_id, path)
+                self._refresh_game_actions()
 
     def _show_open_file_dialog(self) -> str:
         path, _ = QFileDialog.getOpenFileName(self, "Open video", "", VIDEO_FILE_FILTER)
