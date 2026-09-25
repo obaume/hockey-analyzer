@@ -35,7 +35,8 @@ import tempfile
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
+from datetime import date as date_
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -78,7 +79,7 @@ class ReportBundleError(Exception):
 
 
 class InvalidBundleError(ReportBundleError):
-    pass
+    """Not a zip, no recognizable manifest, or a damaged/missing member."""
 
 
 class BundleTooNewError(ReportBundleError):
@@ -134,7 +135,7 @@ class GameRef:
     """One game the report drew from, keyed by `game_id` (bundle-local)."""
 
     game_id: int
-    date: date | None
+    date: date_ | None
     home_team_id: int | None
     away_team_id: int | None
     home_score: int | None
@@ -366,7 +367,7 @@ def _build(
         goalie_stats=Filtered(
             filters.goalies,
             tuple(
-                keys.goalie(stats)
+                keys.player_stats(stats)
                 for stats in stats_engine.combined_goalie_stats(
                     games, strength_state=filters.goalies
                 )
@@ -449,14 +450,11 @@ class _Keys:
 
     def skater_report(self, report: SkaterReport) -> SkaterReport:
         return SkaterReport(
-            skaters=[self._player_team(stats) for stats in report.skaters],
-            excluded=[self._player_team(skater) for skater in report.excluded],
+            skaters=[self.player_stats(stats) for stats in report.skaters],
+            excluded=[self.player_stats(skater) for skater in report.excluded],
         )
 
-    def goalie(self, stats: GoalieStats) -> GoalieStats:
-        return self._player_team(stats)
-
-    def _player_team(self, stats: _PlayerTeam) -> _PlayerTeam:
+    def player_stats(self, stats: _PlayerTeam) -> _PlayerTeam:
         return replace(
             stats,
             player_id=self.players[stats.player_id],
@@ -752,7 +750,7 @@ def _report_from_json(
                 game_id=game["id"],
                 date=None
                 if game.get("date") is None
-                else date.fromisoformat(game["date"]),
+                else date_.fromisoformat(game["date"]),
                 home_team_id=game.get("home_team"),
                 away_team_id=game.get("away_team"),
                 home_score=game.get("home_score"),
