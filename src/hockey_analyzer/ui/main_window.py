@@ -54,13 +54,11 @@ from hockey_analyzer.ui.playback_controller import (
     DEFAULT_SPEED_STEPS,
     PlaybackController,
 )
-from hockey_analyzer.ui.shortcuts import ShortcutRegistry
+from hockey_analyzer.ui.shortcuts import PLAYBACK_SCOPE, ShortcutRegistry
 from hockey_analyzer.ui.stats_dialog import StatsDialog
 from hockey_analyzer.ui.tagging_panel import TaggingPanel
 from hockey_analyzer.ui.units_dialog import UnitsDialog
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
-
-PLAYBACK_SCOPE = "playback"
 
 
 class UnitsDialogFactory(Protocol):
@@ -79,14 +77,24 @@ class UnitsDialogFactory(Protocol):
     ) -> UnitsDialog: ...
 
 
-def _clip_export_dialog(data: GameData, parent: QWidget) -> ClipExportDialog:
+class ClipExportDialogFactory(Protocol):
+    def __call__(
+        self, data: GameData, parent: QWidget, shortcuts: ShortcutRegistry
+    ) -> ClipExportDialog: ...
+
+
+def _clip_export_dialog(
+    data: GameData, parent: QWidget, shortcuts: ShortcutRegistry
+) -> ClipExportDialog:
     """Probes the footage for its length (padding windows clamp to it),
-    then opens the dialog over the real ffmpeg encoder."""
+    then opens the dialog over the real ffmpeg encoder; its clip preview
+    builds its own media player."""
     info = probe_footage(data.game.video_path)
     return ClipExportDialog(
         data,
         footage_duration_ms=info.duration_ms,
         encoder=FfmpegClipEncoder(),
+        shortcuts=shortcuts,
         parent=parent,
     )
 
@@ -119,8 +127,7 @@ class MainWindow(QMainWindow):
         | None = None,
         stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
-        clip_export_dialog_factory: Callable[[GameData, QWidget], ClipExportDialog]
-        | None = None,
+        clip_export_dialog_factory: ClipExportDialogFactory | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -387,10 +394,13 @@ class MainWindow(QMainWindow):
             self._video_missing_notice(data.game.video_path)
             return
         try:
-            dialog = self._clip_export_dialog_factory(data, self)
+            dialog = self._clip_export_dialog_factory(data, self, self._shortcuts)
         except ClipEncodingError as error:
             QMessageBox.warning(self, "Can't read footage", str(error))
             return
+        # The dialog's clip preview has audio of its own; the main
+        # playhead stays where it is for when the dialog closes.
+        self._controller.pause()
         dialog.exec()
 
     def _show_multi_game_stats(self) -> None:

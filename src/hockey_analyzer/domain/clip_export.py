@@ -144,6 +144,21 @@ class ClipSegment:
     end_ms: int
 
 
+def padding_window(
+    event: Event, padding: Padding, footage_duration_ms: int
+) -> ClipSegment:
+    """The stretch of footage an export would cut for `event`: its video
+    timestamp widened by `padding`, clamped to the footage. The single
+    source of truth shared by `plan_export` and the clip preview, so the
+    two can't disagree. Empty (`start_ms == end_ms`) when the event lies
+    past the end of the footage."""
+    return ClipSegment(
+        event.id,
+        _clamp(event.video_timestamp - padding.before_ms, footage_duration_ms),
+        _clamp(event.video_timestamp + padding.after_ms, footage_duration_ms),
+    )
+
+
 @dataclass(frozen=True)
 class PlannedOutput:
     """One file to write: its segments, hard-cut together in this order."""
@@ -182,14 +197,7 @@ def plan_export(
         raise ValueError(f"game {data.game.id} has no footage attached")
 
     events = selection.selected
-    segments = [
-        ClipSegment(
-            event.id,
-            _clamp(event.video_timestamp - padding.before_ms, footage_duration_ms),
-            _clamp(event.video_timestamp + padding.after_ms, footage_duration_ms),
-        )
-        for event in events
-    ]
+    segments = [padding_window(event, padding, footage_duration_ms) for event in events]
     player = (
         _player_label(data, selection.clip_filter.player_id)
         if selection.clip_filter.player_id is not None

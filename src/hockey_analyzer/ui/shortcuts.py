@@ -12,6 +12,10 @@ from collections.abc import Callable
 
 Action = Callable[[], None]
 
+# The main window's transport keys; suspended while a modal dialog that
+# plays footage of its own (the clip preview) is open.
+PLAYBACK_SCOPE = "playback"
+
 
 class ShortcutConflictError(Exception):
     """A key would be bound in two simultaneously-active scopes."""
