@@ -276,3 +276,15 @@ def test_no_output_folder_disables_export(qtbot, game):
     dialog.output_dir_edit.setText("  ")
 
     assert not dialog.export_button.isEnabled()
+
+
+def test_a_roster_entry_whose_player_is_missing_is_listed_by_jersey(qtbot, game):
+    """A roster entry can reference a player row that no longer exists
+    (SQLite doesn't enforce the foreign key); that shouldn't stop the
+    dialog from opening."""
+    game.roster[0].player = None
+
+    dialog = _dialog(qtbot, game)
+
+    assert dialog.player_combo.itemText(1) == "#9 (Ice Breakers)"
+    assert _candidates(dialog)[2][0] == "P1 19:40 · Shot attempt (goal) · #9"

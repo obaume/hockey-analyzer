@@ -113,8 +113,13 @@ class ClipExportDialog(QDialog):
         self._encoder = encoder
         self._selection: ClipSelection = select_clips(data, ClipFilter())
         self._clocks = game_clocks(data.events)
+        # An entry can point at a player row that's gone (SQLite doesn't
+        # enforce the foreign key); its jersey still identifies it.
         self._player_labels = {
-            entry.player_id: roster_entry_label(entry) for entry in data.roster
+            entry.player_id: roster_entry_label(entry)
+            if entry.player is not None
+            else f"#{entry.jersey_number}"
+            for entry in data.roster
         }
 
         self.player_combo = QComboBox()
