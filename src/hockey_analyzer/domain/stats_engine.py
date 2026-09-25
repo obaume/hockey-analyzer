@@ -13,7 +13,7 @@ from __future__ import annotations
 import enum
 import re
 from collections.abc import Callable, Hashable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, Protocol, Self, TypeVar
 
 from hockey_analyzer.domain import rink
@@ -748,7 +748,13 @@ def stints(
     attempt with no strength state counts toward no stint, as it counts
     toward no strength-filtered Corsi. Computed on demand, never stored. A
     stint with no live time and no shot attempts (e.g. mid line change at
-    a whistle) carries nothing a regression could use and is left out.
+    a whistle) carries nothing a regression could use and is left out; one
+    with shot attempts but no live time (e.g. a shot logged partway through
+    a line change made at one instant) has no exposure to regress on, so
+    its attempts join the next stint with live time -- the line that
+    change completes to. Should the strength state change (or the game
+    end) first, it stays its own row instead: joining would relabel its
+    attempts' strength.
     Like every on-ice stat, a `shift_change` naming an unknown player
     can't move anyone on or off -- see `unresolved_shift_changes`."""
     timeline = _timeline(data)
@@ -768,25 +774,43 @@ def stints(
     start = timeline[0].video_timestamp
     strength: str | None = None
     shots: list[ShotAttempt] = []
+    # A stint with shot attempts but no live time, awaiting the next one
+    # with live time at the same strength to join.
+    pending: Stint | None = None
+
+    def emit(stint: Stint) -> None:
+        if _matches(stint.strength_state, strength_state):
+            results.append(stint)
+
+    def flush() -> None:
+        nonlocal pending
+        if pending is not None:
+            emit(pending)
+            pending = None
 
     def cut(at: int) -> None:
-        nonlocal start, shots
+        nonlocal start, shots, pending
         duration = _time_on_ice(
             [(start, at)], live, lambda state: _matches(state, ALL_SITUATIONS)
         )
-        if (duration or shots) and _matches(strength, strength_state):
-            results.append(
-                Stint(
-                    game_id=data.game.id,
-                    start_ms=start,
-                    end_ms=at,
-                    duration_ms=duration,
-                    strength_state=strength,
-                    home_skaters=_skaters(on_ice, home_id),
-                    away_skaters=_skaters(on_ice, away_id),
-                    shot_attempts=_for_against(shots, home_id),
-                )
+        if duration or shots:
+            stint = Stint(
+                game_id=data.game.id,
+                start_ms=start,
+                end_ms=at,
+                duration_ms=duration,
+                strength_state=strength,
+                home_skaters=_skaters(on_ice, home_id),
+                away_skaters=_skaters(on_ice, away_id),
+                shot_attempts=_for_against(shots, home_id),
             )
+            if pending is not None:
+                stint = _with_attempts_of(stint, pending)
+                pending = None
+            if duration:
+                emit(stint)
+            else:
+                pending = stint
         start, shots = at, []
 
     for event in timeline:
@@ -812,6 +836,7 @@ def stints(
             continue
         if _changes_strength(event, strength):
             cut(event.video_timestamp)
+            flush()
             strength = event.strength_state
         if (
             isinstance(event, ShotAttempt)
@@ -820,7 +845,14 @@ def stints(
         ):
             shots.append(event)
     cut(_game_end(timeline))
+    flush()
     return results
+
+
+def _with_attempts_of(stint: Stint, earlier: Stint) -> Stint:
+    """`stint`, also counting the shot attempts of `earlier` -- a stint
+    with no live time just before it, at the same strength."""
+    return replace(stint, shot_attempts=earlier.shot_attempts + stint.shot_attempts)
 
 
 def _skaters(on_ice: dict[int, set[int]], team_id: int | None) -> frozenset[int] | None:

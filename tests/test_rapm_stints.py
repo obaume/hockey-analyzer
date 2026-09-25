@@ -190,3 +190,51 @@ def test_a_shot_with_no_strength_state_counts_toward_no_stint_like_corsi():
 
     assert stint.shot_attempts.for_ == 1
     assert stats_engine.team_stats(data, HOME).corsi.for_ == 1
+
+
+def test_a_shot_logged_partway_through_a_line_change_joins_the_line_it_completes():
+    game = GameBuilder(opponent_shifts_complete=True)
+    kim = game.player(HOME, 14)
+    lee = game.player(HOME, 15)
+    game.shift(HOME, kim, True, at=0)
+    game.faceoff(0.0, at=0)
+    game.shift(HOME, kim, False, at=5_000)
+    game.shot(AWAY, at=5_000)  # logged mid-change: nobody on for home
+    game.shift(HOME, lee, True, at=5_000)
+    game.period_end(1, at=20_000)
+
+    stints = stats_engine.stints(game.build())
+
+    assert [
+        (stint.start_ms, stint.end_ms, stint.home_skaters, stint.duration_ms)
+        for stint in stints
+    ] == [
+        (0, 5_000, frozenset({kim}), 5_000),
+        (5_000, 20_000, frozenset({lee}), 15_000),
+    ]
+    assert [stint.shot_attempts.against for stint in stints] == [0, 1]
+
+
+def test_a_stint_with_no_live_time_stays_its_own_row_rather_than_change_strength():
+    game = GameBuilder(opponent_shifts_complete=True)
+    kim = game.player(HOME, 14)
+    game.shift(HOME, kim, True, at=0)
+    game.faceoff(0.0, at=0)
+    game.shift(HOME, kim, False, at=5_000)
+    game.shot(AWAY, at=5_000)
+    game.shot(HOME, strength="5v4", at=5_000)  # strength changes first
+    game.period_end(1, at=20_000)
+
+    stints = stats_engine.stints(game.build(), strength_state=None)
+
+    assert [
+        (stint.start_ms, stint.end_ms, stint.strength_state, stint.duration_ms)
+        for stint in stints
+    ] == [
+        (0, 5_000, "5v5", 5_000),
+        (5_000, 5_000, "5v5", 0),
+        (5_000, 20_000, "5v4", 15_000),
+    ]
+    assert [
+        (stint.shot_attempts.for_, stint.shot_attempts.against) for stint in stints
+    ] == [(0, 0), (0, 1), (1, 0)]
