@@ -16,17 +16,15 @@ from typing import Literal, NamedTuple, Protocol, Self, TypeVar
 
 from hockey_analyzer.domain import rink
 from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType, UnitType
+from hockey_analyzer.domain.game_clock import stops_play
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import (
     Event,
     Faceoff,
     GameRosterEntry,
-    Penalty,
-    PeriodEnd,
     PeriodStart,
     ShiftChange,
     ShotAttempt,
-    Stoppage,
 )
 
 # The default strength-state filter for every stat except goalie stats
@@ -779,7 +777,7 @@ class _LiveSegment(NamedTuple):
 
 def _live_segments(data: GameData) -> list[_LiveSegment]:
     """The game clock's running stretches: from each faceoff to the next
-    event that stops play (see `_stops_play`), so stoppage gaps and
+    event that stops play (see `stops_play`), so stoppage gaps and
     intermissions drop out -- CONTEXT.md's Game clock derivation. Each
     stretch is further cut wherever a logged event records a different
     strength state (e.g. a penalty expiring on the fly), so a filtered
@@ -794,7 +792,7 @@ def _live_segments(data: GameData) -> list[_LiveSegment]:
             live_since, strength = event.video_timestamp, event.strength_state
         elif live_since is None:
             continue
-        elif _stops_play(event):
+        elif stops_play(event):
             segments.append(_LiveSegment(live_since, event.video_timestamp, strength))
             live_since = None
         elif (
@@ -886,16 +884,6 @@ def _on_ice_at_shots(data: GameData) -> dict[int, frozenset[int]]:
     return snapshots
 
 
-def _stops_play(event: Event) -> bool:
-    """Whether play is dead right after `event`: a logged whistle, a
-    period boundary, or an event that implies one (a goal, a penalty) --
-    see CONTEXT.md's Game clock and Stoppage entries. Only a faceoff
-    restarts it."""
-    if isinstance(event, ShotAttempt):
-        return event.shot_outcome is ShotOutcome.GOAL
-    return isinstance(event, Stoppage | PeriodStart | PeriodEnd | Penalty)
-
-
 def _with_periods(timeline: list[Event]) -> Iterator[tuple[int, Event]]:
     """Each event paired with which period it falls in, counted by the
     `period_start` events seen so far (0 before the first one) -- robust
@@ -948,7 +936,7 @@ def _attacking_directions(
 
 def _zone_starts(data: GameData, strength_state: str | None) -> dict[int, ZoneStarts]:
     """Faceoff-anchored shift starts per player. A shift is anchored when
-    it begins while play is dead (see `_stops_play`; also before the
+    it begins while play is dead (see `stops_play`; also before the
     game's first faceoff) and the player is still on when the next faceoff
     restarts play -- or when it begins at the very instant of the faceoff
     that just restarted play, logged after it. Any other start is on the
@@ -996,7 +984,7 @@ def _zone_starts(data: GameData, strength_state: str | None) -> dict[int, ZoneSt
             pending.clear()
             play_stopped = False
             last_faceoff = event
-        elif _stops_play(event):
+        elif stops_play(event):
             play_stopped = True
 
     return {

@@ -12,7 +12,7 @@ An offset into a specific game's footage file. The one time reference every even
 
 ### Game clock
 
-The period number and time-remaining-in-period a hockey viewer would recognize from a scoreboard. Not stored directly on events — derived from `period_start`/`period_end`, `stoppage`, and the events that imply a stoppage (`faceoff` marks resumption of play; `shot_attempt` with outcome `goal` and `penalty` each imply a stoppage occurred, without requiring a separate logged `stoppage` event for those cases). Elapsed live time within a period = footage time within the period minus the sum of `[stoppage → next resumption]` gaps. This derivation only holds because the footage is continuous, non-stop recording from period start to period end — a game recorded with cuts (e.g. intermissions edited out inconsistently) would break it.
+The period number and time-remaining-in-period a hockey viewer would recognize from a scoreboard. Not stored directly on events — derived from `period_start`/`period_end`, `stoppage`, and the events that imply a stoppage (`faceoff` marks resumption of play; `shot_attempt` with outcome `goal` and `penalty` each imply a stoppage occurred, without requiring a separate logged `stoppage` event for those cases). Elapsed live time within a period = footage time within the period minus the sum of `[stoppage → next resumption]` gaps. This derivation only holds because the footage is continuous, non-stop recording from period start to period end — a game recorded with cuts (e.g. intermissions edited out inconsistently) would break it. No period length is stored, so time remaining assumes a 20-minute period (regulation under both IIHF and NHL rules) and bottoms out at 0:00 rather than going negative.
 
 ### Stoppage
 
