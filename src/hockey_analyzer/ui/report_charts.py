@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Sequence
+from typing import NamedTuple
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -29,29 +30,70 @@ SHOT_MAP = "shot-map"
 _RIGHT_COLOR = "#1f77b4"
 _LEFT_COLOR = "#d62728"
 
-_Point = tuple[float, float, bool]  # x, y, is a goal
+
+class ShotPoint(NamedTuple):
+    x: float
+    y: float
+    goal: bool
+
+
+class ShotSides(NamedTuple):
+    """A shot map's attempts, already placed: `right` attacking the
+    right-hand net, `left` the other; `right_team_ids` are the teams drawn
+    on the right, in first-seen order."""
+
+    right: list[ShotPoint]
+    left: list[ShotPoint]
+    right_team_ids: list[int]
+
+
+def shot_sides(
+    games: Sequence[GameData],
+    *,
+    right_team_id: int | None = None,
+    player_id: int | None = None,
+) -> ShotSides:
+    """Every located attempt in `games`, split by side: `right_team_id`'s
+    (default: the first game's home team's) attack right. With `player_id`
+    (a player report), each game's right side is instead whichever team
+    that player was rostered on in it -- a player who changed teams
+    between the picked games stays on the right throughout -- falling
+    back to `right_team_id` for a game they weren't rostered in."""
+    if right_team_id is None and games:
+        right_team_id = games[0].game.home_team_id
+    sides = ShotSides([], [], [])
+    for data in games:
+        game_right = next(
+            (
+                entry.team_id
+                for entry in data.roster
+                if player_id is not None and entry.player_id == player_id
+            ),
+            right_team_id,
+        )
+        for shot, x, y in stats_engine.oriented_shots(data):
+            goal = shot.shot_outcome is ShotOutcome.GOAL
+            if shot.shot_team_id == game_right:
+                sides.right.append(ShotPoint(x, y, goal))
+                if game_right not in sides.right_team_ids:
+                    sides.right_team_ids.append(game_right)
+            else:
+                sides.left.append(ShotPoint(-x, -y, goal))
+    return sides
 
 
 def shot_map_chart(
-    games: Sequence[GameData], *, right_team_id: int | None = None
+    games: Sequence[GameData],
+    *,
+    right_team_id: int | None = None,
+    player_id: int | None = None,
 ) -> Chart | None:
-    """Every located attempt in `games`: `right_team_id`'s (default: the
-    first game's home team's) attacking the right-hand net, everyone
-    else's the left. Goals are stars, other attempts hollow circles. None
-    when no attempt can be placed. Drawn on the first game's rink type."""
-    if not games:
-        return None
-    if right_team_id is None:
-        right_team_id = games[0].game.home_team_id
-    right: list[_Point] = []
-    left: list[_Point] = []
-    for data in games:
-        for shot, x, y in stats_engine.oriented_shots(data):
-            goal = shot.shot_outcome is ShotOutcome.GOAL
-            if shot.shot_team_id == right_team_id:
-                right.append((x, y, goal))
-            else:
-                left.append((-x, -y, goal))
+    """Every located attempt in `games`, split as `shot_sides` splits
+    them. Goals are stars, other attempts hollow circles. None when no
+    attempt can be placed. Drawn on the first game's rink type."""
+    right, left, right_team_ids = shot_sides(
+        games, right_team_id=right_team_id, player_id=player_id
+    )
     if not right and not left:
         return None
 
@@ -60,17 +102,18 @@ def shot_map_chart(
     figure.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.9)
     ax = figure.add_subplot(111)
     build_rink(games[0].game.rink_type).draw(ax=ax, display_range="full")
-    right_name = team_names(games).get(right_team_id, "Team")
+    names = team_names(games)
+    right_name = " / ".join(names.get(id_, "Team") for id_ in right_team_ids)
     for points, color, label in (
         (right, _RIGHT_COLOR, right_name),
         (left, _LEFT_COLOR, "Opponents"),
     ):
-        attempts = [point for point in points if not point[2]]
-        goals = [point for point in points if point[2]]
+        attempts = [point for point in points if not point.goal]
+        goals = [point for point in points if point.goal]
         if attempts:
             ax.scatter(
-                [x for x, _y, _goal in attempts],
-                [y for _x, y, _goal in attempts],
+                [point.x for point in attempts],
+                [point.y for point in attempts],
                 s=40,
                 facecolors="none",
                 edgecolors=color,
@@ -80,8 +123,8 @@ def shot_map_chart(
             )
         if goals:
             ax.scatter(
-                [x for x, _y, _goal in goals],
-                [y for _x, y, _goal in goals],
+                [point.x for point in goals],
+                [point.y for point in goals],
                 s=90,
                 marker="*",
                 color=color,

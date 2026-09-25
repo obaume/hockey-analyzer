@@ -437,3 +437,34 @@ def test_a_bundle_missing_a_chart_asset_it_lists_is_invalid(tmp_path):
 
     with pytest.raises(InvalidBundleError):
         read_bundle(path)
+
+
+def _corrupt_member(path, name):
+    """Flip a byte inside `name`'s stored data, leaving the archive's
+    directory intact -- as a damaged download or disk would."""
+    with zipfile.ZipFile(path) as bundle:
+        info = bundle.getinfo(name)
+    raw = bytearray(path.read_bytes())
+    # Local file header: 30 fixed bytes, then the name and extra field,
+    # whose lengths sit at offsets 26 and 28.
+    header = info.header_offset
+    name_length = int.from_bytes(raw[header + 26 : header + 28], "little")
+    extra_length = int.from_bytes(raw[header + 28 : header + 30], "little")
+    data = header + 30 + name_length + extra_length
+    raw[data + info.compress_size // 2] ^= 0xFF
+    path.write_bytes(bytes(raw))
+
+
+@pytest.mark.parametrize(
+    "member", ["manifest.json", "report.json", "assets/shot-map.png"]
+)
+def test_a_bundle_with_a_corrupted_member_is_invalid(tmp_path, member):
+    path = tmp_path / "damaged.hockeyreport"
+    write_bundle(
+        path,
+        build_game_report(_small_game(), summary="", charts=[Chart("shot-map", PNG)]),
+    )
+    _corrupt_member(path, member)
+
+    with pytest.raises(InvalidBundleError):
+        read_bundle(path)

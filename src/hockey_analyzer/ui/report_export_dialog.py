@@ -149,10 +149,15 @@ class ReportExportDialog(QDialog):
         """The report as it would be exported right now."""
         subject = self._subject()
         # The shot map attacks right for the report's own side: the team,
-        # or the player's team.
-        chart = shot_map_chart(
-            self._games, right_team_id=None if subject is None else subject.team_id
-        )
+        # or the player's team in each game.
+        if subject is None:
+            chart = shot_map_chart(self._games)
+        elif subject.kind is ReportKind.TEAM:
+            chart = shot_map_chart(self._games, right_team_id=subject.id)
+        else:
+            chart = shot_map_chart(
+                self._games, right_team_id=subject.team_id, player_id=subject.id
+            )
         common = {
             "summary": self._summary(),
             "filters": self._filters,
@@ -191,7 +196,7 @@ class ReportExportDialog(QDialog):
         if not chosen:
             return
         path = Path(chosen)
-        if path.suffix != BUNDLE_EXTENSION:
+        if path.suffix.lower() != BUNDLE_EXTENSION:
             path = path.with_name(path.name + BUNDLE_EXTENSION)
         try:
             write_bundle(path, self.report())

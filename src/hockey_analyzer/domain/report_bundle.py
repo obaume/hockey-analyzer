@@ -33,6 +33,7 @@ import os
 import re
 import tempfile
 import zipfile
+import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -708,14 +709,26 @@ def read_bundle(path: str | os.PathLike[str]) -> Report:
             raise BundleTooNewError(version)
         report = _read_json(bundle, _REPORT)
         try:
-            return _report_from_json(report, manifest, bundle.read)
+            return _report_from_json(
+                report, manifest, lambda name: _read_member(bundle, name)
+            )
         except (KeyError, TypeError, ValueError, AttributeError) as error:
             raise InvalidBundleError(f"damaged report bundle ({error!r})") from error
 
 
+def _read_member(bundle: zipfile.ZipFile, name: str) -> bytes:
+    """`name`'s bytes; raises KeyError when the bundle has no such member,
+    and `InvalidBundleError` when its stored data is damaged (a bad CRC or
+    compressed stream, as from a truncated download)."""
+    try:
+        return bundle.read(name)
+    except (zipfile.BadZipFile, zlib.error, EOFError) as error:
+        raise InvalidBundleError(f"damaged report bundle ({name})") from error
+
+
 def _read_json(bundle: zipfile.ZipFile, name: str) -> Any:
     try:
-        return json.loads(bundle.read(name))
+        return json.loads(_read_member(bundle, name))
     except KeyError as error:
         raise InvalidBundleError(f"not a report bundle (no {name})") from error
     except ValueError as error:

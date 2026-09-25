@@ -4,8 +4,12 @@ saves the bundle file -- read back here exactly as a recipient would."""
 
 from __future__ import annotations
 
+import datetime
+
+import pytest
 from PySide6.QtWidgets import QDialog
-from stats_fixtures import named_game
+from stats_fixtures import AWAY, GameBuilder, named_game
+from table_helpers import all_cells
 
 from hockey_analyzer.domain.report_bundle import (
     BUNDLE_EXTENSION,
@@ -15,6 +19,7 @@ from hockey_analyzer.domain.report_bundle import (
 )
 from hockey_analyzer.domain.stats_engine import ALL_SITUATIONS, NATURAL_STRENGTH
 from hockey_analyzer.ui.report_export_dialog import ReportExportDialog
+from hockey_analyzer.ui.report_view import ReportView
 
 _FILTERS = StrengthFilters(
     team=ALL_SITUATIONS,
@@ -74,6 +79,25 @@ def test_suggested_file_name_describes_the_report(qtbot, tmp_path):
 
     (suggestion,) = dialog.suggested_names
     assert suggestion == f"Icebreakers vs Rivals{BUNDLE_EXTENSION}"
+
+
+@pytest.mark.parametrize(
+    ("chosen", "saved"),
+    [
+        ("out", "out.hockeyreport"),
+        ("out.zip", "out.zip.hockeyreport"),
+        ("out.HOCKEYREPORT", "out.HOCKEYREPORT"),
+    ],
+)
+def test_the_bundle_extension_is_added_unless_already_there(
+    qtbot, tmp_path, chosen, saved
+):
+    dialog = _dialog(qtbot, [named_game()], path=tmp_path / chosen)
+
+    dialog.export_button.click()
+
+    assert dialog.exported_path == tmp_path / saved
+    assert [path.name for path in tmp_path.iterdir()] == [saved]
 
 
 def test_cancelling_the_save_prompt_writes_nothing_and_stays_open(qtbot, tmp_path):
@@ -164,3 +188,53 @@ def test_a_failed_write_is_reported_and_the_dialog_stays_open(qtbot, tmp_path):
     assert "missing" in message
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.exported_path is None
+
+
+def test_an_exported_team_report_reopens_exactly_as_previewed(qtbot, tmp_path):
+    """What the manual QA checks by hand: a multi-game report, opened from
+    its file, shows the same numbers, caveats, summary and charts the
+    sender previewed before exporting."""
+    unflagged = named_game(game_id=1)
+    unflagged.game.date = datetime.date(2026, 1, 10)
+    unresolved = GameBuilder(game_id=1).shift(AWAY, None, True, unknown=True)
+    unresolved.id = 999
+    unflagged.events.append(unresolved)
+    flagged = named_game(game_id=2, opponent_shifts_complete=True)
+    path = tmp_path / "rivals.hockeyreport"
+    previews = []
+    dialog = _dialog(qtbot, [unflagged, flagged], path=path, previews=previews)
+    dialog.subject_combo.setCurrentText("Team: Rivals")
+    dialog.summary_edit.setPlainText("# Rivals\n\n- **tight** gaps")
+
+    dialog.preview_button.click()
+    dialog.export_button.click()
+
+    (previewed,) = previews
+    sent = ReportView(previewed)
+    received = ReportView(read_bundle(path))
+    qtbot.addWidget(sent)
+    qtbot.addWidget(received)
+    for table in (
+        "team_table",
+        "skater_table",
+        "position_table",
+        "unit_table",
+        "goalie_table",
+        "shot_quality_table",
+    ):
+        assert all_cells(getattr(received, table)) == all_cells(getattr(sent, table))
+    for label in (
+        "title_label",
+        "games_label",
+        "filters_label",
+        "caveat_label",
+        "coverage_label",
+    ):
+        assert getattr(received, label).text() == getattr(sent, label).text()
+    assert "Rivals: 1 shift change(s)" in received.caveat_label.text()
+    assert "excluded: 2026-01-10" in received.coverage_label.text()
+    assert received.summary.toMarkdown() == sent.summary.toMarkdown()
+    assert [chart.png for chart in read_bundle(path).charts] == [
+        chart.png for chart in previewed.charts
+    ]
+    assert len(received.chart_labels) == 1
