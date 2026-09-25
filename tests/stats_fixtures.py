@@ -4,7 +4,13 @@ states exactly the events its expected numbers come from."""
 
 from __future__ import annotations
 
-from hockey_analyzer.domain.enums import Position, RinkType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import (
+    Position,
+    RinkType,
+    ShotOutcome,
+    ShotType,
+    UnitType,
+)
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import (
     Faceoff,
@@ -17,6 +23,7 @@ from hockey_analyzer.domain.models import (
     ShiftChange,
     ShotAttempt,
     Stoppage,
+    Team,
 )
 
 HOME = 1
@@ -167,3 +174,27 @@ class GameBuilder:
             roster=self.roster,
             unit_assignments=self.units,
         )
+
+
+def named_game(**kwargs):
+    """A small complete game for the report tests: home "Icebreakers" (#14
+    Jordan Kim, C, on Forward-Line 1; goalie #30) vs. away "Rivals" (#91 on
+    their Forward-Line 1, never tracked on ice). With Kim and #30 on: a
+    home 5v5 attempt, an away 5v5 goal, and a home 5v4 attempt. Every call
+    rosters the same player ids, so several calls (with distinct `game_id`s)
+    make one multi-game selection of the same players."""
+    game = GameBuilder(**kwargs)
+    game.game.home_team = Team(id=HOME, name="Icebreakers")
+    game.game.away_team = Team(id=AWAY, name="Rivals")
+    kim = game.player(HOME, 14, name="Jordan Kim")
+    goalie = game.player(HOME, 30, position=Position.GOALIE)
+    rival = game.player(AWAY, 91)
+    game.unit(HOME, UnitType.FORWARD_LINE, 1, kim)
+    game.unit(AWAY, UnitType.FORWARD_LINE, 1, rival)
+    game.faceoff(0.0)
+    game.shift(HOME, kim, True)
+    game.shift(HOME, goalie, True)
+    game.shot(HOME)
+    game.shot(AWAY, ShotOutcome.GOAL)
+    game.shot(HOME, strength="5v4")
+    return game.build()
