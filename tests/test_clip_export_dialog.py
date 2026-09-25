@@ -38,12 +38,16 @@ def game():
     return game
 
 
-def _registry():
-    """As the main window leaves it: its `playback` scope active, with
-    Space bound there."""
+def _registry(tagged=None):
+    """As the main window leaves it with a game open: its `playback`
+    scope active with Space bound there, and a tagging scope whose 7 logs
+    a shot attempt (into `tagged`, when given)."""
     registry = ShortcutRegistry()
     registry.enter_scope(PLAYBACK_SCOPE)
     registry.register("Space", PLAYBACK_SCOPE, lambda: None)
+    registry.enter_scope("tagging")
+    log = tagged if tagged is not None else []
+    registry.register("7", "tagging", lambda: log.append("shot_attempt"))
     return registry
 
 
@@ -521,23 +525,22 @@ def test_the_preview_works_for_a_highlight_reel_export_too(qtbot, game):
 
 
 class _ObservingEncoder:
-    """Notes what the preview showed when encoding started."""
+    """Notes what `dialog`'s preview showed when encoding started."""
 
-    def __init__(self, dialog_ref, player) -> None:
-        self.dialog_ref = dialog_ref
+    def __init__(self, player) -> None:
+        self.dialog = None
         self.player = player
         self.seen: list[tuple[str | None, bool]] = []
 
     def encode(self, source_path, segments, output_path) -> None:
-        self.seen.append((_placeholder(self.dialog_ref[0]), self.player.playing))
+        self.seen.append((_placeholder(self.dialog), self.player.playing))
 
 
 def test_export_clears_the_preview_before_encoding(qtbot, game, tmp_path):
     player = FakePreviewPlayer()
-    dialog_ref = []
-    encoder = _ObservingEncoder(dialog_ref, player)
+    encoder = _ObservingEncoder(player)
     dialog = _dialog(qtbot, game, player=player, encoder=encoder)
-    dialog_ref.append(dialog)
+    encoder.dialog = dialog
     _choose(dialog.player_combo, ALICE)
     _highlight(dialog, 0)
     player.play()
@@ -573,3 +576,30 @@ def test_the_dialog_can_be_opened_again_after_closing(qtbot, game):
     shortcuts.dispatch("P")
 
     assert player.playing
+
+
+def test_main_window_tagging_keys_do_nothing_under_the_dialog(qtbot, game):
+    tagged = []
+    dialog = _dialog(qtbot, game, shortcuts=_registry(tagged))
+    _highlight(dialog, 2)
+
+    qtbot.keyClick(dialog.candidate_list, Qt.Key.Key_7)
+    qtbot.keyClick(dialog, Qt.Key.Key_7)
+
+    assert tagged == []
+
+
+def test_a_late_position_report_from_the_last_window_doesnt_move_the_new_one(
+    qtbot, game
+):
+    player = FakePreviewPlayer()
+    dialog = _dialog(qtbot, game, player=player)
+    _highlight(dialog, 4)  # 25s-33s
+    player.play()
+
+    _highlight(dialog, 2)  # 15s-23s
+    player.calls.clear()
+    player.advance_to(30 * SECOND)  # still reporting the old playback
+
+    assert player.calls == []
+    assert dialog.preview.scrubber.value() == 15 * SECOND

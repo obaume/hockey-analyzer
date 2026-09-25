@@ -69,6 +69,18 @@ from hockey_analyzer.ui.keys import key_string, key_string_from_event
 from hockey_analyzer.ui.shortcuts import PLAYBACK_SCOPE, ShortcutRegistry
 
 CLIP_PREVIEW_SCOPE = "clip_preview"
+_PLAY_PAUSE_KEY = key_string(Qt.Key.Key_P)
+
+
+def _dispatch_preview_key(shortcuts: ShortcutRegistry, event: QKeyEvent) -> bool:
+    """Only the dialog's own scope: the main window's tagging keys stay
+    active underneath (it's modal, not closed) and must not log events
+    from here."""
+    if shortcuts.dispatch(key_string_from_event(event), scope=CLIP_PREVIEW_SCOPE):
+        event.accept()
+        return True
+    return False
+
 
 _E = TypeVar("_E", bound=enum.Enum)
 
@@ -110,10 +122,8 @@ class _CandidateList(QListWidget):
         self._shortcuts = shortcuts
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self._shortcuts.dispatch(key_string_from_event(event)):
-            event.accept()
-            return
-        super().keyPressEvent(event)
+        if not _dispatch_preview_key(self._shortcuts, event):
+            super().keyPressEvent(event)
 
 
 class ClipExportDialog(QDialog):
@@ -247,6 +257,8 @@ class ClipExportDialog(QDialog):
         layout.addLayout(columns, stretch=1)
         layout.addLayout(buttons_row)
         self.setLayout(layout)
+        # Wide enough that the preview beside the list is big enough
+        # to judge a play.
         self.resize(1200, 620)
 
         self._hold_shortcuts()
@@ -258,7 +270,7 @@ class ClipExportDialog(QDialog):
         self._shortcuts.suspend_scope(PLAYBACK_SCOPE)
         self._shortcuts.enter_scope(CLIP_PREVIEW_SCOPE)
         self._shortcuts.register(
-            key_string(Qt.Key.Key_P), CLIP_PREVIEW_SCOPE, self.preview.toggle_play_pause
+            _PLAY_PAUSE_KEY, CLIP_PREVIEW_SCOPE, self.preview.toggle_play_pause
         )
         self._holds_shortcuts = True
 
@@ -266,7 +278,7 @@ class ClipExportDialog(QDialog):
         if not self._holds_shortcuts:
             return
         self._holds_shortcuts = False
-        self._shortcuts.unregister(key_string(Qt.Key.Key_P), CLIP_PREVIEW_SCOPE)
+        self._shortcuts.unregister(_PLAY_PAUSE_KEY, CLIP_PREVIEW_SCOPE)
         self._shortcuts.exit_scope(CLIP_PREVIEW_SCOPE)
         self._shortcuts.resume_scope(PLAYBACK_SCOPE)
 
@@ -276,10 +288,8 @@ class ClipExportDialog(QDialog):
         super().done(result)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self._shortcuts.dispatch(key_string_from_event(event)):
-            event.accept()
-            return
-        super().keyPressEvent(event)
+        if not _dispatch_preview_key(self._shortcuts, event):
+            super().keyPressEvent(event)
 
     def _team_name(self, team_id: int) -> str:
         game = self._data.game

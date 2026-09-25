@@ -48,6 +48,7 @@ class PreviewPlayer(Protocol):
 
     def setAudioOutput(self, output: QAudioOutput) -> None: ...
     def setVideoSink(self, sink: QVideoSink) -> None: ...
+    def source(self) -> QUrl: ...
     def setSource(self, source: QUrl) -> None: ...
     def position(self) -> int: ...
     def setPosition(self, ms: int) -> None: ...
@@ -205,12 +206,18 @@ class ClipPreview(QWidget):
         window = self._window
         if window is None:
             return
-        if ms >= window.end_ms:
-            if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-                self._player.pause()
+        playing = (
+            self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        )
+        if playing and ms >= window.end_ms:
+            self._player.pause()
             if ms > window.end_ms:
                 self._player.setPosition(window.end_ms)
                 return
+        elif not window.start_ms <= ms <= window.end_ms:
+            # A late report from the window loaded before this one; the
+            # seek to this window's start is still on its way.
+            return
         self.scrubber.show_position(ms)
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:

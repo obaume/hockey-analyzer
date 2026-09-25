@@ -92,9 +92,15 @@ class ShortcutRegistry:
                 return scope
         return None
 
-    def dispatch(self, key: str) -> bool:
-        for scope in self._effectively_active_scopes():
-            action = self._bindings.get(scope, {}).get(key)
+    def dispatch(self, key: str, *, scope: str | None = None) -> bool:
+        """Runs `key`'s action in whichever effectively-active scope binds
+        it. `scope` confines the lookup to that one scope -- for a modal
+        dialog, under which the rest of the app's keys must stay quiet."""
+        scopes = self._effectively_active_scopes()
+        if scope is not None:
+            scopes &= {scope}
+        for active in scopes:
+            action = self._bindings.get(active, {}).get(key)
             if action is not None:
                 action()
                 return True
