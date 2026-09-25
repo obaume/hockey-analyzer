@@ -59,7 +59,6 @@ from hockey_analyzer.ui.playback_controller import (
     DEFAULT_SPEED_STEPS,
     PlaybackController,
 )
-
 from hockey_analyzer.ui.report_export_dialog import REPORT_FILE_FILTER
 from hockey_analyzer.ui.report_view import ReportViewerDialog
 from hockey_analyzer.ui.shortcuts import PLAYBACK_SCOPE, ShortcutRegistry
@@ -89,7 +88,6 @@ class ClipExportDialogFactory(Protocol):
     def __call__(
         self, data: GameData, parent: QWidget, shortcuts: ShortcutRegistry
     ) -> ClipExportDialog: ...
-
 
 
 class ReportViewerFactory(Protocol):
