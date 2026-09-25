@@ -92,7 +92,8 @@ class ReportViewerFactory(Protocol):
     def __call__(
         self, report: Report, *, title: str, parent: QWidget | None = None
     ) -> ReportViewerDialog: ...
-      
+
+
 def _clip_export_dialog(data: GameData, parent: QWidget) -> ClipExportDialog:
     """Probes the footage for its length (padding windows clamp to it),
     then opens the dialog over the real ffmpeg encoder."""

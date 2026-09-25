@@ -1007,6 +1007,19 @@ def _report_window(qtbot, path, opened, errors):
     def viewer(report, *, title, parent):
         opened.append(_FakeReportViewer(report, title, parent))
         return opened[-1]
+
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        report_file_dialog=lambda: "" if path is None else str(path),
+        report_viewer_factory=viewer,
+        report_error_notice=errors.append,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
 class _FakeClipExportDialog:
     """Stands in for ClipExportDialog.exec() -- records the game data it
     was opened with."""
@@ -1031,9 +1044,10 @@ def _window_with_clip_export(qtbot, session, opened, *, game_id, **kw):
         controller=Mock(spec=PlaybackController),
         player=FakePlayer(),
         shortcuts=ShortcutRegistry(),
-        report_file_dialog=lambda: "" if path is None else str(path),
-        report_viewer_factory=viewer,
-        report_error_notice=errors.append,
+        db_session=session,
+        game_setup_dialog_factory=lambda service: _FakeGameSetupDialog(game_id=game_id),
+        clip_export_dialog_factory=factory,
+        **kw,
     )
     qtbot.addWidget(window)
     return window
@@ -1104,6 +1118,8 @@ def test_cancelling_open_report_does_nothing(qtbot):
 
     assert opened == []
     assert errors == []
+
+
 def test_export_clips_is_disabled_with_no_active_game(qtbot, session):
     window = _window_with_clip_export(qtbot, session, [], game_id=None)
 
