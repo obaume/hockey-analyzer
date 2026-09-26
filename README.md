@@ -72,7 +72,7 @@ pytest                    # tests (Qt tests run through pytest-qt)
 ruff check . && ruff format --check .
 ```
 
-CI runs lint on every PR, the test suite on Windows (Python 3.11 and 3.12), and macOS after merge to `main`.
+CI runs lint and the test suite on every PR and push to `main`: tests on Windows (Python 3.11 and 3.12) and macOS (Python 3.12).
 
 The code is split into a GUI-free `domain/` layer (models, game clock, stats engine, clip planning), `league_import/`, and a PySide6 `ui/` layer. Design decisions are recorded as ADRs in [docs/adr/](docs/adr/), and the domain vocabulary in [CONTEXT.md](CONTEXT.md).
 
