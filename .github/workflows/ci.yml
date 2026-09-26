@@ -46,10 +46,7 @@ jobs:
       - name: Test
         run: pytest
 
-  # macOS minutes bill at 10x on a private repo, so PRs skip it; it runs
-  # after merge to main (or on demand) to catch platform drift.
   test-macos:
-    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
