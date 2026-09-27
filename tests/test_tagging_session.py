@@ -410,10 +410,11 @@ def test_describe_event_reports_unknown_player(tagging_session):
 def test_log_event_faceoff_defaults_both_participants_to_unknown(tagging_session):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
 
-    assert faceoff.faceoff_participant_a_id is None
-    assert faceoff.faceoff_participant_a_unknown is True
-    assert faceoff.faceoff_participant_b_id is None
-    assert faceoff.faceoff_participant_b_unknown is True
+    assert faceoff.faceoff_home_participant_id is None
+    assert faceoff.faceoff_home_participant_unknown is True
+    assert faceoff.faceoff_away_participant_id is None
+    assert faceoff.faceoff_away_participant_unknown is True
+    assert faceoff.faceoff_winner is None
 
 
 def test_log_event_shot_attempt_defaults_shooter_to_unknown_but_not_assists(
@@ -525,47 +526,60 @@ def test_log_event_shot_attempt_leaves_xg_null_with_no_calibration_logic(
     assert shot.shot_xg is None
 
 
-def test_set_player_reference_requires_an_explicit_reference_for_faceoff(
+def test_set_player_reference_on_a_faceoff_fills_the_home_slot_from_the_side(
+    tagging_session, session
+):
+    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
+
+    updated = tagging_session.set_player_reference(
+        faceoff.id, "home", jersey_number=14, full_name="Jordan Kim"
+    )
+
+    assert updated.faceoff_home_participant_unknown is False
+    player = session.get(Player, updated.faceoff_home_participant_id)
+    assert player.full_name == "Jordan Kim"
+    home_roster = tagging_session.list_roster(Side.HOME)
+    assert [entry.player_id for entry in home_roster] == [player.id]
+    # The away slot is untouched.
+    assert updated.faceoff_away_participant_unknown is True
+
+
+def test_set_player_reference_on_a_faceoff_fills_each_side_independently(
+    tagging_session,
+):
+    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
+    tagging_session.set_player_reference(faceoff.id, "home", jersey_number=14)
+
+    updated = tagging_session.set_player_reference(faceoff.id, "away", jersey_number=9)
+
+    away_roster = tagging_session.list_roster(Side.AWAY)
+    assert [entry.jersey_number for entry in away_roster] == [9]
+    assert updated.faceoff_away_participant_id == away_roster[0].player_id
+    assert updated.faceoff_away_participant_unknown is False
+    # Setting away must not disturb home's already-resolved reference.
+    assert updated.faceoff_home_participant_unknown is False
+    assert updated.faceoff_home_participant_id is not None
+
+
+def test_set_player_reference_on_a_faceoff_can_mark_a_side_unknown(tagging_session):
+    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
+    tagging_session.set_player_reference(faceoff.id, "away", jersey_number=9)
+
+    updated = tagging_session.set_player_reference(faceoff.id, "away", unknown=True)
+
+    assert updated.faceoff_away_participant_id is None
+    assert updated.faceoff_away_participant_unknown is True
+
+
+def test_set_player_reference_on_a_faceoff_rejects_a_reference_on_the_other_side(
     tagging_session,
 ):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
 
     with pytest.raises(ValueError):
-        tagging_session.set_player_reference(faceoff.id, "home", jersey_number=14)
-
-
-def test_set_player_reference_sets_faceoff_participant_a(tagging_session, session):
-    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
-
-    updated = tagging_session.set_player_reference(
-        faceoff.id,
-        "home",
-        reference="participant_a",
-        jersey_number=14,
-        full_name="Jordan Kim",
-    )
-
-    assert updated.faceoff_participant_a_unknown is False
-    assert updated.faceoff_team_a_id == tagging_session.home_team_id
-    player = session.get(Player, updated.faceoff_participant_a_id)
-    assert player.full_name == "Jordan Kim"
-
-
-def test_set_player_reference_sets_faceoff_participant_b_independently(tagging_session):
-    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
-    tagging_session.set_player_reference(
-        faceoff.id, "home", reference="participant_a", jersey_number=14
-    )
-
-    updated = tagging_session.set_player_reference(
-        faceoff.id, "away", reference="participant_b", jersey_number=9
-    )
-
-    assert updated.faceoff_team_b_id == tagging_session.away_team_id
-    assert updated.faceoff_participant_b_unknown is False
-    # Setting b must not disturb a's already-resolved reference.
-    assert updated.faceoff_participant_a_unknown is False
-    assert updated.faceoff_team_a_id == tagging_session.home_team_id
+        tagging_session.set_player_reference(
+            faceoff.id, "home", reference="away_participant", jersey_number=14
+        )
 
 
 def _log_shot(tagging_session, video_timestamp=812, **overrides):
@@ -636,25 +650,35 @@ def test_set_player_reference_rejects_an_unknown_reference_name(tagging_session)
         )
 
 
-def test_describe_event_faceoff_reports_both_participants(tagging_session):
+def test_describe_event_faceoff_reports_each_side_participant(tagging_session):
     faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
     tagging_session.set_player_reference(
-        faceoff.id,
-        "home",
-        reference="participant_a",
-        jersey_number=14,
-        full_name="Jordan Kim",
+        faceoff.id, "home", jersey_number=14, full_name="Jordan Kim"
     )
-    tagging_session.set_player_reference(
-        faceoff.id, "away", reference="participant_b", unknown=True
-    )
+    tagging_session.set_player_reference(faceoff.id, "away", jersey_number=9)
 
     description = tagging_session.describe_event(faceoff)
 
-    assert "#14" in description
-    assert "Jordan Kim" in description
-    assert "unknown" in description
-    assert "vs" in description
+    assert description == "#14 Jordan Kim (home) vs #9 (away)"
+
+
+def test_describe_event_faceoff_reports_unknown_participants(tagging_session):
+    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
+
+    description = tagging_session.describe_event(faceoff)
+
+    assert description == "unknown player (home) vs unknown player (away)"
+
+
+def test_describe_event_faceoff_adds_the_winner_once_set(tagging_session):
+    faceoff = tagging_session.log_event(EventType.FACEOFF, 5)
+    tagging_session.set_player_reference(faceoff.id, "home", jersey_number=14)
+
+    tagging_session.update_event(faceoff.id, faceoff_winner=Side.AWAY)
+
+    assert tagging_session.describe_event(faceoff) == (
+        "#14 (home) vs unknown player (away) - away won"
+    )
 
 
 def test_describe_event_shot_attempt_reports_shooter_and_outcome(tagging_session):

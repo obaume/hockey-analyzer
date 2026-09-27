@@ -91,8 +91,6 @@ _LOCATION_FIELDS: dict[EventType, tuple[str, str]] = {
 _TYPES_WITH_LOCATION = frozenset(_LOCATION_FIELDS)
 
 _REFERENCE_LABELS = {
-    "participant_a": "Participant A",
-    "participant_b": "Participant B",
     "shooter": "Shooter",
     "assist1": "Assist 1",
     "assist2": "Assist 2",
@@ -309,10 +307,11 @@ class TaggingPanel(QWidget):
         self.edit_form.addRow("Period", self.period_number_field)
 
         # Which of an event's (possibly several) player references the
-        # jersey field below targets -- only shown for faceoff/shot_attempt,
-        # which carry more than one (see EVENT_TYPE_REFERENCE_NAMES).
+        # jersey field below targets -- only shown for shot_attempt, which
+        # carries more than one (see EVENT_TYPE_REFERENCE_NAMES).
         # penalty/shift_change keep the old single-reference behavior
-        # (reference=None) since there's nothing to choose between.
+        # (reference=None) since there's nothing to choose between, and a
+        # faceoff needs none either: h/a pick its home/away participant.
         self.reference_combo = QComboBox()
         self.reference_combo.currentIndexChanged.connect(self._on_reference_changed)
         self.edit_form.addRow("Reference", self.reference_combo)
@@ -400,6 +399,15 @@ class TaggingPanel(QWidget):
             self.shot_context_checkboxes[column] = checkbox
         self.shot_context_row = shot_context_row
         self.edit_form.addRow("Shot context", self.shot_context_row)
+
+        # Item data is the side's plain `.value`, or None for an outcome
+        # not recorded yet (see CONTEXT.md's Faceoff entry).
+        self.winner_combo = QComboBox()
+        self.winner_combo.addItem("not set", None)
+        for side in Side:
+            self.winner_combo.addItem(side.value.capitalize(), side.value)
+        self.winner_combo.currentIndexChanged.connect(self._on_winner_changed)
+        self.edit_form.addRow("Winner", self.winner_combo)
 
         self.location_label = QLabel("not set")
         self.relocate_button = QPushButton("Re-click location")
@@ -590,11 +598,10 @@ class TaggingPanel(QWidget):
 
         has_player_reference = event_type in EVENT_TYPES_WITH_PLAYER_REFERENCE
         self.edit_form.setRowVisible(self.player_reference_row, has_player_reference)
-        # Faceoff/shot_attempt carry more than one player reference
-        # (participant_a/b, shooter/assist1/assist2) -- the combo picks
-        # which one the jersey field below targets. Hidden by default (and
-        # for penalty/shift_change's single reference, where there's
-        # nothing to choose between).
+        # Shot_attempt carries more than one player reference (shooter/
+        # assist1/assist2) -- the combo picks which one the jersey field
+        # below targets. Hidden otherwise: penalty/shift_change have a
+        # single reference, and a faceoff's h/a picks its side's slot.
         reference_names = EVENT_TYPE_REFERENCE_NAMES.get(event_type, ())
         show_reference_combo = len(reference_names) > 1
         self.edit_form.setRowVisible(self.reference_combo, show_reference_combo)
@@ -665,6 +672,16 @@ class TaggingPanel(QWidget):
                 checkbox.setChecked(bool(getattr(event, column)))
                 checkbox.blockSignals(False)
 
+        is_faceoff = event_type is EventType.FACEOFF
+        self.edit_form.setRowVisible(self.winner_combo, is_faceoff)
+        if is_faceoff:
+            self.winner_combo.blockSignals(True)
+            winner = event.faceoff_winner
+            self.winner_combo.setCurrentIndex(
+                0 if winner is None else self.winner_combo.findData(winner.value)
+            )
+            self.winner_combo.blockSignals(False)
+
         is_location_bearing = event_type in _TYPES_WITH_LOCATION
         self.edit_form.setRowVisible(self.location_row, is_location_bearing)
         if is_location_bearing:
@@ -679,6 +696,10 @@ class TaggingPanel(QWidget):
             return
         self._session.update_event(self._selected_event_id, **{field: value})
         self.refresh()
+
+    def _on_winner_changed(self) -> None:
+        side = self.winner_combo.currentData()
+        self._commit_field("faceoff_winner", None if side is None else Side(side))
 
     def _on_reference_changed(self) -> None:
         self.jersey_field.clear()

@@ -11,6 +11,7 @@ from hockey_analyzer.domain.enums import (
     RinkType,
     ShotOutcome,
     ShotType,
+    Side,
     UnitType,
 )
 from hockey_analyzer.domain.game_setup import GameSetupService
@@ -777,30 +778,132 @@ def test_default_rink_click_dialog_factory_uses_the_sessions_rink_type(
 # -- location-bearing inline edit: reference combo, outcome/type, context --
 
 
-def test_faceoff_reference_combo_lets_both_participants_be_resolved_independently(
-    qtbot, tagging_session
-):
-    panel = _make_panel(qtbot, tagging_session)
+def _select_new_faceoff(qtbot, panel) -> None:
     qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
     _select_row(panel, 0)
 
-    assert panel.edit_form.isRowVisible(panel.reference_combo) is True
-    assert panel.reference_combo.currentData() == "participant_a"
 
-    panel.jersey_field.setText("14")
-    qtbot.mouseClick(panel.home_button, Qt.MouseButton.LeftButton)
+def _faceoff_jerseys(tagging_session) -> tuple[int | str, int | str]:
+    """(home participant, away participant) as jersey numbers, or
+    "unknown"."""
+    faceoff = tagging_session.list_events()[0]
 
-    index = panel.reference_combo.findData("participant_b")
-    panel.reference_combo.setCurrentIndex(index)
-    panel.jersey_field.setText("9")
-    qtbot.mouseClick(panel.away_button, Qt.MouseButton.LeftButton)
+    def jersey(side, player_id, unknown):
+        if unknown:
+            return "unknown"
+        roster = tagging_session.list_roster(side)
+        return next(e.jersey_number for e in roster if e.player_id == player_id)
 
-    event_id = tagging_session.list_events()[0].id
-    event = tagging_session.get_event(event_id)
-    assert event.faceoff_participant_a_unknown is False
-    assert event.faceoff_team_a_id == tagging_session.home_team_id
-    assert event.faceoff_participant_b_unknown is False
-    assert event.faceoff_team_b_id == tagging_session.away_team_id
+    return (
+        jersey(
+            Side.HOME,
+            faceoff.faceoff_home_participant_id,
+            faceoff.faceoff_home_participant_unknown,
+        ),
+        jersey(
+            Side.AWAY,
+            faceoff.faceoff_away_participant_id,
+            faceoff.faceoff_away_participant_unknown,
+        ),
+    )
+
+
+def test_a_faceoff_has_no_reference_combo(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+
+    assert panel.edit_form.isRowVisible(panel.player_reference_row) is True
+    assert panel.edit_form.isRowVisible(panel.reference_combo) is False
+
+
+def test_typing_14_h_9_a_on_a_faceoff_sets_both_participants(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+    _focus_jersey_field(panel)
+
+    qtbot.keyClicks(panel.jersey_field, "14")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_H)
+    qtbot.keyClicks(panel.jersey_field, "9")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_A)
+
+    assert _faceoff_jerseys(tagging_session) == (14, 9)
+
+
+def test_the_away_side_can_be_set_before_the_home_side(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+    _focus_jersey_field(panel)
+
+    qtbot.keyClicks(panel.jersey_field, "9")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_A)
+
+    assert _faceoff_jerseys(tagging_session) == ("unknown", 9)
+
+
+def test_unknown_then_h_resets_a_faceoffs_home_participant(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+    _focus_jersey_field(panel)
+    qtbot.keyClicks(panel.jersey_field, "14")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_H)
+    qtbot.keyClicks(panel.jersey_field, "9")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_A)
+
+    panel.unknown_checkbox.setChecked(True)
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_H)
+
+    assert _faceoff_jerseys(tagging_session) == ("unknown", 9)
+
+
+def test_the_winner_combo_starts_not_set(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+
+    assert panel.edit_form.isRowVisible(panel.winner_combo) is True
+    assert panel.winner_combo.currentText() == "not set"
+    assert [
+        panel.winner_combo.itemText(i) for i in range(panel.winner_combo.count())
+    ] == ["not set", "Home", "Away"]
+
+
+def test_the_winner_combo_saves_and_reloads(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+
+    panel.winner_combo.setCurrentIndex(panel.winner_combo.findText("Away"))
+
+    assert tagging_session.list_events()[0].faceoff_winner == Side.AWAY
+    reopened = _make_panel(qtbot, tagging_session)
+    _select_row(reopened, 0)
+    assert reopened.winner_combo.currentText() == "Away"
+
+
+def test_the_winner_can_be_unset_again(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    _select_new_faceoff(qtbot, panel)
+    panel.winner_combo.setCurrentIndex(panel.winner_combo.findText("Home"))
+
+    panel.winner_combo.setCurrentIndex(panel.winner_combo.findText("not set"))
+
+    assert tagging_session.list_events()[0].faceoff_winner is None
+
+
+def test_only_a_faceoff_shows_the_winner_combo(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHOT_ATTEMPT], Qt.MouseButton.LeftButton
+    )
+    _select_row(panel, 0)
+
+    assert panel.edit_form.isRowVisible(panel.winner_combo) is False
+
+
+def test_logging_a_faceoff_leaves_its_winner_unset(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+
+    assert tagging_session.list_events()[0].faceoff_winner is None
 
 
 def test_shot_attempt_reference_combo_defaults_to_shooter(qtbot, tagging_session):

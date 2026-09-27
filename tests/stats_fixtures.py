@@ -139,8 +139,8 @@ class GameBuilder:
             Faceoff(
                 faceoff_x=x,
                 faceoff_y=0.0,
-                faceoff_participant_a_unknown=True,
-                faceoff_participant_b_unknown=True,
+                faceoff_home_participant_unknown=True,
+                faceoff_away_participant_unknown=True,
                 strength_state=strength,
             ),
             at,
