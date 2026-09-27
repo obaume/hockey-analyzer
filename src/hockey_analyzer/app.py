@@ -75,7 +75,7 @@ def main() -> int:
     window = start(_default_db_path())
     if window is None:
         return 1
-    window.show()
+    window.showMaximized()
     return app.exec()
 
 
