@@ -537,11 +537,13 @@ class TaggingPanel(QWidget):
         self._populate_edit_panel(self._selected_event_id)
 
     def _cancel_selection(self) -> None:
-        """Esc: discard whatever the focused edit field holds unsaved,
-        clear the table selection and hide the edit panel. The selection
-        is forgotten *first* -- hiding the panel moves focus out of that
-        field, and a field that commits on editingFinished/focus-out
-        then reaches `_commit_field` with nothing selected, a no-op."""
+        """Esc: clear the table selection and hide the edit panel, without
+        committing any field's unsaved text. The selection is forgotten
+        *first* -- hiding the panel moves focus out of the focused field,
+        and a field that commits on editingFinished/focus-out then reaches
+        `_commit_field` with nothing selected, a no-op. Its stale text is
+        overwritten by `_populate_edit_panel` on the next selection; only
+        the jersey field, which h/a read directly, is cleared here."""
         if self._selected_event_id is None:
             return
         self._selected_event_id = None

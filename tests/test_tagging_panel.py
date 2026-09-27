@@ -1019,7 +1019,7 @@ def test_esc_with_nothing_selected_does_nothing(qtbot, tagging_session):
     qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
     before = tagging_session.list_events()
 
-    registry.dispatch(key_string(Qt.Key.Key_Escape))
+    assert registry.dispatch(key_string(Qt.Key.Key_Escape)) is True
 
     assert tagging_session.list_events() == before
     assert panel.edit_group.isVisible() is False
