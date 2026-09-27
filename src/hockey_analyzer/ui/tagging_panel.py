@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -156,6 +157,7 @@ class TaggingPanel(QWidget):
             LineChangeDialog,
         ]
         | None = None,
+        confirm: Callable[[str], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -183,6 +185,10 @@ class TaggingPanel(QWidget):
         self._line_change_dialog_factory = line_change_dialog_factory or (
             lambda units, roster: LineChangeDialog(units, roster, self)
         )
+        # Asked before either delete path (row button or edit panel)
+        # removes an event -- there's no undo, so a stray click mustn't
+        # silently lose a tag.
+        self._confirm = confirm or self._ask_confirm_delete
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}
@@ -223,8 +229,8 @@ class TaggingPanel(QWidget):
                 key_string(Qt.Key.Key_Escape), scope, self._cancel_selection
             )
 
-        self.event_table = QTableWidget(0, 3)
-        self.event_table.setHorizontalHeaderLabels(["Time", "Type", "Summary"])
+        self.event_table = QTableWidget(0, 4)
+        self.event_table.setHorizontalHeaderLabels(["Time", "Type", "Summary", ""])
         self.event_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.event_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.event_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -501,6 +507,12 @@ class TaggingPanel(QWidget):
 
     def refresh(self) -> None:
         events = self._session.list_events()
+        # Rebuilt with signals blocked: deleting a row other than the
+        # selected one can shrink the table out from under the selected
+        # row, and Qt then moves the selection to a neighbour --
+        # _on_selection_changed would adopt that neighbour's (pre-rebuild)
+        # event id. The selection is re-applied by event id below instead.
+        self.event_table.blockSignals(True)
         self.event_table.setRowCount(len(events))
         self._row_event_ids = [event.id for event in events]
         for row, event in enumerate(events):
@@ -513,19 +525,30 @@ class TaggingPanel(QWidget):
             self.event_table.setItem(
                 row, 2, QTableWidgetItem(self._session.describe_event(event))
             )
+            self.event_table.setCellWidget(row, 3, self._row_delete_button(event.id))
 
-        if self._selected_event_id in self._row_event_ids:
-            self._select_row_for_event(self._selected_event_id)
-            self._populate_edit_panel(self._selected_event_id)
-        else:
+        if self._selected_event_id not in self._row_event_ids:
             self._selected_event_id = None
-            self.edit_group.setVisible(False)
-
-    def _select_row_for_event(self, event_id: int) -> None:
-        row = self._row_event_ids.index(event_id)
-        self.event_table.blockSignals(True)
-        self.event_table.selectRow(row)
+        if self._selected_event_id is None:
+            self.event_table.clearSelection()
+        else:
+            self.event_table.selectRow(
+                self._row_event_ids.index(self._selected_event_id)
+            )
         self.event_table.blockSignals(False)
+
+        if self._selected_event_id is None:
+            self.edit_group.setVisible(False)
+        else:
+            self._populate_edit_panel(self._selected_event_id)
+
+    def _row_delete_button(self, event_id: int) -> QPushButton:
+        # Deletes this row's event, not the selected one -- bound to the
+        # id rather than the row index, which shifts as rows come and go.
+        button = QPushButton("Delete")
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(lambda: self._delete_event(event_id))
+        return button
 
     def _on_selection_changed(self) -> None:
         rows = self.event_table.selectionModel().selectedRows()
@@ -710,6 +733,28 @@ class TaggingPanel(QWidget):
     def _delete_selected(self) -> None:
         if self._selected_event_id is None:
             return
-        self._session.delete_event(self._selected_event_id)
-        self._selected_event_id = None
+        self._delete_event(self._selected_event_id)
+
+    def _delete_event(self, event_id: int) -> None:
+        """Deletes `event_id` once the tagger confirms. Deleting the
+        selected event hides the edit panel (refresh() drops a selection
+        whose event is gone); deleting any other row keeps the selection."""
+        event = self._session.get_event(event_id)
+        prompt = (
+            f"Delete this {_TYPE_LABELS[EventType(event.event_type)]} "
+            f"at {format_video_timestamp(event.video_timestamp)}?"
+        )
+        if not self._confirm(prompt):
+            return
+        self._session.delete_event(event_id)
         self.refresh()
+
+    def _ask_confirm_delete(self, prompt: str) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Delete event",
+            prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
