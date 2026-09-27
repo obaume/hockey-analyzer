@@ -62,17 +62,24 @@ class _ReferenceSpec(NamedTuple):
     """One player reference on an event subtype: its id/unknown column
     pair, plus the team column it resolves onto -- `None` for a reference
     with no team column of its own (assist1/assist2, which record a
-    player but not an independently-tracked team; see models.py)."""
+    player but not an independently-tracked team; see models.py).
+
+    `side` is set for a reference bound to one side of the game (a
+    faceoff's home/away participant): its team is that side's by
+    definition, and it's picked by the `team_side` it's set from rather
+    than by name."""
 
     id_column: str
     unknown_column: str
     team_column: str | None
+    side: Side | None = None
 
 
 # Every player reference an in-scope subtype carries, keyed by a
 # reference name the caller passes to `set_player_reference`. A subtype
 # with exactly one reference (penalty/shift_change) lets that name default
-# implicitly; faceoff/shot_attempt, which carry more than one, require it.
+# implicitly, as does faceoff, whose side-bound references are picked by
+# `team_side`; shot_attempt, which carries several, requires it.
 _REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
     EventType.PENALTY: {
         "player": _ReferenceSpec(
@@ -85,15 +92,17 @@ _REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
         ),
     },
     EventType.FACEOFF: {
-        "participant_a": _ReferenceSpec(
-            "faceoff_participant_a_id",
-            "faceoff_participant_a_unknown",
-            "faceoff_team_a_id",
+        "home_participant": _ReferenceSpec(
+            "faceoff_home_participant_id",
+            "faceoff_home_participant_unknown",
+            None,
+            Side.HOME,
         ),
-        "participant_b": _ReferenceSpec(
-            "faceoff_participant_b_id",
-            "faceoff_participant_b_unknown",
-            "faceoff_team_b_id",
+        "away_participant": _ReferenceSpec(
+            "faceoff_away_participant_id",
+            "faceoff_away_participant_unknown",
+            None,
+            Side.AWAY,
         ),
     },
     EventType.SHOT_ATTEMPT: {
@@ -111,7 +120,7 @@ _REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
 _REQUIRED_REFERENCES: dict[EventType, tuple[str, ...]] = {
     EventType.PENALTY: ("player",),
     EventType.SHIFT_CHANGE: ("player",),
-    EventType.FACEOFF: ("participant_a", "participant_b"),
+    EventType.FACEOFF: ("home_participant", "away_participant"),
     EventType.SHOT_ATTEMPT: ("shooter",),
 }
 
@@ -122,12 +131,14 @@ _REQUIRED_REFERENCES: dict[EventType, tuple[str, ...]] = {
 TeamSide = Side
 
 # Public: the widget layer needs these to decide which event types show a
-# player-reference field (and, for faceoff/shot_attempt, which reference
-# names to show) without redeclaring the mapping independently.
+# player-reference field (and, for shot_attempt, which reference names to
+# offer a choice between) without redeclaring the mapping independently.
+# Side-bound references (a faceoff's) aren't a choice: `team_side` picks.
 EVENT_TYPE_REFERENCE_NAMES: dict[EventType, tuple[str, ...]] = {
-    event_type: tuple(specs) for event_type, specs in _REFERENCE_SPECS.items()
+    event_type: tuple(name for name, spec in specs.items() if spec.side is None)
+    for event_type, specs in _REFERENCE_SPECS.items()
 }
-EVENT_TYPES_WITH_PLAYER_REFERENCE = frozenset(EVENT_TYPE_REFERENCE_NAMES)
+EVENT_TYPES_WITH_PLAYER_REFERENCE = frozenset(_REFERENCE_SPECS)
 
 # Public for the same reason: the setup dialog and the line-change dialog
 # both label units, and share this rather than each spelling them out.
@@ -310,17 +321,18 @@ class TaggingSession:
                 state = "ON" if event.shift_on_ice else "OFF"
             return f"{who} {state}"
         if event_type is EventType.FACEOFF:
-            participant_a = self._describe_player_reference(
-                event.faceoff_team_a_id,
-                event.faceoff_participant_a_id,
-                event.faceoff_participant_a_unknown,
+            home = self._describe_player(
+                event.faceoff_home_participant_id,
+                event.faceoff_home_participant_unknown,
             )
-            participant_b = self._describe_player_reference(
-                event.faceoff_team_b_id,
-                event.faceoff_participant_b_id,
-                event.faceoff_participant_b_unknown,
+            away = self._describe_player(
+                event.faceoff_away_participant_id,
+                event.faceoff_away_participant_unknown,
             )
-            return f"{participant_a} vs {participant_b}"
+            description = f"{home} (home) vs {away} (away)"
+            if event.faceoff_winner is not None:
+                description += f" - {Side(event.faceoff_winner).value} won"
+            return description
         if event_type is EventType.SHOT_ATTEMPT:
             shooter = self._describe_player_reference(
                 event.shot_team_id, event.shooter_id, event.shooter_unknown
@@ -338,10 +350,14 @@ class TaggingSession:
     ) -> str:
         team = self._db.get(Team, team_id) if team_id is not None else None
         team_label = team.name if team is not None else "team not set"
+        return f"{team_label} - {self._describe_player(player_id, unknown)}"
+
+    def _describe_player(self, player_id: int | None, unknown: bool) -> str:
+        """e.g. "#14 Jordan Kim", "unknown player" or "player not set"."""
         if unknown:
-            return f"{team_label} - unknown player"
+            return "unknown player"
         if player_id is None:
-            return f"{team_label} - player not set"
+            return "player not set"
 
         stmt = select(GameRosterEntry).where(
             GameRosterEntry.game_id == self.game_id,
@@ -351,10 +367,9 @@ class TaggingSession:
         jersey = f"#{entry.jersey_number}" if entry is not None else ""
         player = self._db.get(Player, player_id)
         name = player.full_name if player is not None and player.full_name else ""
-        label = (
+        return (
             " ".join(part for part in (jersey, name) if part) or f"player {player_id}"
         )
-        return f"{team_label} - {label}"
 
     # -- player identification ---------------------------------------
 
@@ -377,10 +392,10 @@ class TaggingSession:
         number for an illegible/obstructed number.
 
         `reference` picks which of the event's player references to set
-        (e.g. "shooter"/"assist1"/"assist2" on a `shot_attempt`,
-        "participant_a"/"participant_b" on a `faceoff`) and may be omitted
-        for a subtype that carries only one, such as `penalty`/
-        `shift_change`."""
+        (e.g. "shooter"/"assist1"/"assist2" on a `shot_attempt`) and may be
+        omitted for a subtype that carries only one, such as `penalty`/
+        `shift_change` -- or for a `faceoff`, whose home/away participant
+        slot is the one matching `team_side`."""
         event = self._get(event_id)
         event_type = EventType(event.event_type)
         specs = _REFERENCE_SPECS.get(event_type)
@@ -389,16 +404,27 @@ class TaggingSession:
                 f"{event.event_type.value} events have no player reference to set"
             )
         if reference is None:
-            if len(specs) != 1:
+            side_bound = [
+                name for name, spec in specs.items() if spec.side == team_side
+            ]
+            if side_bound:
+                reference = side_bound[0]
+            elif len(specs) == 1:
+                reference = next(iter(specs))
+            else:
                 raise ValueError(
                     f"{event.event_type.value} events carry more than one player reference "
                     f"({', '.join(specs)}); pass reference=<name>"
                 )
-            reference = next(iter(specs))
         spec = specs.get(reference)
         if spec is None:
             raise ValueError(
                 f"{event.event_type.value} events have no {reference!r} reference"
+            )
+        if spec.side is not None and spec.side != team_side:
+            raise ValueError(
+                f"the {reference!r} reference is on the {spec.side.value} side, "
+                f"not {Side(team_side).value!r}"
             )
 
         team_id = self._team_id_for_side(team_side)

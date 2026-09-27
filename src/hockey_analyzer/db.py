@@ -12,6 +12,7 @@ from sqlalchemy import Connection, Engine, create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from hockey_analyzer import schema_migrations
 from hockey_analyzer.domain import (
     game_activity,  # noqa: F401 -- import is for its `before_flush` registration side effect, not its names
 )
@@ -49,7 +50,9 @@ Migration = Callable[[Connection], Sequence[str] | None]
 # database from version i to version i + 1; append, never reorder or edit a
 # shipped one. A fresh database skips them all: create_all builds the latest
 # shape directly, so every migration must leave the schema matching the models.
-MIGRATIONS: list[Migration] = []
+MIGRATIONS: list[Migration] = [
+    schema_migrations.faceoff_home_away,
+]
 LATEST_VERSION = len(MIGRATIONS)
 
 

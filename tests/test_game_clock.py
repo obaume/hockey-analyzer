@@ -36,7 +36,7 @@ def _events(*pairs):
 
 def _faceoff():
     return Faceoff(
-        faceoff_participant_a_unknown=True, faceoff_participant_b_unknown=True
+        faceoff_home_participant_unknown=True, faceoff_away_participant_unknown=True
     )
 
 

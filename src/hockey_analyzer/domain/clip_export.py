@@ -85,7 +85,10 @@ def involved_players(event: Event) -> frozenset[int]:
     if isinstance(event, ShotAttempt):
         ids = (event.shooter_id, event.assist1_id, event.assist2_id)
     elif isinstance(event, Faceoff):
-        ids = (event.faceoff_participant_a_id, event.faceoff_participant_b_id)
+        ids = (
+            event.faceoff_home_participant_id,
+            event.faceoff_away_participant_id,
+        )
     elif isinstance(event, Penalty):
         ids = (event.penalty_player_id,)
     elif isinstance(event, ShiftChange):

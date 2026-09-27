@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from hockey_analyzer.domain.enums import EventType, RinkType, ShotOutcome, ShotType
+from hockey_analyzer.domain.enums import (
+    EventType,
+    RinkType,
+    ShotOutcome,
+    ShotType,
+    Side,
+)
 from hockey_analyzer.domain.models import (
     Faceoff,
     Penalty,
@@ -74,20 +80,19 @@ def test_faceoff_round_trip_with_known_participants(session, game_and_teams):
         strength_state="5v5",
         faceoff_x=0.0,
         faceoff_y=0.0,
-        faceoff_team_a_id=team_a.id,
-        faceoff_participant_a_id=player_a.id,
-        faceoff_team_b_id=team_b.id,
-        faceoff_participant_b_id=player_b.id,
-        faceoff_winner_team_id=team_a.id,
+        faceoff_home_participant_id=player_a.id,
+        faceoff_away_participant_id=player_b.id,
+        faceoff_winner=Side.HOME,
     )
     session.add(event)
     session.commit()
 
     fetched = session.get(Faceoff, event.id)
     assert fetched.faceoff_x == 0.0
-    assert fetched.faceoff_participant_a_id == player_a.id
-    assert fetched.faceoff_participant_a_unknown is False
-    assert fetched.faceoff_winner_team_id == team_a.id
+    assert fetched.faceoff_home_participant_id == player_a.id
+    assert fetched.faceoff_home_participant_unknown is False
+    assert fetched.faceoff_away_participant_id == player_b.id
+    assert fetched.faceoff_winner is Side.HOME
 
 
 def test_faceoff_participant_can_be_explicitly_unknown(session, game_and_teams):
@@ -102,17 +107,16 @@ def test_faceoff_participant_can_be_explicitly_unknown(session, game_and_teams):
         strength_state="5v5",
         faceoff_x=-10.0,
         faceoff_y=3.0,
-        faceoff_team_a_id=team_a.id,
-        faceoff_participant_a_id=player_a.id,
-        faceoff_team_b_id=team_b.id,
-        faceoff_participant_b_unknown=True,
+        faceoff_home_participant_id=player_a.id,
+        faceoff_away_participant_unknown=True,
     )
     session.add(event)
     session.commit()
 
     fetched = session.get(Faceoff, event.id)
-    assert fetched.faceoff_participant_b_id is None
-    assert fetched.faceoff_participant_b_unknown is True
+    assert fetched.faceoff_away_participant_id is None
+    assert fetched.faceoff_away_participant_unknown is True
+    assert fetched.faceoff_winner is None
 
 
 def test_faceoff_zone_and_high_danger_are_derived_not_persisted(
@@ -125,10 +129,8 @@ def test_faceoff_zone_and_high_danger_are_derived_not_persisted(
         strength_state="5v5",
         faceoff_x=40.0,
         faceoff_y=0.0,
-        faceoff_team_a_id=team_a.id,
-        faceoff_participant_a_unknown=True,
-        faceoff_team_b_id=team_b.id,
-        faceoff_participant_b_unknown=True,
+        faceoff_home_participant_unknown=True,
+        faceoff_away_participant_unknown=True,
     )
     session.add(event)
     session.commit()

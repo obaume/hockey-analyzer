@@ -65,6 +65,7 @@ from hockey_analyzer.domain.enums import (
     RinkType,
     ShotOutcome,
     ShotType,
+    Side,
     UnitType,
 )
 
@@ -357,46 +358,46 @@ class Stoppage(Event):
 
 
 class Faceoff(Event):
-    """Raw coordinates only; `zone` is derived, never stored."""
+    """Raw coordinates only; `zone` is derived, never stored. Always one
+    home participant against one away participant (see CONTEXT.md's
+    Faceoff entry): each side's participant has a slot of its own, so the
+    two can never be on the same team, and each one's team is simply the
+    game's team on that side."""
 
     __mapper_args__ = {"polymorphic_identity": EventType.FACEOFF}
 
     faceoff_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     faceoff_y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    faceoff_team_a_id: Mapped[int | None] = mapped_column(
-        ForeignKey("teams.id"), nullable=True
-    )
-    faceoff_participant_a_id: Mapped[int | None] = mapped_column(
+    faceoff_home_participant_id: Mapped[int | None] = mapped_column(
         ForeignKey("players.id"), nullable=True
     )
-    faceoff_participant_a_unknown: Mapped[bool] = mapped_column(
+    faceoff_home_participant_unknown: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
-    faceoff_team_b_id: Mapped[int | None] = mapped_column(
-        ForeignKey("teams.id"), nullable=True
-    )
-    faceoff_participant_b_id: Mapped[int | None] = mapped_column(
+    faceoff_away_participant_id: Mapped[int | None] = mapped_column(
         ForeignKey("players.id"), nullable=True
     )
-    faceoff_participant_b_unknown: Mapped[bool] = mapped_column(
+    faceoff_away_participant_unknown: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
-    faceoff_winner_team_id: Mapped[int | None] = mapped_column(
-        ForeignKey("teams.id"), nullable=True
+    # The winning side; unset means the outcome isn't recorded yet, never a
+    # draw -- there's no faceoff neither side won.
+    faceoff_winner: Mapped[Side | None] = mapped_column(
+        _enum_column(Side), nullable=True
     )
 
 
 _add_constraints(
     Faceoff,
     _required_reference_constraint(
-        "faceoff_participant_a_id",
-        "faceoff_participant_a_unknown",
-        "ck_faceoff_participant_a_ref",
+        "faceoff_home_participant_id",
+        "faceoff_home_participant_unknown",
+        "ck_faceoff_home_participant_ref",
     ),
     _required_reference_constraint(
-        "faceoff_participant_b_id",
-        "faceoff_participant_b_unknown",
-        "ck_faceoff_participant_b_ref",
+        "faceoff_away_participant_id",
+        "faceoff_away_participant_unknown",
+        "ck_faceoff_away_participant_ref",
     ),
 )
 

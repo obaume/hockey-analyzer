@@ -85,8 +85,12 @@ def test_outcome_filter_matches_only_shot_attempts_with_that_outcome():
             lambda g: g.shot(20, shooter=BOB, assists=[BOB, ALICE]), id="assist2"
         ),
         pytest.param(lambda g: g.shift(20, player=ALICE), id="shift participant"),
-        pytest.param(lambda g: g.faceoff(20, a=ALICE, b=CARL), id="faceoff side a"),
-        pytest.param(lambda g: g.faceoff(20, a=CARL, b=ALICE), id="faceoff side b"),
+        pytest.param(
+            lambda g: g.faceoff(20, home=ALICE, away=CARL), id="faceoff home side"
+        ),
+        pytest.param(
+            lambda g: g.faceoff(20, home=CARL, away=ALICE), id="faceoff away side"
+        ),
         pytest.param(lambda g: g.penalty(20, player=ALICE), id="penalized player"),
     ],
 )
@@ -299,7 +303,7 @@ def test_per_clip_filenames_carry_event_type_player_and_game_clock():
     game = ClipGame()
     game.shot(125, shooter=ALICE)
     game.penalty(200, player=CARL)
-    game.faceoff(300, a=CARL, b=BOB)
+    game.faceoff(300, home=CARL, away=BOB)
     selection = select_clips(game.data(), ClipFilter(player_id=CARL))
 
     plan = _plan(game, selection)

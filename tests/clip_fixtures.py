@@ -102,13 +102,13 @@ class ClipGame:
             **kw,
         )
 
-    def faceoff(self, at, *, a=None, b=None):
+    def faceoff(self, at, *, home=None, away=None):
         return self.add(
             Faceoff(
-                faceoff_participant_a_id=a,
-                faceoff_participant_a_unknown=a is None,
-                faceoff_participant_b_id=b,
-                faceoff_participant_b_unknown=b is None,
+                faceoff_home_participant_id=home,
+                faceoff_home_participant_unknown=home is None,
+                faceoff_away_participant_id=away,
+                faceoff_away_participant_unknown=away is None,
             ),
             at=at,
         )
