@@ -946,3 +946,81 @@ def test_line_change_offers_each_sides_roster_for_ad_hoc_picking(
         "home": [],
         "away": [("#12 Sam Diaz", 12)],
     }
+
+
+# -- Esc: cancel and deselect (ticket 60) ------------------------------------
+
+
+def test_esc_in_the_jersey_field_discards_the_number_and_deselects(
+    qtbot, tagging_session
+):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
+    _select_row(panel, 0)
+    _focus_jersey_field(panel)
+
+    qtbot.keyClicks(panel.jersey_field, "14")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_Escape)
+
+    event = tagging_session.get_event(tagging_session.list_events()[0].id)
+    assert event.shift_player_id is None
+    assert panel.edit_group.isVisible() is False
+    assert panel.event_table.selectionModel().selectedRows() == []
+    # Nothing is left behind: a later "h" (with the field no longer
+    # focused) doesn't resolve the discarded "14" either.
+    _blur_jersey_field(panel)
+    assert registry.dispatch(key_string(Qt.Key.Key_H)) is False
+    assert panel.jersey_field.text() == ""
+
+
+def test_esc_discards_pending_strength_state_even_if_focus_out_commits(
+    qtbot, tagging_session
+):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    event_id = tagging_session.list_events()[0].id
+    original = tagging_session.get_event(event_id).strength_state
+    _select_row(panel, 0)
+
+    panel.strength_state_field.setText("3v3")
+    assert registry.dispatch(key_string(Qt.Key.Key_Escape)) is True
+    # Hiding the panel moves focus out of the field, which fires
+    # editingFinished in a real app -- it must not write the pending text.
+    panel.strength_state_field.editingFinished.emit()
+
+    assert tagging_session.get_event(event_id).strength_state == original
+    assert panel.edit_group.isVisible() is False
+    assert panel.event_table.selectionModel().selectedRows() == []
+
+
+def test_esc_discards_pending_penalty_infraction(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    event_id = tagging_session.list_events()[0].id
+    _select_row(panel, 0)
+    _blur_jersey_field(panel)
+
+    panel.infraction_field.setText("Tripping")
+    assert registry.dispatch(key_string(Qt.Key.Key_Escape)) is True
+    panel.infraction_field.editingFinished.emit()
+
+    assert tagging_session.get_event(event_id).penalty_infraction is None
+    assert panel.edit_group.isVisible() is False
+
+
+def test_esc_with_nothing_selected_does_nothing(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    before = tagging_session.list_events()
+
+    registry.dispatch(key_string(Qt.Key.Key_Escape))
+
+    assert tagging_session.list_events() == before
+    assert panel.edit_group.isVisible() is False
+    assert panel.event_table.selectionModel().selectedRows() == []

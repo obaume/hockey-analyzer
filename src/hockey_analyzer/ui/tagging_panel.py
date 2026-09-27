@@ -204,15 +204,24 @@ class TaggingPanel(QWidget):
         )
 
         # Registered up front (see _JerseyEntry) but suspended until the
-        # jersey field actually has focus.
+        # jersey field actually has focus -- suspended *before* binding, so
+        # Esc (bound in both scopes, which are never active together)
+        # doesn't conflict with TAGGING_SCOPE's own Esc.
         self._shortcuts.enter_scope(JERSEY_ENTRY_SCOPE)
+        self._shortcuts.suspend_scope(JERSEY_ENTRY_SCOPE)
         self._register_shortcut(
             key_string(Qt.Key.Key_H), JERSEY_ENTRY_SCOPE, self._side_action("home")
         )
         self._register_shortcut(
             key_string(Qt.Key.Key_A), JERSEY_ENTRY_SCOPE, self._side_action("away")
         )
-        self._shortcuts.suspend_scope(JERSEY_ENTRY_SCOPE)
+
+        # Esc cancels the selected event's edit (ticket 60), whether or not
+        # the jersey field has suspended TAGGING_SCOPE.
+        for scope in (TAGGING_SCOPE, JERSEY_ENTRY_SCOPE):
+            self._register_shortcut(
+                key_string(Qt.Key.Key_Escape), scope, self._cancel_selection
+            )
 
         self.event_table = QTableWidget(0, 3)
         self.event_table.setHorizontalHeaderLabels(["Time", "Type", "Summary"])
@@ -526,6 +535,19 @@ class TaggingPanel(QWidget):
             return
         self._selected_event_id = self._row_event_ids[rows[0].row()]
         self._populate_edit_panel(self._selected_event_id)
+
+    def _cancel_selection(self) -> None:
+        """Esc: discard whatever the focused edit field holds unsaved,
+        clear the table selection and hide the edit panel. The selection
+        is forgotten *first* -- hiding the panel moves focus out of that
+        field, and a field that commits on editingFinished/focus-out
+        then reaches `_commit_field` with nothing selected, a no-op."""
+        if self._selected_event_id is None:
+            return
+        self._selected_event_id = None
+        self.jersey_field.clear()
+        self.event_table.clearSelection()
+        self.edit_group.setVisible(False)
 
     # -- edit panel population/commit -----------------------------------
 
