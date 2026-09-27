@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QDialog
@@ -120,7 +122,7 @@ def _make_panel(
     qtbot,
     tagging_session,
     *,
-    position_ms=0,
+    position_ms: int | Callable[[], int] = 0,
     shortcuts=None,
     pause=None,
     rink_click_dialog_factory=None,

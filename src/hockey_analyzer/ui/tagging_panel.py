@@ -188,7 +188,7 @@ class TaggingPanel(QWidget):
         # Asked before either delete path (row button or edit panel)
         # removes an event -- there's no undo, so a stray click mustn't
         # silently lose a tag.
-        self._confirm = confirm or self._ask_yes_no
+        self._confirm = confirm or self._ask_confirm_delete
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}
@@ -725,7 +725,7 @@ class TaggingPanel(QWidget):
         self._session.delete_event(event_id)
         self.refresh()
 
-    def _ask_yes_no(self, prompt: str) -> bool:
+    def _ask_confirm_delete(self, prompt: str) -> bool:
         answer = QMessageBox.question(
             self,
             "Delete event",
