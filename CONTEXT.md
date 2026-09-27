@@ -18,6 +18,10 @@ The period number and time-remaining-in-period a hockey viewer would recognize f
 
 An event marking a whistle that halts play, logged **only** when the cause isn't already implied by another logged event (icing, offside, puck out of play, etc.). A goal or penalty is itself a stoppage-implying event and does not get an additional standalone `stoppage` event for the same whistle.
 
+### Faceoff
+
+The event that resumes play: always one **home participant** against one **away participant** — never two players from the same team, so each side's participant is a slot of its own rather than a generic "participant A/B" whose team is recorded separately. Each participant may be an **Unknown player reference**. Records the **winning side** (`home` or `away`), which may be left unset — an unrecorded outcome, not a draw; there is no such thing as a faceoff neither side won. Every `period_start` is immediately followed by a center-ice faceoff at the same video timestamp, created along with it; once created it's an ordinary, independent event (deleting the `period_start` doesn't remove it).
+
 ### Shift / shift_change
 
 A **shift** (a continuous stretch a player spends on the ice) is never stored directly — it's derived from consecutive `shift_change` events for that player. A `shift_change` event is the primitive: one player, one team, one video timestamp, and whether they came on or off. This was chosen over storing shift intervals directly because it matches how shifts are actually observed while tagging (you see a player step off, not a pre-known interval) and composes better with partial/incomplete tagging.
