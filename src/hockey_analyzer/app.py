@@ -32,7 +32,7 @@ def main() -> int:
     db_session = make_session_factory(engine)()
 
     window = MainWindow(db_session=db_session)
-    window.show()
+    window.showMaximized()
     return app.exec()
 
 
