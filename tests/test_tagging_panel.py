@@ -210,17 +210,20 @@ def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(
     registry = ShortcutRegistry()
     _panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
-    for key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5):
+    # "1" goes last: it selects its faceoff and focuses the jersey field
+    # (ticket 63), which -- in a window that really takes focus -- suspends
+    # the digit hotkeys until the field loses it (ADR-0007).
+    for key in (Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5, Qt.Key.Key_1):
         assert registry.dispatch(key_string(key)) is True
 
-    # Six, not five: "1" logs a period start plus its faceoff (ticket 63).
+    # Six, not five: "1" logs a period start plus its faceoff.
     assert [event.event_type for event in tagging_session.list_events()] == [
-        EventType.PERIOD_START,
-        EventType.FACEOFF,
         EventType.PERIOD_END,
         EventType.STOPPAGE,
         EventType.PENALTY,
         EventType.SHIFT_CHANGE,
+        EventType.PERIOD_START,
+        EventType.FACEOFF,
     ]
 
 
