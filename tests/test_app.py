@@ -75,10 +75,11 @@ def test_a_database_that_cant_be_opened_shows_an_error_instead(qtbot, tmp_path):
     def fails(conn):
         raise RuntimeError("boom")
 
-    window = _start(db_path, boxes, [fails])
+    window = _start(db_path, boxes, [lambda conn: ["Committed change."], fails])
 
     assert window is None
     assert len(boxes.errors) == 1
     _, text = boxes.errors[0]
-    assert "version 1" in text
-    assert boxes.notices == []
+    assert "version 2" in text
+    # The first migration stuck, so its message is shown despite the failure.
+    assert [text for _, text in boxes.notices] == ["Committed change."]

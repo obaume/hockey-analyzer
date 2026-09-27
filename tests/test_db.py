@@ -135,13 +135,17 @@ def test_a_failing_migration_leaves_the_database_at_its_previous_version(tmp_pat
         conn.exec_driver_sql("ALTER TABLE teams ADD COLUMN colour TEXT")
         raise RuntimeError("boom")
 
+    def add_nickname(conn):
+        conn.exec_driver_sql("ALTER TABLE teams ADD COLUMN nickname TEXT")
+        return ["Teams now have nicknames."]
+
     with pytest.raises(MigrationFailedError, match="version 2") as excinfo:
-        init_db(
-            engine,
-            migrations=[_add_team_column("nickname"), half_done_then_fails],
-        )
+        init_db(engine, migrations=[add_nickname, half_done_then_fails])
 
     assert isinstance(excinfo.value.__cause__, RuntimeError)
+    # The first migration is committed and won't run again, so its message
+    # must still reach the user.
+    assert excinfo.value.messages == ["Teams now have nicknames."]
     assert _user_version(engine) == 1
     columns = _team_columns(engine)
     assert "nickname" in columns

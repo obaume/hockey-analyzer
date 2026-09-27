@@ -54,15 +54,22 @@ LATEST_VERSION = len(MIGRATIONS)
 
 
 class SchemaVersionError(Exception):
-    """The database's schema version can't be brought to this app's."""
+    """The database's schema version can't be brought to this app's.
+
+    `messages` holds what migrations that did commit before the failure
+    wanted shown -- they won't run again, so this is the only chance."""
+
+    def __init__(self, text: str, messages: Sequence[str] = ()) -> None:
+        super().__init__(text)
+        self.messages = list(messages)
 
 
 class DatabaseTooNewError(SchemaVersionError):
-    pass
+    """The database was written by a newer app, at a version past ours."""
 
 
 class MigrationFailedError(SchemaVersionError):
-    pass
+    """A migration raised; the database is left at the version before it."""
 
 
 def init_db(
@@ -96,7 +103,7 @@ def init_db(
         if version == latest:
             return messages
 
-        backup_path = _back_up(conn, engine, version)
+        backup_path = _back_up(conn, version)
         for target, migration in enumerate(migrations[version:], start=version + 1):
             try:
                 with _transaction(conn):
@@ -110,7 +117,8 @@ def init_db(
                 )
                 raise MigrationFailedError(
                     f"Upgrading the database to schema version {target} failed; "
-                    f"it was left at version {target - 1}.{backup_note}"
+                    f"it was left at version {target - 1}.{backup_note}",
+                    messages,
                 ) from error
     return messages
 
@@ -145,10 +153,10 @@ def _set_user_version(conn: Connection, version: int) -> None:
     conn.exec_driver_sql(f"PRAGMA user_version = {int(version)}")
 
 
-def _back_up(conn: Connection, engine: Engine, version: int) -> Path | None:
+def _back_up(conn: Connection, version: int) -> Path | None:
     """Copy the database file beside itself before it's migrated; an
     in-memory database has no file to keep."""
-    database = engine.url.database
+    database = conn.engine.url.database
     if not database or database == ":memory:":
         return None
     backup_path = Path(f"{database}.bak-v{version}")

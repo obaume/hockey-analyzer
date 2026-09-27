@@ -56,11 +56,16 @@ def start(
         messages = init_db(engine, migrations=migrations)
     except SchemaVersionError as error:
         engine.dispose()
+        _show_upgrade_messages(error.messages, show_notice)
         show_error("Can't open the database", str(error))
         return None
+    _show_upgrade_messages(messages, show_notice)
+    return MainWindow(db_session=make_session_factory(engine)())
+
+
+def _show_upgrade_messages(messages: Sequence[str], show_notice: MessageBox) -> None:
     if messages:
         show_notice("Database upgraded", "\n\n".join(messages))
-    return MainWindow(db_session=make_session_factory(engine)())
 
 
 def main() -> int:
