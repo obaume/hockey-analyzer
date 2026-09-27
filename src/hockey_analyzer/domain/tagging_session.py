@@ -219,7 +219,11 @@ class TaggingSession:
         make them mandatory on every row of that subtype with no "unknown"
         stand-in for outcome, so a bare stub can't be committed without
         them -- the tagger supplies both the moment the shot is logged,
-        alongside the rink-coordinate click (see ticket 16)."""
+        alongside the rink-coordinate click (see ticket 16).
+
+        A `period_start` also logs its center-ice faceoff -- two rows from
+        one call, of which the period start is returned (see
+        `log_period_start`)."""
         if event_type is EventType.PERIOD_START:
             period_start, _ = self.log_period_start(
                 video_timestamp, strength_state=strength_state

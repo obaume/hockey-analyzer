@@ -1161,12 +1161,11 @@ def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(
     _second = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     assert registry.dispatch(key_string(Qt.Key.Key_1)) is True
-    period_starts = [
-        event
-        for event in tagging_session.list_events()
-        if event.event_type is EventType.PERIOD_START
+    # Handled once: one period start plus its faceoff (ticket 63).
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.PERIOD_START,
+        EventType.FACEOFF,
     ]
-    assert len(period_starts) == 1
 
 
 # -- bulk line change (ticket 17) -------------------------------------------
