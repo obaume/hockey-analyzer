@@ -12,6 +12,7 @@ from hockey_analyzer.domain.enums import (
     UnitType,
 )
 from hockey_analyzer.domain.game_setup import GameSetupService
+from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.keys import key_string
 from hockey_analyzer.ui.rink_view import RinkClickDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -101,20 +102,39 @@ def _line_change_factory(**choice):
     return factory
 
 
+class _FakeConfirm:
+    """Stands in for the panel's delete confirmation (a real
+    `QMessageBox.question` blocks on a modal event loop). Records every
+    prompt it was asked and answers each with `answer`."""
+
+    def __init__(self, answer: bool = True) -> None:
+        self.answer = answer
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt: str) -> bool:
+        self.prompts.append(prompt)
+        return self.answer
+
+
 def _make_panel(
     qtbot,
     tagging_session,
     *,
-    position_ms: int = 0,
+    position_ms=0,
     shortcuts=None,
     pause=None,
     rink_click_dialog_factory=None,
     shot_attempt_dialog_factory=None,
     line_change_dialog_factory=None,
+    confirm=None,
 ):
     panel = TaggingPanel(
         tagging_session,
-        current_position_ms=lambda: position_ms,
+        # A plain int is a fixed playhead; a callable lets a test move it
+        # between logs.
+        current_position_ms=position_ms
+        if callable(position_ms)
+        else (lambda: position_ms),
         shortcuts=shortcuts if shortcuts is not None else ShortcutRegistry(),
         pause=pause,
         rink_click_dialog_factory=rink_click_dialog_factory or _FakeRinkClickDialog,
@@ -122,6 +142,7 @@ def _make_panel(
         or _FakeShotAttemptDialog,
         line_change_dialog_factory=line_change_dialog_factory
         or _line_change_factory(accepted=False),
+        confirm=confirm if confirm is not None else _FakeConfirm(),
     )
     qtbot.addWidget(panel)
     # Shown so isVisible() (used to assert the edit panel appears/hides)
@@ -134,6 +155,10 @@ def _make_panel(
 
 def _select_row(panel, row: int) -> None:
     panel.event_table.selectRow(row)
+
+
+def _row_delete_button(panel, row: int):
+    return panel.event_table.cellWidget(row, 3)
 
 
 def _focus_jersey_field(panel) -> None:
@@ -429,6 +454,121 @@ def test_delete_button_removes_the_event_and_hides_the_edit_panel(
 
     assert tagging_session.list_events() == []
     assert panel.event_table.rowCount() == 0
+    assert panel.edit_group.isVisible() is False
+
+
+def test_panel_delete_button_asks_for_confirmation_naming_the_event(
+    qtbot, tagging_session
+):
+    confirm = _FakeConfirm(answer=True)
+    panel = _make_panel(qtbot, tagging_session, position_ms=65000, confirm=confirm)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
+
+    assert confirm.prompts == [
+        f"Delete this Stoppage at {format_video_timestamp(65000)}?"
+    ]
+    assert tagging_session.list_events() == []
+
+
+def test_declining_the_panel_delete_confirmation_keeps_the_event(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session, confirm=_FakeConfirm(answer=False))
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
+
+    assert len(tagging_session.list_events()) == 1
+    assert panel.event_table.rowCount() == 1
+    assert panel.edit_group.isVisible() is True
+
+
+def test_each_row_has_a_delete_button_that_opts_out_of_keyboard_focus(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+
+    for row in range(panel.event_table.rowCount()):
+        button = _row_delete_button(panel, row)
+        assert button is not None
+        assert button.text() == "Delete"
+        assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_confirming_a_row_delete_removes_that_rows_event(qtbot, tagging_session):
+    positions = iter([1000, 3000])
+    confirm = _FakeConfirm(answer=True)
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        position_ms=lambda: next(positions),
+        confirm=confirm,
+    )
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+
+    qtbot.mouseClick(_row_delete_button(panel, 1), Qt.MouseButton.LeftButton)
+
+    assert confirm.prompts == [
+        f"Delete this Penalty at {format_video_timestamp(3000)}?"
+    ]
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.STOPPAGE
+    ]
+    assert panel.event_table.rowCount() == 1
+    assert panel.event_table.item(0, 1).text() == "Stoppage"
+
+
+def test_declining_a_row_delete_keeps_the_event(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session, confirm=_FakeConfirm(answer=False))
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+
+    qtbot.mouseClick(_row_delete_button(panel, 0), Qt.MouseButton.LeftButton)
+
+    assert len(tagging_session.list_events()) == 1
+    assert panel.event_table.rowCount() == 1
+
+
+def test_row_delete_of_an_unselected_row_keeps_the_current_selection(
+    qtbot, tagging_session
+):
+    positions = iter([1000, 2000, 3000])
+    panel = _make_panel(qtbot, tagging_session, position_ms=lambda: next(positions))
+    for _ in range(3):
+        qtbot.mouseClick(
+            panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+        )
+    _select_row(panel, 2)
+    panel.period_number_field.setValue(3)
+    panel.period_number_field.editingFinished.emit()
+
+    qtbot.mouseClick(_row_delete_button(panel, 0), Qt.MouseButton.LeftButton)
+
+    assert [event.video_timestamp for event in tagging_session.list_events()] == [
+        2000,
+        3000,
+    ]
+    assert panel.edit_group.isVisible() is True
+    selected_rows = panel.event_table.selectionModel().selectedRows()
+    assert [index.row() for index in selected_rows] == [1]
+    # The edit panel still shows the originally selected event's fields.
+    assert panel.period_number_field.value() == 3
+
+
+def test_row_delete_of_the_selected_row_hides_the_edit_panel(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    qtbot.mouseClick(_row_delete_button(panel, 0), Qt.MouseButton.LeftButton)
+
+    assert tagging_session.list_events() == []
     assert panel.edit_group.isVisible() is False
 
 
