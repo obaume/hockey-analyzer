@@ -46,6 +46,7 @@ from hockey_analyzer.domain.models import (
     Stoppage,
     Team,
 )
+from hockey_analyzer.domain.rink import CENTER_ICE
 
 _MODEL_BY_TYPE: dict[EventType, type[Event]] = {
     EventType.PERIOD_START: PeriodStart,
@@ -218,32 +219,96 @@ class TaggingSession:
         make them mandatory on every row of that subtype with no "unknown"
         stand-in for outcome, so a bare stub can't be committed without
         them -- the tagger supplies both the moment the shot is logged,
-        alongside the rink-coordinate click (see ticket 16)."""
-        model = _MODEL_BY_TYPE[event_type]
-        fields: dict[str, object] = {}
-        specs = _REFERENCE_SPECS.get(event_type, {})
-        for reference_name in _REQUIRED_REFERENCES.get(event_type, ()):
-            fields[specs[reference_name].unknown_column] = True
+        alongside the rink-coordinate click (see ticket 16).
 
+        A `period_start` also logs its center-ice faceoff -- two rows from
+        one call, of which the period start is returned (see
+        `log_period_start`)."""
+        if event_type is EventType.PERIOD_START:
+            period_start, _ = self.log_period_start(
+                video_timestamp, strength_state=strength_state
+            )
+            return period_start
+
+        fields: dict[str, object] = {}
         if event_type is EventType.SHOT_ATTEMPT:
             if shot_outcome is None or shot_type is None:
                 raise ValueError("shot_attempt requires shot_outcome and shot_type")
             fields["shot_outcome"] = shot_outcome
             fields["shot_type"] = shot_type
 
-        event = model(
-            game_id=self.game_id,
-            video_timestamp=video_timestamp,
-            strength_state=(
-                strength_state
-                if strength_state is not None
-                else self._infer_strength_state(video_timestamp)
-            ),
+        event = self._stub_event(
+            event_type,
+            video_timestamp,
+            self._strength_state_or_inferred(strength_state, video_timestamp),
             **fields,
         )
         self._db.add(event)
         self._db.commit()
         return event
+
+    def log_period_start(
+        self, video_timestamp: int, *, strength_state: str | None = None
+    ) -> tuple[PeriodStart, Faceoff]:
+        """Log a `period_start` together with the center-ice faceoff every
+        period opens with (ticket 63), both at `video_timestamp` and sharing
+        one strength state -- the faceoff is inserted second, so the event
+        log lists it right after. It is an ordinary stub faceoff (both
+        participants unknown, winner unset) at `CENTER_ICE`, needing no
+        rink click since the spot is always the same. Nothing links the
+        two afterward: deleting or moving the period start leaves the
+        faceoff as it is.
+
+        `log_event(EventType.PERIOD_START, ...)` routes here too, so every
+        caller gets the faceoff; call this directly to also get it back."""
+        strength_state = self._strength_state_or_inferred(
+            strength_state, video_timestamp
+        )
+        center_x, center_y = CENTER_ICE
+        period_start = self._stub_event(
+            EventType.PERIOD_START, video_timestamp, strength_state
+        )
+        faceoff = self._stub_event(
+            EventType.FACEOFF,
+            video_timestamp,
+            strength_state,
+            faceoff_x=center_x,
+            faceoff_y=center_y,
+        )
+        # Flushed one at a time so ids follow insertion order, the event
+        # log's tiebreak for events at the same timestamp.
+        self._db.add(period_start)
+        self._db.flush()
+        self._db.add(faceoff)
+        self._db.commit()
+        return period_start, faceoff
+
+    def _stub_event(
+        self,
+        event_type: EventType,
+        video_timestamp: int,
+        strength_state: str | None,
+        **fields: object,
+    ) -> Event:
+        """A not-yet-added `event_type` row with every required player
+        reference defaulted to explicit unknown (see
+        `_REQUIRED_REFERENCES`), plus any extra `fields`."""
+        specs = _REFERENCE_SPECS.get(event_type, {})
+        for reference_name in _REQUIRED_REFERENCES.get(event_type, ()):
+            fields[specs[reference_name].unknown_column] = True
+        return _MODEL_BY_TYPE[event_type](
+            game_id=self.game_id,
+            video_timestamp=video_timestamp,
+            strength_state=strength_state,
+            **fields,
+        )
+
+    def _strength_state_or_inferred(
+        self, strength_state: str | None, video_timestamp: int
+    ) -> str | None:
+        if strength_state is not None:
+            return strength_state
+        return self._infer_strength_state(video_timestamp)
 
     def update_event(self, event_id: int, **fields: object) -> Event:
         """Edit any field on an already-logged event. The event log is

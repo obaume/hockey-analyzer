@@ -210,10 +210,21 @@ def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(
     registry = ShortcutRegistry()
     _panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
-    for key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5):
+    # "1" goes last: it selects its faceoff and focuses the jersey field
+    # (ticket 63), which -- in a window that really takes focus -- suspends
+    # the digit hotkeys until the field loses it (ADR-0007).
+    for key in (Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5, Qt.Key.Key_1):
         assert registry.dispatch(key_string(key)) is True
 
-    assert len(tagging_session.list_events()) == 5
+    # Six, not five: "1" logs a period start plus its faceoff.
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.PERIOD_END,
+        EventType.STOPPAGE,
+        EventType.PENALTY,
+        EventType.SHIFT_CHANGE,
+        EventType.PERIOD_START,
+        EventType.FACEOFF,
+    ]
 
 
 def test_logging_an_event_never_touches_a_player_or_controller(qtbot, tagging_session):
@@ -246,9 +257,7 @@ def test_logging_an_event_adds_a_row_to_the_table(qtbot, tagging_session):
 
 def test_selecting_a_row_reveals_the_edit_panel(qtbot, tagging_session):
     panel = _make_panel(qtbot, tagging_session)
-    qtbot.mouseClick(
-        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
-    )
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
     assert panel.edit_group.isVisible() is False
 
     _select_row(panel, 0)
@@ -545,7 +554,7 @@ def test_row_delete_of_an_unselected_row_keeps_the_current_selection(
     panel = _make_panel(qtbot, tagging_session, position_ms=lambda: next(positions))
     for _ in range(3):
         qtbot.mouseClick(
-            panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+            panel.log_buttons[EventType.PERIOD_END], Qt.MouseButton.LeftButton
         )
     _select_row(panel, 2)
     panel.period_number_field.setValue(3)
@@ -627,12 +636,106 @@ def test_event_log_stays_ordered_by_video_timestamp_after_edits(qtbot, tagging_s
     qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
 
     panel._current_position_ms = lambda: 100
+    qtbot.mouseClick(panel.log_buttons[EventType.PERIOD_END], Qt.MouseButton.LeftButton)
+
+    assert panel.event_table.item(0, 1).text() == "Period End"
+    assert panel.event_table.item(1, 1).text() == "Stoppage"
+
+
+# -- period start opens with a center-ice faceoff (ticket 63) ---------------
+
+
+def test_period_start_logs_a_center_ice_faceoff_listed_right_after_it(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session, position_ms=3000)
+
     qtbot.mouseClick(
         panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
     )
 
-    assert panel.event_table.item(0, 1).text() == "Period Start"
-    assert panel.event_table.item(1, 1).text() == "Stoppage"
+    period_start, faceoff = tagging_session.list_events()
+    assert period_start.event_type is EventType.PERIOD_START
+    assert faceoff.event_type is EventType.FACEOFF
+    assert faceoff.video_timestamp == period_start.video_timestamp == 3000
+    assert (faceoff.faceoff_x, faceoff.faceoff_y) == (0.0, 0.0)
+    assert [panel.event_table.item(row, 1).text() for row in range(2)] == [
+        "Period Start",
+        "Faceoff",
+    ]
+
+
+def test_period_start_selects_its_faceoff_with_the_jersey_field_focused(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session)
+
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+    )
+
+    selected_rows = panel.event_table.selectionModel().selectedRows()
+    assert [index.row() for index in selected_rows] == [1]
+    assert panel.edit_group.isVisible() is True
+    assert panel.focusWidget() is panel.jersey_field
+
+
+def test_period_start_faceoff_neither_pauses_nor_asks_for_a_rink_click(
+    qtbot, tagging_session
+):
+    pause_calls = []
+    dialogs_opened = []
+    registry = ShortcutRegistry()
+    _make_panel(
+        qtbot,
+        tagging_session,
+        shortcuts=registry,
+        pause=lambda: pause_calls.append(True),
+        rink_click_dialog_factory=lambda: dialogs_opened.append(True),
+    )
+
+    assert registry.dispatch(key_string(Qt.Key.Key_1)) is True
+
+    assert len(tagging_session.list_events()) == 2
+    assert pause_calls == []
+    assert dialogs_opened == []
+
+
+def test_period_start_faceoff_takes_both_participants_straight_from_the_keyboard(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+    )
+    _focus_jersey_field(panel)
+
+    qtbot.keyClicks(panel.jersey_field, "14")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_H)
+    qtbot.keyClicks(panel.jersey_field, "9")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_A)
+
+    _, faceoff = tagging_session.list_events()
+    assert faceoff.faceoff_home_participant_unknown is False
+    assert faceoff.faceoff_away_participant_unknown is False
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.PERIOD_START,
+        EventType.FACEOFF,
+    ]
+
+
+def test_deleting_the_period_start_row_keeps_its_faceoff(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session, confirm=_FakeConfirm(answer=True))
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
+    )
+
+    qtbot.mouseClick(_row_delete_button(panel, 0), Qt.MouseButton.LeftButton)
+
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.FACEOFF
+    ]
+    assert panel.event_table.item(0, 1).text() == "Faceoff"
 
 
 # -- location-bearing capture: faceoff / shot_attempt (ticket 16) ---------
@@ -1061,7 +1164,11 @@ def test_a_second_panel_can_reuse_the_registry_after_release_shortcuts(
     _second = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     assert registry.dispatch(key_string(Qt.Key.Key_1)) is True
-    assert len(tagging_session.list_events()) == 1
+    # Handled once: one period start plus its faceoff (ticket 63).
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.PERIOD_START,
+        EventType.FACEOFF,
+    ]
 
 
 # -- bulk line change (ticket 17) -------------------------------------------

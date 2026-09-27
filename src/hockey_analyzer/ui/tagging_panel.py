@@ -430,11 +430,22 @@ class TaggingPanel(QWidget):
     # -- instant capture ---------------------------------------------------
 
     def _log(self, event_type: EventType) -> None:
-        if event_type in _TYPES_WITH_LOCATION:
+        if event_type is EventType.PERIOD_START:
+            self._log_period_start()
+        elif event_type in _TYPES_WITH_LOCATION:
             self._log_location_bearing(event_type)
         else:
             self._session.log_event(event_type, self._current_position_ms())
         self.refresh()
+
+    def _log_period_start(self) -> None:
+        """Ticket 63: a period start also logs its center-ice faceoff (see
+        TaggingSession.log_period_start) -- no pause and no rink click,
+        since the spot is always center ice. The faceoff is selected so
+        the edit panel opens on it with the jersey field focused, ready
+        for "14 h 9 a"; `_log`'s refresh() applies the selection."""
+        _, faceoff = self._session.log_period_start(self._current_position_ms())
+        self._selected_event_id = faceoff.id
 
     def _log_location_bearing(self, event_type: EventType) -> None:
         """faceoff/shot_attempt (ticket 16): pause playback, then prompt
