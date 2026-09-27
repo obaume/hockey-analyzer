@@ -77,16 +77,45 @@ CREATE TABLE events_v1 (
 
 # Every `events` column version 0 and version 1 share, copied as-is.
 _EVENTS_V1_CARRIED_COLUMNS = (
-    "id, game_id, event_type, video_timestamp, source, confirmed, "
-    "strength_state, period_number, faceoff_x, faceoff_y, shot_x, shot_y, "
-    "shot_team_id, shot_outcome, shot_type, shot_rush, shot_rebound, "
-    "shot_screened, shot_one_timer, shot_xg, shooter_id, shooter_unknown, "
-    "assist1_id, assist1_unknown, assist2_id, assist2_unknown, "
-    "penalty_team_id, penalty_player_id, penalty_player_unknown, "
-    "penalty_duration_minutes, penalty_infraction, shift_team_id, "
-    "shift_player_id, shift_player_unknown, shift_on_ice"
+    "id",
+    "game_id",
+    "event_type",
+    "video_timestamp",
+    "source",
+    "confirmed",
+    "strength_state",
+    "period_number",
+    "faceoff_x",
+    "faceoff_y",
+    "shot_x",
+    "shot_y",
+    "shot_team_id",
+    "shot_outcome",
+    "shot_type",
+    "shot_rush",
+    "shot_rebound",
+    "shot_screened",
+    "shot_one_timer",
+    "shot_xg",
+    "shooter_id",
+    "shooter_unknown",
+    "assist1_id",
+    "assist1_unknown",
+    "assist2_id",
+    "assist2_unknown",
+    "penalty_team_id",
+    "penalty_player_id",
+    "penalty_player_unknown",
+    "penalty_duration_minutes",
+    "penalty_infraction",
+    "shift_team_id",
+    "shift_player_id",
+    "shift_player_unknown",
+    "shift_on_ice",
 )
 
+# Sides as the plain strings stored in `faceoff_winner`, not `enums.Side`:
+# a shipped migration mustn't change meaning if the domain enums do.
 _OTHER_SIDE = {"home": "away", "away": "home"}
 _UNKNOWN = (None, True)  # a participant as (player id, unknown flag)
 
@@ -149,11 +178,10 @@ def faceoff_home_away(conn: Connection) -> list[str]:
         conn.exec_driver_sql(
             "INSERT INTO faceoff_v1 VALUES (?, ?, ?, ?, ?, ?)", converted
         )
-    carried = ", ".join(
-        f"e.{column.strip()}" for column in _EVENTS_V1_CARRIED_COLUMNS.split(",")
-    )
+    columns = ", ".join(_EVENTS_V1_CARRIED_COLUMNS)
+    carried = ", ".join(f"e.{column}" for column in _EVENTS_V1_CARRIED_COLUMNS)
     conn.exec_driver_sql(
-        f"INSERT INTO events_v1 ({_EVENTS_V1_CARRIED_COLUMNS}, "
+        f"INSERT INTO events_v1 ({columns}, "
         "faceoff_home_participant_id, faceoff_home_participant_unknown, "
         "faceoff_away_participant_id, faceoff_away_participant_unknown, "
         f"faceoff_winner) SELECT {carried}, f.home_id, "

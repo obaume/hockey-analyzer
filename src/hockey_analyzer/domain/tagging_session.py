@@ -424,7 +424,7 @@ class TaggingSession:
         if spec.side is not None and spec.side != team_side:
             raise ValueError(
                 f"the {reference!r} reference is on the {spec.side.value} side, "
-                f"not {team_side!r}"
+                f"not {Side(team_side).value!r}"
             )
 
         team_id = self._team_id_for_side(team_side)
