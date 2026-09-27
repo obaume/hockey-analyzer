@@ -357,7 +357,11 @@ def test_tagging_panel_shares_the_windows_shortcut_registry(qtbot, tagging_sessi
     # through the same registry MainWindow.keyPressEvent uses.
     qtbot.keyClick(window, Qt.Key.Key_1)
 
-    assert len(tagging_session.list_events()) == 1
+    # A period start and the center-ice faceoff it opens with (ticket 63).
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.PERIOD_START,
+        EventType.FACEOFF,
+    ]
 
 
 def test_shortcuts_register_in_the_playback_scope_not_ad_hoc():

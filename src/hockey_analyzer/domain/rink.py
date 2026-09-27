@@ -20,6 +20,12 @@ from hockey_analyzer.domain.enums import RinkType
 Zone = Literal["defensive", "neutral", "offensive"]
 
 
+# The coordinate origin (see module docstring) -- identical under every
+# rink standard, so unlike RINK_DIMENSIONS it needs no RinkType. Every
+# period opens with a faceoff here (see TaggingSession.log_period_start).
+CENTER_ICE: tuple[float, float] = (0.0, 0.0)
+
+
 class RinkDimensions(NamedTuple):
     blue_line_x: float
     goal_line_x: float

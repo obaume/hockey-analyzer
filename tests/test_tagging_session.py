@@ -21,7 +21,7 @@ from hockey_analyzer.domain.models import (
     Stoppage,
     Team,
 )
-from hockey_analyzer.domain.rink import high_danger, zone
+from hockey_analyzer.domain.rink import CENTER_ICE, high_danger, zone
 from hockey_analyzer.domain.tagging_session import (
     TaggingSession,
     Unit,
@@ -126,7 +126,7 @@ def test_delete_event_raises_for_a_missing_event_id(tagging_session):
 
 def test_list_events_is_ordered_by_video_timestamp_not_insertion_order(tagging_session):
     tagging_session.log_event(EventType.STOPPAGE, 500)
-    tagging_session.log_event(EventType.PERIOD_START, 0)
+    tagging_session.log_event(EventType.PERIOD_END, 0)
     tagging_session.log_event(EventType.PENALTY, 250)
 
     ordered = [event.video_timestamp for event in tagging_session.list_events()]
@@ -727,7 +727,7 @@ def test_session_survives_being_closed_and_reopened(tmp_path):
         tagging_session = TaggingSession(
             db_session, game_id=game_id, home_team_id=home_id, away_team_id=away_id
         )
-        event = tagging_session.log_event(EventType.PERIOD_START, 0)
+        event = tagging_session.log_event(EventType.PERIOD_END, 0)
         tagging_session.update_event(event.id, period_number=1)
     # Session (and its connection) is now closed -- simulating the app
     # being closed and reopened, per ticket 15's resumability requirement.
@@ -745,6 +745,87 @@ def test_session_survives_being_closed_and_reopened(tmp_path):
 
         assert len(events) == 1
         assert events[0].period_number == 1
+
+
+# -- period start opens with a center-ice faceoff (ticket 63) ---------------
+
+
+def test_logging_a_period_start_also_logs_a_center_ice_faceoff(tagging_session):
+    tagging_session.log_event(EventType.PERIOD_START, 3000)
+
+    period_start, faceoff = tagging_session.list_events()
+    assert period_start.event_type is EventType.PERIOD_START
+    assert faceoff.event_type is EventType.FACEOFF
+    assert faceoff.video_timestamp == period_start.video_timestamp == 3000
+    assert (faceoff.faceoff_x, faceoff.faceoff_y) == CENTER_ICE
+
+
+def test_period_start_faceoff_is_a_fresh_stub_like_any_new_faceoff(tagging_session):
+    tagging_session.log_event(EventType.PERIOD_START, 3000)
+
+    _, faceoff = tagging_session.list_events()
+    assert faceoff.faceoff_home_participant_unknown is True
+    assert faceoff.faceoff_home_participant_id is None
+    assert faceoff.faceoff_away_participant_unknown is True
+    assert faceoff.faceoff_away_participant_id is None
+    assert faceoff.faceoff_winner is None
+
+
+def test_log_period_start_returns_both_events(tagging_session):
+    period_start, faceoff = tagging_session.log_period_start(3000)
+
+    assert [event.id for event in tagging_session.list_events()] == [
+        period_start.id,
+        faceoff.id,
+    ]
+
+
+def test_log_event_for_a_period_start_still_returns_the_period_start(
+    tagging_session,
+):
+    event = tagging_session.log_event(EventType.PERIOD_START, 3000)
+
+    assert event.event_type is EventType.PERIOD_START
+
+
+def test_period_start_faceoff_shares_the_inferred_strength_state(tagging_session):
+    on = tagging_session.log_event(EventType.SHIFT_CHANGE, 10)
+    tagging_session.set_player_reference(on.id, "home", jersey_number=14)
+    tagging_session.update_event(on.id, shift_on_ice=True)
+
+    period_start, faceoff = tagging_session.log_period_start(20)
+
+    assert period_start.strength_state == faceoff.strength_state == "1v0"
+
+
+def test_period_start_faceoff_shares_an_explicit_strength_state(tagging_session):
+    period_start, faceoff = tagging_session.log_period_start(20, strength_state="4v4")
+
+    assert period_start.strength_state == faceoff.strength_state == "4v4"
+
+
+def test_deleting_the_period_start_leaves_its_faceoff_in_place(tagging_session):
+    period_start, faceoff = tagging_session.log_period_start(3000)
+
+    tagging_session.delete_event(period_start.id)
+
+    assert [event.id for event in tagging_session.list_events()] == [faceoff.id]
+
+
+def test_moving_the_period_start_does_not_move_its_faceoff(tagging_session):
+    period_start, faceoff = tagging_session.log_period_start(3000)
+
+    tagging_session.update_event(period_start.id, video_timestamp=5000)
+
+    assert tagging_session.get_event(faceoff.id).video_timestamp == 3000
+
+
+def test_period_end_creates_no_faceoff(tagging_session):
+    tagging_session.log_event(EventType.PERIOD_END, 3000)
+
+    assert [event.event_type for event in tagging_session.list_events()] == [
+        EventType.PERIOD_END
+    ]
 
 
 # -- bulk line change (ticket 17) -------------------------------------------
