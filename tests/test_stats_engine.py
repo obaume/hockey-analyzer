@@ -352,14 +352,18 @@ def test_attacking_direction_is_inferred_per_period_from_shot_locations():
 
 
 def test_attacking_direction_falls_back_to_opposite_of_the_other_teams():
-    game = GameBuilder()
+    game = GameBuilder(opponent_shifts_complete=True)
     kim = game.player(HOME, 14)
+    lee = game.player(AWAY, 8)
     game.shot(AWAY, x=-60.0)  # only the away team shot: it attacks -x
     game.stoppage()
     game.shift(HOME, kim, on=True)
+    game.shift(AWAY, lee, on=True)
     game.faceoff(69.0)
+    data = game.build()
 
-    assert _zone_starts(game.build(), kim).offensive == 1
+    assert _zone_starts(data, kim).offensive == 1
+    assert _zone_starts(data, lee).defensive == 1
 
 
 def test_home_majority_sets_the_direction_and_away_always_attacks_the_other_end():

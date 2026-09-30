@@ -1094,7 +1094,7 @@ def _attacking_directions(
         else:
             continue
         directions[(home_id, period)] = home
-        directions[(away_id, period)] = -home
+        directions[(away_id, period)] = 1 if home < 0 else -1
     return directions
 
 
