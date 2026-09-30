@@ -47,15 +47,21 @@ from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.stats_engine import (
     ALL_SITUATIONS,
     EVEN_STRENGTH,
+    FACEOFF_ZONES,
     NATURAL_STRENGTH,
     ExcludedSkater,
     ExcludedUnit,
+    FaceoffCounts,
+    FaceoffReport,
+    FaceoffStats,
     ForAgainst,
     GameCoverage,
     GoalieStats,
+    PlayerFaceoffStats,
     ShotQuality,
     SkaterReport,
     SkaterStats,
+    TeamFaceoffStats,
     TeamStats,
     UnitReport,
     UnitStats,
@@ -65,8 +71,9 @@ from hockey_analyzer.domain.stats_engine import (
 
 BUNDLE_EXTENSION = ".hockeyreport"
 # Bumped on any breaking change to the bundle's fields. An app refuses a
-# bundle newer than this and best-effort opens an older one.
-SCHEMA_VERSION = 1
+# bundle newer than this and best-effort opens an older one. 2: faceoff
+# stats (ticket 66).
+SCHEMA_VERSION = 2
 
 _FORMAT = "hockey-analyzer-report-bundle"
 _MANIFEST = "manifest.json"
@@ -186,6 +193,7 @@ class StrengthFilters:
     skaters: str | None = EVEN_STRENGTH
     goalies: str | None = ALL_SITUATIONS
     units: str | None | UnitStrength = NATURAL_STRENGTH
+    faceoffs: str | None = ALL_SITUATIONS
 
 
 DEFAULT_FILTERS = StrengthFilters()
@@ -203,7 +211,9 @@ class Report:
     `on_ice_coverage` names the games each team's on-ice stats did and
     didn't cover, and `unresolved_shift_changes` counts, per team, the
     shift changes with an unknown player whose ice time is missing from
-    that team's individual stats."""
+    that team's individual stats. `unresolved_faceoff_participants` counts,
+    for the home team only, its decided faceoffs taken by an unknown
+    player -- missing from its players' FO%."""
 
     kind: ReportKind
     summary: str
@@ -218,8 +228,10 @@ class Report:
     skater_stats: Filtered[SkaterReport] | None = None
     goalie_stats: Filtered[tuple[GoalieStats, ...]] | None = None
     unit_stats: Filtered[UnitReport] | None = None
+    faceoff_stats: Filtered[FaceoffReport] | None = None
     on_ice_coverage: Mapping[int, GameCoverage] = field(default_factory=dict)
     unresolved_shift_changes: Mapping[int, int] = field(default_factory=dict)
+    unresolved_faceoff_participants: Mapping[int, int] = field(default_factory=dict)
     charts: tuple[Chart, ...] = ()
 
 
@@ -318,10 +330,8 @@ def _build(
         games={data.game.id: key for key, data in enumerate(games, start=1)},
     )
 
-    unresolved: dict[int, int] = {}
-    for data in games:
-        for team_id, count in stats_engine.unresolved_shift_changes(data).items():
-            unresolved[team_id] = unresolved.get(team_id, 0) + count
+    unresolved = _summed(stats_engine.unresolved_shift_changes, games)
+    unresolved_faceoffs = _summed(stats_engine.unresolved_faceoff_participants, games)
 
     units = None
     if any(data.unit_assignments for data in games):
@@ -375,6 +385,14 @@ def _build(
             ),
         ),
         unit_stats=units,
+        faceoff_stats=Filtered(
+            filters.faceoffs,
+            keys.faceoff_report(
+                stats_engine.combined_faceoff_report(
+                    games, list(teams), strength_state=filters.faceoffs
+                )
+            ),
+        ),
         on_ice_coverage={
             keys.teams[team_id]: GameCoverage(
                 included=tuple(keys.games[game_id] for game_id in coverage.included),
@@ -385,8 +403,22 @@ def _build(
         unresolved_shift_changes={
             keys.teams[team_id]: count for team_id, count in unresolved.items()
         },
+        unresolved_faceoff_participants={
+            keys.teams[team_id]: count for team_id, count in unresolved_faceoffs.items()
+        },
         charts=tuple(charts),
     )
+
+
+def _summed(
+    per_game: Callable[[GameData], Mapping[int, int]], games: Sequence[GameData]
+) -> dict[int, int]:
+    """A per-team caveat count, summed over `games`."""
+    totals: dict[int, int] = {}
+    for data in games:
+        for team_id, count in per_game(data).items():
+            totals[team_id] = totals.get(team_id, 0) + count
+    return totals
 
 
 def _team_refs(games: Sequence[GameData]) -> dict[int, TeamRef]:
@@ -446,7 +478,7 @@ class _Keys:
     def _team(self, team_id: int | None) -> int | None:
         return None if team_id is None else self.teams[team_id]
 
-    def team_stats(self, stats: TeamStats) -> TeamStats:
+    def team_stats(self, stats: _Team) -> _Team:
         return replace(stats, team_id=self.teams[stats.team_id])
 
     def skater_report(self, report: SkaterReport) -> SkaterReport:
@@ -460,6 +492,12 @@ class _Keys:
             stats,
             player_id=self.players[stats.player_id],
             team_id=self.teams[stats.team_id],
+        )
+
+    def faceoff_report(self, report: FaceoffReport) -> FaceoffReport:
+        return FaceoffReport(
+            teams=[self.team_stats(stats) for stats in report.teams],
+            players=[self.player_stats(stats) for stats in report.players],
         )
 
     def unit_report(self, report: UnitReport) -> UnitReport:
@@ -476,7 +514,10 @@ class _Keys:
         )
 
 
-_PlayerTeam = TypeVar("_PlayerTeam", SkaterStats, ExcludedSkater, GoalieStats)
+_PlayerTeam = TypeVar(
+    "_PlayerTeam", SkaterStats, ExcludedSkater, GoalieStats, PlayerFaceoffStats
+)
+_Team = TypeVar("_Team", TeamStats, TeamFaceoffStats)
 _Unit = TypeVar("_Unit", UnitStats, ExcludedUnit)
 
 
@@ -564,6 +605,10 @@ def _report_json(report: Report) -> dict[str, Any]:
             {"team": team_id, "count": count}
             for team_id, count in report.unresolved_shift_changes.items()
         ],
+        "unresolved_faceoff_participants": [
+            {"team": team_id, "count": count}
+            for team_id, count in report.unresolved_faceoff_participants.items()
+        ],
         "charts": [
             {"name": chart.name, "path": _asset_path(chart.name)}
             for chart in report.charts
@@ -607,7 +652,37 @@ def _report_json(report: Report) -> dict[str, Any]:
                 for unit in report.unit_stats.stats.excluded
             ],
         }
+    if report.faceoff_stats is not None:
+        faceoffs = report.faceoff_stats.stats
+        obj["faceoff_stats"] = {
+            "strength_state": report.faceoff_stats.strength_state,
+            "teams": [
+                {
+                    "team": stats.team_id,
+                    "unattributed": stats.unattributed,
+                    "faceoffs": _faceoffs_json(stats.faceoffs),
+                }
+                for stats in faceoffs.teams
+            ],
+            "players": [
+                {
+                    "player": stats.player_id,
+                    "team": stats.team_id,
+                    "jersey_number": stats.jersey_number,
+                    "faceoffs": _faceoffs_json(stats.faceoffs),
+                }
+                for stats in faceoffs.players
+            ],
+        }
     return obj
+
+
+def _faceoffs_json(stats: FaceoffStats) -> dict[str, Any]:
+    by_zone = {}
+    for zone in FACEOFF_ZONES:
+        counts: FaceoffCounts = getattr(stats, zone)
+        by_zone[zone] = {"won": counts.won, "decided": counts.decided}
+    return {"undecided": stats.undecided, "by_zone": by_zone}
 
 
 def _value(member: enum.Enum | None) -> Any:
@@ -788,6 +863,7 @@ def _report_from_json(
             lambda section: tuple(_goalie(item) for item in section["goalies"]),
         ),
         unit_stats=_unit_section(obj.get("unit_stats")),
+        faceoff_stats=_section(obj, "faceoff_stats", _faceoff_report),
         on_ice_coverage={
             item["team"]: GameCoverage(
                 included=tuple(item["included_games"]),
@@ -798,6 +874,10 @@ def _report_from_json(
         unresolved_shift_changes={
             item["team"]: item["count"]
             for item in obj.get("unresolved_shift_changes", [])
+        },
+        unresolved_faceoff_participants={
+            item["team"]: item["count"]
+            for item in obj.get("unresolved_faceoff_participants", [])
         },
         charts=tuple(
             Chart(chart["name"], read_asset(chart["path"]))
@@ -916,4 +996,39 @@ def _unit(obj: dict[str, Any]) -> UnitStats:
         fenwick=_for_against(obj["fenwick"]),
         goals=_for_against(obj["goals"]),
         time_together_ms=obj["time_together_ms"],
+    )
+
+
+def _faceoff_report(section: dict[str, Any]) -> FaceoffReport:
+    return FaceoffReport(
+        teams=[
+            TeamFaceoffStats(
+                team_id=item["team"],
+                faceoffs=_faceoffs(item["faceoffs"]),
+                unattributed=item["unattributed"],
+            )
+            for item in section["teams"]
+        ],
+        players=[
+            PlayerFaceoffStats(
+                player_id=item["player"],
+                team_id=item["team"],
+                jersey_number=item["jersey_number"],
+                faceoffs=_faceoffs(item["faceoffs"]),
+            )
+            for item in section["players"]
+        ],
+    )
+
+
+def _faceoffs(obj: dict[str, Any]) -> FaceoffStats:
+    by_zone = obj["by_zone"]
+    return FaceoffStats(
+        **{
+            zone: FaceoffCounts(
+                won=by_zone[zone]["won"], decided=by_zone[zone]["decided"]
+            )
+            for zone in FACEOFF_ZONES
+        },
+        undecided=obj["undecided"],
     )

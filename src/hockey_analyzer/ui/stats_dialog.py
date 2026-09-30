@@ -5,13 +5,15 @@ Computes nothing itself; every number shown comes straight from
 `stats_engine`, aggregated over the selected games sum-then-compute (a
 single game is just a one-game selection).
 
-Skater, goalie, and unit stats carry separate filters, since goalie stats
-default to all situations, units to their own natural context, and
-everything else to 5v5 (see CONTEXT.md's Goalie stats and Game unit
-assignment entries). Team, shot-quality, and position tables follow the
-skater filter. A stat that couldn't be computed says so in its row's Note
-rather than disappearing, unresolved shift changes (which leave some
-unknown player's ice time missing) get one caveat line per team, and a
+Skater, goalie, unit, and faceoff stats carry separate filters, since
+goalie and faceoff stats default to all situations, units to their own
+natural context, and everything else to 5v5 (see CONTEXT.md's Goalie
+stats, Faceoff win % (FO%), and Game unit assignment entries). Team,
+shot-quality, and position tables follow the skater filter. A stat that
+couldn't be computed says so in its row's Note rather than disappearing,
+unresolved shift changes (which leave some unknown player's ice time
+missing) get one caveat line per team, as do the home team's decided
+faceoffs taken by an unknown player, and a
 multi-game selection lists, per team, which games its on-ice stats were
 computed over.
 
@@ -51,9 +53,11 @@ from hockey_analyzer.ui.stat_tables import (
     ALL_SITUATIONS_LABEL,
     UNIT_DEFAULT_LABEL,
     StatTables,
+    caveat_text,
     coverage_text,
     team_names,
     unresolved_caveat_text,
+    unresolved_faceoff_caveat_text,
 )
 
 
@@ -110,12 +114,26 @@ class StatsDialog(QDialog):
         self.unit_strength_combo = self._strength_combo(strengths, NATURAL_STRENGTH)
         self.unit_strength_combo.insertItem(0, UNIT_DEFAULT_LABEL, NATURAL_STRENGTH)
         self.unit_strength_combo.setCurrentIndex(0)
+        self.faceoff_strength_combo = self._strength_combo(strengths, ALL_SITUATIONS)
 
         unresolved: dict[int, int] = {}
+        unresolved_faceoffs: dict[int, int] = {}
         for data in self._games:
-            for team_id, count in stats_engine.unresolved_shift_changes(data).items():
-                unresolved[team_id] = unresolved.get(team_id, 0) + count
-        self.caveat_label = QLabel(unresolved_caveat_text(unresolved, self._sides))
+            for totals, counts in (
+                (unresolved, stats_engine.unresolved_shift_changes(data)),
+                (
+                    unresolved_faceoffs,
+                    stats_engine.unresolved_faceoff_participants(data),
+                ),
+            ):
+                for team_id, count in counts.items():
+                    totals[team_id] = totals.get(team_id, 0) + count
+        self.caveat_label = QLabel(
+            caveat_text(
+                unresolved_caveat_text(unresolved, self._sides),
+                unresolved_faceoff_caveat_text(unresolved_faceoffs, self._sides),
+            )
+        )
         self.caveat_label.setWordWrap(True)
         self.caveat_label.setHidden(not self.caveat_label.text())
 
@@ -140,11 +158,14 @@ class StatsDialog(QDialog):
         self.unit_table = self.tables.unit_table
         self.goalie_table = self.tables.goalie_table
         self.shot_quality_table = self.tables.shot_quality_table
+        self.faceoff_team_table = self.tables.faceoff_team_table
+        self.faceoff_table = self.tables.faceoff_table
 
         filters = QFormLayout()
         filters.addRow("Skater / team strength", self.skater_strength_combo)
         filters.addRow("Unit strength", self.unit_strength_combo)
         filters.addRow("Goalie strength", self.goalie_strength_combo)
+        filters.addRow("Faceoff strength", self.faceoff_strength_combo)
         # Ticket 26: freezes what's on screen -- these games, at these
         # filters -- into a report bundle.
         self.export_button = QPushButton("Export Report…")
@@ -163,9 +184,11 @@ class StatsDialog(QDialog):
         self.skater_strength_combo.currentIndexChanged.connect(self._render_skaters)
         self.unit_strength_combo.currentIndexChanged.connect(self._render_units)
         self.goalie_strength_combo.currentIndexChanged.connect(self._render_goalies)
+        self.faceoff_strength_combo.currentIndexChanged.connect(self._render_faceoffs)
         self._render_skaters()
         self._render_units()
         self._render_goalies()
+        self._render_faceoffs()
 
     def _export(self) -> None:
         skaters = self.skater_strength_combo.currentData()
@@ -174,6 +197,7 @@ class StatsDialog(QDialog):
             skaters=skaters,
             goalies=self.goalie_strength_combo.currentData(),
             units=self.unit_strength_combo.currentData(),
+            faceoffs=self.faceoff_strength_combo.currentData(),
         )
         self._export_dialog_factory(self._games, filters=filters, parent=self).exec()
 
@@ -213,5 +237,14 @@ class StatsDialog(QDialog):
         self.tables.show_goalies(
             stats_engine.combined_goalie_stats(
                 self._games, strength_state=self.goalie_strength_combo.currentData()
+            )
+        )
+
+    def _render_faceoffs(self) -> None:
+        self.tables.show_faceoffs(
+            stats_engine.combined_faceoff_report(
+                self._games,
+                [team_id for team_id, _name in self._sides],
+                strength_state=self.faceoff_strength_combo.currentData(),
             )
         )

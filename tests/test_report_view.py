@@ -10,8 +10,9 @@ import datetime
 from PySide6.QtCore import QBuffer, QIODevice
 from PySide6.QtGui import QImage
 from stats_fixtures import AWAY, HOME, GameBuilder, named_game
-from table_helpers import all_cells, column_headers, table_rows
+from table_helpers import all_cells, column_headers, row, table_rows
 
+from hockey_analyzer.domain.enums import Side
 from hockey_analyzer.domain.report_bundle import (
     Chart,
     StrengthFilters,
@@ -32,6 +33,8 @@ _TABLES = (
     "unit_table",
     "goalie_table",
     "shot_quality_table",
+    "faceoff_team_table",
+    "faceoff_table",
 )
 
 
@@ -108,6 +111,7 @@ def test_each_stat_group_names_the_strength_filter_it_was_frozen_at(qtbot):
     assert "Team / skaters: 5v5" in text
     assert "Goalies: All situations" in text
     assert "Units: 5v4" in text
+    assert "Faceoffs: All situations" in text
 
 
 def test_stats_degraded_by_unknown_players_carry_a_caveat(qtbot):
@@ -166,13 +170,16 @@ def _tab(view, title):
 
 def test_stat_groups_an_older_bundle_lacks_are_marked_not_included(qtbot):
     report = dataclasses.replace(
-        build_game_report(named_game(), summary=""), skater_stats=None, unit_stats=None
+        build_game_report(named_game(), summary=""),
+        skater_stats=None,
+        unit_stats=None,
+        faceoff_stats=None,
     )
 
     view = _view(qtbot, report)
 
     tabs = view.tables.tabs
-    for title in ("Skaters", "Positions", "Units"):
+    for title in ("Skaters", "Positions", "Units", "Faceoffs"):
         assert tabs.isTabEnabled(_tab(view, title)) is False
         assert "not included" in tabs.tabToolTip(_tab(view, title))
     assert tabs.isTabEnabled(_tab(view, "Team")) is True
@@ -260,6 +267,9 @@ def test_player_report_shows_only_the_subject_player(qtbot):
     assert view.skater_table.item(0, 0).text() == "#14 Jordan Kim"
     assert view.unit_table.rowCount() == 1
     assert view.goalie_table.rowCount() == 0
+    assert column_headers(view.faceoff_team_table) == ["Icebreakers"]
+    assert view.faceoff_table.rowCount() == 1
+    assert view.faceoff_table.item(0, 0).text() == "#14 Jordan Kim"
 
 
 def test_coverage_naming_a_game_missing_from_the_game_list_still_opens(qtbot):
@@ -278,8 +288,51 @@ def test_player_report_without_the_players_rows_keeps_every_teams_caveats(qtbot)
         build_player_report(games, kim, summary=""),
         skater_stats=None,
         goalie_stats=None,
+        faceoff_stats=None,
     )
 
     view = _view(qtbot, report)
 
     assert "Rivals: 1 of 2 games" in view.coverage_label.text()
+
+
+# -- ticket 66: faceoff win % -----------------------------------------
+
+
+def test_game_report_shows_team_and_player_faceoffs_by_zone(qtbot):
+    view = _view(qtbot, build_game_report(named_game(), summary=""))
+
+    assert column_headers(view.faceoff_team_table) == ["Icebreakers", "Rivals"]
+    teams = table_rows(view.faceoff_team_table)
+    assert teams["FO%"] == ["100.0%", "0.0%"]
+    assert teams["NZ"] == ["100.0% (1/1)", "0.0% (0/1)"]
+    assert teams["OZ"] == ["—", "—"]
+    kim = row(view.faceoff_table, "Player", "#14 Jordan Kim")
+    assert (kim["FOW"], kim["Decided"], kim["FO%"]) == ("1", "1", "100.0%")
+    rival = row(view.faceoff_table, "Player", "#91")
+    assert rival["FO%"] == "0.0%"
+
+
+def test_a_team_report_multi_game_faceoffs_sum_before_dividing(qtbot):
+    view = _view(qtbot, build_team_report(_two_games(), HOME, summary=""))
+
+    assert table_rows(view.faceoff_team_table)["FOW"] == ["2"]
+    assert table_rows(view.faceoff_team_table)["Decided"] == ["2"]
+
+
+def test_home_faceoffs_taken_by_an_unknown_player_carry_a_caveat(qtbot):
+    data = named_game()
+    rival = next(entry.player_id for entry in data.roster if entry.team_id == AWAY)
+    unknown = GameBuilder(game_id=data.game.id).faceoff(
+        0.0, home=None, away=rival, winner=Side.HOME
+    )
+    unknown.id = 999
+    data.events.append(unknown)
+
+    view = _view(qtbot, build_game_report(data, summary=""))
+
+    assert "Icebreakers: 1 decided faceoff(s) with an unknown player" in (
+        view.caveat_label.text()
+    )
+    assert table_rows(view.faceoff_team_table)["Unattributed"] == ["1", "0"]
+    assert "Rivals" not in view.caveat_label.text()

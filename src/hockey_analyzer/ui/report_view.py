@@ -33,6 +33,7 @@ from hockey_analyzer.domain.report_bundle import (
 )
 from hockey_analyzer.domain.stats_engine import (
     ALL_SITUATIONS,
+    FaceoffReport,
     SkaterReport,
     UnitReport,
     UnitStrength,
@@ -41,8 +42,10 @@ from hockey_analyzer.ui.stat_tables import (
     ALL_SITUATIONS_LABEL,
     UNIT_DEFAULT_LABEL,
     StatTables,
+    caveat_text,
     coverage_text,
     unresolved_caveat_text,
+    unresolved_faceoff_caveat_text,
 )
 
 _KIND_TITLES = {
@@ -69,7 +72,11 @@ def _filters_text(report: Report) -> str:
         and report.team_stats.strength_state == report.skater_stats.strength_state
         else [("Team", report.team_stats), ("Skaters", report.skater_stats)]
     )
-    groups += [("Units", report.unit_stats), ("Goalies", report.goalie_stats)]
+    groups += [
+        ("Units", report.unit_stats),
+        ("Goalies", report.goalie_stats),
+        ("Faceoffs", report.faceoff_stats),
+    ]
     return "Strength: " + " · ".join(
         f"{name}: {_strength_label(group.strength_state)}"
         for name, group in groups
@@ -98,6 +105,8 @@ class ReportView(QWidget):
         self.unit_table = self.tables.unit_table
         self.goalie_table = self.tables.goalie_table
         self.shot_quality_table = self.tables.shot_quality_table
+        self.faceoff_team_table = self.tables.faceoff_team_table
+        self.faceoff_table = self.tables.faceoff_table
 
         self.title_label = QLabel(self._title())
         font = self.title_label.font()
@@ -113,7 +122,12 @@ class ReportView(QWidget):
         self.filters_label.setWordWrap(True)
 
         self.caveat_label = QLabel(
-            unresolved_caveat_text(report.unresolved_shift_changes, sides)
+            caveat_text(
+                unresolved_caveat_text(report.unresolved_shift_changes, sides),
+                unresolved_faceoff_caveat_text(
+                    report.unresolved_faceoff_participants, sides
+                ),
+            )
         )
         self.caveat_label.setWordWrap(True)
         self.caveat_label.setHidden(not self.caveat_label.text())
@@ -194,6 +208,8 @@ class ReportView(QWidget):
             rows += report.skater_stats.stats.excluded
         if report.goalie_stats is not None:
             rows += report.goalie_stats.stats
+        if report.faceoff_stats is not None:
+            rows += report.faceoff_stats.stats.players
         teams = {row.team_id for row in rows if row.player_id == self._player_id}
         return teams or set(report.teams)
 
@@ -221,6 +237,8 @@ class ReportView(QWidget):
             self._mark_not_included("Units")
         if report.goalie_stats is None:
             self._mark_not_included("Goalies")
+        if report.faceoff_stats is None:
+            self._mark_not_included("Faceoffs")
         if report.team_stats is not None:
             self.tables.show_team_stats(
                 [s for s in report.team_stats.stats if self._is_shown(s.team_id)]
@@ -264,6 +282,18 @@ class ReportView(QWidget):
                     for g in report.goalie_stats.stats
                     if self._is_shown(g.team_id, {g.player_id})
                 ]
+            )
+        if report.faceoff_stats is not None:
+            faceoffs = report.faceoff_stats.stats
+            self.tables.show_faceoffs(
+                FaceoffReport(
+                    teams=[t for t in faceoffs.teams if self._is_shown(t.team_id)],
+                    players=[
+                        p
+                        for p in faceoffs.players
+                        if self._is_shown(p.team_id, {p.player_id})
+                    ],
+                )
             )
 
     def _title(self) -> str:

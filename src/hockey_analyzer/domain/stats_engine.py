@@ -17,7 +17,13 @@ from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, Protocol, Self, TypeVar
 
 from hockey_analyzer.domain import rink
-from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType, UnitType
+from hockey_analyzer.domain.enums import (
+    Position,
+    ShotOutcome,
+    ShotType,
+    Side,
+    UnitType,
+)
 from hockey_analyzer.domain.game_clock import stops_play
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import (
@@ -423,6 +429,218 @@ def goalie_stats(
     return results
 
 
+@dataclass(frozen=True)
+class FaceoffCounts:
+    """Faceoffs won out of decided faceoffs taken (see CONTEXT.md's
+    Decided faceoff entry), for one zone bucket or overall."""
+
+    won: int = 0
+    decided: int = 0
+
+    @property
+    def percentage(self) -> float | None:
+        return _ratio(self.won, self.decided)
+
+    def __add__(self, other: FaceoffCounts) -> FaceoffCounts:
+        return FaceoffCounts(self.won + other.won, self.decided + other.decided)
+
+
+FACEOFF_ZONES = ("offensive", "defensive", "neutral", "undetermined")
+
+
+@dataclass(frozen=True)
+class FaceoffStats:
+    """One side's faceoff win % (see CONTEXT.md's Faceoff win % (FO%)
+    entry), by zone relative to that side's attacking direction. Every
+    bucket -- neutral and `undetermined` (no location, or no known
+    direction that period) included -- counts toward the overall FO%.
+    `undecided` draws had no winner recorded: never a loss, so they stay
+    out of every percentage and are only counted."""
+
+    offensive: FaceoffCounts = FaceoffCounts()
+    defensive: FaceoffCounts = FaceoffCounts()
+    neutral: FaceoffCounts = FaceoffCounts()
+    undetermined: FaceoffCounts = FaceoffCounts()
+    undecided: int = 0
+
+    @property
+    def overall(self) -> FaceoffCounts:
+        return sum((getattr(self, zone) for zone in FACEOFF_ZONES), FaceoffCounts())
+
+    @property
+    def won(self) -> int:
+        return self.overall.won
+
+    @property
+    def decided(self) -> int:
+        return self.overall.decided
+
+    @property
+    def percentage(self) -> float | None:
+        return self.overall.percentage
+
+    def __add__(self, other: FaceoffStats) -> FaceoffStats:
+        return FaceoffStats(
+            **{
+                zone: getattr(self, zone) + getattr(other, zone)
+                for zone in FACEOFF_ZONES
+            },
+            undecided=self.undecided + other.undecided,
+        )
+
+
+@dataclass(frozen=True)
+class PlayerFaceoffStats:
+    """The draws one rostered player took as their side's participant."""
+
+    player_id: int
+    team_id: int
+    jersey_number: int
+    faceoffs: FaceoffStats
+
+    def __add__(self, other: PlayerFaceoffStats) -> PlayerFaceoffStats:
+        """The same player's draws over both games; jersey number as of
+        `other`, the later one."""
+        return PlayerFaceoffStats(
+            player_id=self.player_id,
+            team_id=self.team_id,
+            jersey_number=other.jersey_number,
+            faceoffs=self.faceoffs + other.faceoffs,
+        )
+
+
+@dataclass(frozen=True)
+class TeamFaceoffStats:
+    """Every draw one team took part in, whoever took it -- so the two
+    teams' FO% in a game always sum to 100%. `unattributed` counts the
+    decided draws whose participant on this team's side is unknown: part
+    of the team's FO%, but no player's."""
+
+    team_id: int
+    faceoffs: FaceoffStats
+    unattributed: int = 0
+
+    def __add__(self, other: TeamFaceoffStats) -> TeamFaceoffStats:
+        return TeamFaceoffStats(
+            team_id=self.team_id,
+            faceoffs=self.faceoffs + other.faceoffs,
+            unattributed=self.unattributed + other.unattributed,
+        )
+
+
+@dataclass(frozen=True)
+class FaceoffReport:
+    """Both levels of faceoff stats over the same games and filter."""
+
+    teams: list[TeamFaceoffStats]
+    players: list[PlayerFaceoffStats]
+
+
+class _Draw(NamedTuple):
+    """One side's view of one faceoff: who took it for that side (None:
+    unknown), whether that side won (None: undecided), and its zone from
+    that side's end."""
+
+    team_id: int
+    player_id: int | None
+    won: bool | None
+    zone: str
+
+
+def _draws(data: GameData, strength_state: str | None) -> list[_Draw]:
+    """Each faceoff at `strength_state`, once per side with a team."""
+    timeline = _timeline(data)
+    directions = _attacking_directions(data, timeline)
+    game = data.game
+    draws = []
+    for period, event in _with_periods(timeline):
+        if not isinstance(event, Faceoff) or not _matches(
+            event.strength_state, strength_state
+        ):
+            continue
+        for side, team_id, player_id in (
+            (Side.HOME, game.home_team_id, event.faceoff_home_participant_id),
+            (Side.AWAY, game.away_team_id, event.faceoff_away_participant_id),
+        ):
+            if team_id is None:
+                continue
+            direction = directions.get((team_id, period))
+            if event.faceoff_x is None or direction is None:
+                zone = "undetermined"
+            else:
+                zone = rink.zone(event.faceoff_x, direction, game.rink_type)
+            won = None if event.faceoff_winner is None else event.faceoff_winner == side
+            draws.append(_Draw(team_id, player_id, won, zone))
+    return draws
+
+
+def _faceoff_stats(draws: Sequence[_Draw]) -> FaceoffStats:
+    buckets = {zone: FaceoffCounts() for zone in FACEOFF_ZONES}
+    undecided = 0
+    for draw in draws:
+        if draw.won is None:
+            undecided += 1
+        else:
+            buckets[draw.zone] += FaceoffCounts(won=int(draw.won), decided=1)
+    return FaceoffStats(**buckets, undecided=undecided)
+
+
+def player_faceoff_stats(
+    data: GameData, *, strength_state: str | None = ALL_SITUATIONS
+) -> list[PlayerFaceoffStats]:
+    """Each rostered player who took at least one draw, in roster order.
+    An unknown participant on the other side doesn't matter -- the
+    player's own result is fully known. Defaults to all situations, like
+    goalie stats, and is never gated by `opponent_shifts_complete`: it
+    needs no on-ice attribution."""
+    draws = _draws(data, strength_state)
+    results = []
+    for entry in data.roster:
+        taken = [
+            draw
+            for draw in draws
+            if draw.player_id == entry.player_id and draw.team_id == entry.team_id
+        ]
+        if taken:
+            results.append(
+                PlayerFaceoffStats(
+                    player_id=entry.player_id,
+                    team_id=entry.team_id,
+                    jersey_number=entry.jersey_number,
+                    faceoffs=_faceoff_stats(taken),
+                )
+            )
+    return results
+
+
+def team_faceoff_stats(
+    data: GameData, team_id: int, *, strength_state: str | None = ALL_SITUATIONS
+) -> TeamFaceoffStats:
+    draws = [draw for draw in _draws(data, strength_state) if draw.team_id == team_id]
+    return TeamFaceoffStats(
+        team_id=team_id,
+        faceoffs=_faceoff_stats(draws),
+        unattributed=sum(
+            1 for draw in draws if draw.player_id is None and draw.won is not None
+        ),
+    )
+
+
+def unresolved_faceoff_participants(data: GameData) -> dict[int, int]:
+    """The home team's decided faceoffs (any strength) whose home
+    participant is unknown -- expected to be resolved eventually, so an
+    incomplete caveat on its individual FO%, like `unresolved_shift_changes`
+    (see CONTEXT.md's Unknown player reference entry). An opposing-team
+    unknown is permanently acceptable and never counted here."""
+    home_id = data.game.home_team_id
+    count = sum(
+        1
+        for draw in _draws(data, ALL_SITUATIONS)
+        if draw.team_id == home_id and draw.player_id is None and draw.won is not None
+    )
+    return {home_id: count} if home_id is not None and count else {}
+
+
 class UnitStrength(enum.Enum):
     """`unit_stats`' default strength filter: each unit at its natural
     context (see CONTEXT.md's Game unit assignment entry)."""
@@ -687,6 +905,49 @@ def combined_goalie_stats(
         for stats in goalie_stats(data, strength_state=strength_state):
             _accumulate(goalies, (stats.player_id, stats.team_id), stats)
     return list(goalies.values())
+
+
+def combined_player_faceoff_stats(
+    games: Sequence[GameData], *, strength_state: str | None = ALL_SITUATIONS
+) -> list[PlayerFaceoffStats]:
+    """`player_faceoff_stats` summed per player and team over every
+    selected game (never narrowed: FO% needs no on-ice attribution)."""
+    players: dict[tuple[int, int], PlayerFaceoffStats] = {}
+    for data in games:
+        for stats in player_faceoff_stats(data, strength_state=strength_state):
+            _accumulate(players, (stats.player_id, stats.team_id), stats)
+    return list(players.values())
+
+
+def combined_team_faceoff_stats(
+    games: Sequence[GameData],
+    team_id: int,
+    *,
+    strength_state: str | None = ALL_SITUATIONS,
+) -> TeamFaceoffStats:
+    """`team_faceoff_stats` summed over the selected games `team_id`
+    played in."""
+    total = TeamFaceoffStats(team_id=team_id, faceoffs=FaceoffStats())
+    for data in games:
+        if team_id in (data.game.home_team_id, data.game.away_team_id):
+            total += team_faceoff_stats(data, team_id, strength_state=strength_state)
+    return total
+
+
+def combined_faceoff_report(
+    games: Sequence[GameData],
+    team_ids: Sequence[int],
+    *,
+    strength_state: str | None = ALL_SITUATIONS,
+) -> FaceoffReport:
+    """`team_ids`' combined team faceoffs, plus every player's."""
+    return FaceoffReport(
+        teams=[
+            combined_team_faceoff_stats(games, team_id, strength_state=strength_state)
+            for team_id in team_ids
+        ],
+        players=combined_player_faceoff_stats(games, strength_state=strength_state),
+    )
 
 
 def combined_unit_stats(

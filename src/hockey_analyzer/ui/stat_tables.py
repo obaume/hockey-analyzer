@@ -1,6 +1,7 @@
 """The stat tables shared by the live stats view (tickets 18, 19) and the
-report view (ticket 26): team, skater, position, line/unit, goalie, and
-shot-quality tabs, filled from `stats_engine` result types. Both views
+report view (ticket 26): team, skater, position, line/unit, goalie,
+shot-quality, and faceoff (ticket 66) tabs, filled from `stats_engine`
+result types. Both views
 render through this one module, so a report shows its numbers exactly as
 the live stats view it was exported from did.
 
@@ -14,12 +15,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QTabWidget, QWidget
+from PySide6.QtWidgets import (
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from hockey_analyzer.domain import stats_engine
 from hockey_analyzer.domain.enums import ShotType, UnitType
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.stats_engine import (
+    FaceoffCounts,
+    FaceoffReport,
+    FaceoffStats,
     ForAgainst,
     GameCoverage,
     GoalieStats,
@@ -107,6 +117,21 @@ _UNIT_TYPE_LABELS = {
     UnitType.PENALTY_KILL: "Penalty-Kill",
 }
 _GOALIE_COLUMNS = ("Team", "SA", "GA", "SV%", "GAA", "HDSA", "HD SV%", "MIN")
+_FACEOFF_ZONE_LABELS = {
+    "offensive": "OZ",
+    "defensive": "DZ",
+    "neutral": "NZ",
+    "undetermined": "Undetermined",
+}
+_FACEOFF_COLUMNS = (
+    "Player",
+    "Team",
+    "FOW",
+    "Decided",
+    "FO%",
+    *_FACEOFF_ZONE_LABELS.values(),
+    "Undecided",
+)
 _CONTEXT_LABELS = {
     "rush": "Rush",
     "rebound": "Rebound",
@@ -176,6 +201,26 @@ def _shot_quality_rows(stats: TeamStats) -> dict[str, str]:
     }
 
 
+def _faceoff_zone(counts: FaceoffCounts) -> str:
+    """A zone bucket as "FO% (won/decided)"; blank when none was decided."""
+    if not counts.decided:
+        return MISSING
+    return f"{_percent(counts.percentage)} ({counts.won}/{counts.decided})"
+
+
+def _faceoff_rows(stats: FaceoffStats) -> dict[str, str]:
+    return {
+        "FOW": str(stats.won),
+        "Decided": str(stats.decided),
+        "FO%": _percent(stats.percentage),
+        **{
+            label: _faceoff_zone(getattr(stats, zone))
+            for zone, label in _FACEOFF_ZONE_LABELS.items()
+        },
+        "Undecided": str(stats.undecided),
+    }
+
+
 def _skater_note(stats: SkaterStats) -> str:
     undetermined = stats.zone_starts.undetermined
     return f"{undetermined} zone start(s) undetermined" if undetermined else ""
@@ -222,6 +267,27 @@ def unresolved_caveat_text(
     return "Individual stats are missing some ice time -- " + "; ".join(parts)
 
 
+def unresolved_faceoff_caveat_text(
+    unresolved: Mapping[int, int], sides: Sequence[tuple[int, str]]
+) -> str:
+    """The one caveat line for a home team's decided faceoffs taken by an
+    unknown player (missing from its players' FO%), one clause per team in
+    `sides` order; empty when there are none."""
+    parts = [
+        f"{name}: {unresolved[team_id]} decided faceoff(s) with an unknown player"
+        for team_id, name in sides
+        if unresolved.get(team_id)
+    ]
+    if not parts:
+        return ""
+    return "Individual faceoff stats are missing some draws -- " + "; ".join(parts)
+
+
+def caveat_text(*lines: str) -> str:
+    """Caveat lines joined into one label's text, skipping empty ones."""
+    return "\n".join(line for line in lines if line)
+
+
 def coverage_text(
     coverage: Mapping[int, GameCoverage],
     sides: Sequence[tuple[int, str]],
@@ -248,8 +314,9 @@ def coverage_text(
 
 
 class StatTables:
-    """The six stat tables, laid out as `tabs`. Each `show_*` refills one
-    group; a group left unshown stays an empty table."""
+    """The stat tables, laid out as `tabs` -- one per tab, except the
+    Faceoffs tab's team table above its player table. Each `show_*`
+    refills one group; a group left unshown stays an empty table."""
 
     def __init__(
         self,
@@ -269,6 +336,14 @@ class StatTables:
         self.unit_table.verticalHeader().setVisible(False)
         self.goalie_table = _read_only_table()
         self.shot_quality_table = _read_only_table()
+        self.faceoff_team_table = _read_only_table()
+        self.faceoff_table = _read_only_table()
+        self.faceoff_table.verticalHeader().setVisible(False)
+        faceoffs = QWidget()
+        faceoff_layout = QVBoxLayout(faceoffs)
+        faceoff_layout.setContentsMargins(0, 0, 0, 0)
+        faceoff_layout.addWidget(self.faceoff_team_table)
+        faceoff_layout.addWidget(self.faceoff_table, stretch=1)
 
         self.tabs = QTabWidget(parent)
         self.tabs.addTab(self.team_table, "Team")
@@ -277,6 +352,7 @@ class StatTables:
         self.tabs.addTab(self.unit_table, "Units")
         self.tabs.addTab(self.goalie_table, "Goalies")
         self.tabs.addTab(self.shot_quality_table, "Shot quality")
+        self.tabs.addTab(faceoffs, "Faceoffs")
 
     def show_team_stats(self, team_stats: Sequence[TeamStats]) -> None:
         """Team and shot-quality tables, one column per team."""
@@ -343,6 +419,32 @@ class StatTables:
             ],
         )
 
+    def show_faceoffs(self, report: FaceoffReport) -> None:
+        """Team faceoffs one column per team (plus unattributed draws),
+        then one row per player who took a draw."""
+        per_side = [
+            _faceoff_rows(stats.faceoffs) | {"Unattributed": str(stats.unattributed)}
+            for stats in report.teams
+        ]
+        self._fill_columns(
+            self.faceoff_team_table,
+            [self._team_name(stats.team_id) for stats in report.teams],
+            per_side,
+        )
+        _fill(
+            self.faceoff_table,
+            _FACEOFF_COLUMNS,
+            None,
+            [
+                [
+                    self._player_label(stats.player_id),
+                    self._team_name(stats.team_id),
+                    *_faceoff_rows(stats.faceoffs).values(),
+                ]
+                for stats in report.players
+            ],
+        )
+
     def _fill_by_side(
         self,
         table: QTableWidget,
@@ -350,7 +452,15 @@ class StatTables:
         team_stats: Sequence[TeamStats],
         rows_for: Callable[[TeamStats], dict[str, str]],
     ) -> None:
-        per_side = [rows_for(stats) for stats in team_stats]
+        self._fill_columns(table, side_names, [rows_for(stats) for stats in team_stats])
+
+    def _fill_columns(
+        self,
+        table: QTableWidget,
+        side_names: list[str],
+        per_side: Sequence[dict[str, str]],
+    ) -> None:
+        """One column per side, one row per stat -- `per_side`'s keys."""
         row_headers = list(per_side[0]) if per_side else []
         _fill(
             table,

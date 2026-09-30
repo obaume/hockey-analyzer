@@ -11,7 +11,13 @@ import zipfile
 import pytest
 from stats_fixtures import AWAY, HOME, GameBuilder
 
-from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType, UnitType
+from hockey_analyzer.domain.enums import (
+    Position,
+    ShotOutcome,
+    ShotType,
+    Side,
+    UnitType,
+)
 from hockey_analyzer.domain.models import Team
 from hockey_analyzer.domain.report_bundle import (
     AggregationMode,
@@ -80,7 +86,7 @@ def test_bundle_is_a_zip_of_manifest_report_and_png_assets(tmp_path):
         assert bundle.read("assets/shot-map.png") == PNG
         manifest = json.loads(bundle.read("manifest.json"))
         report_json = bundle.read("report.json").decode()
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
     assert "fake chart pixels" not in report_json
 
 
@@ -197,6 +203,55 @@ def test_incomplete_data_caveats_survive_the_round_trip(tmp_path):
     home_key, away_key = report.teams
     assert report.unresolved_shift_changes == {home_key: 2}
     assert report.on_ice_coverage[away_key].excluded == (1,)
+
+
+def _faceoff_game():
+    """Home #14 wins a 5v5 draw and a 5v4 one, loses a 5v5 one, and one
+    5v5 draw is won by home with nobody known to have taken it."""
+    game = GameBuilder()
+    center = game.player(HOME, 14, name="Jordan Kim")
+    rival = game.player(AWAY, 91)
+    game.shot(HOME)
+    game.faceoff(60.0, home=center, away=rival, winner=Side.HOME)
+    game.faceoff(0.0, home=center, away=rival, winner=Side.AWAY)
+    game.faceoff(0.0, home=center, away=rival, winner=Side.HOME, strength="5v4")
+    game.faceoff(None, home=None, away=rival, winner=Side.HOME)
+    game.faceoff(0.0, home=center, away=rival)
+    return game.build()
+
+
+def test_faceoff_stats_round_trip_with_their_frozen_filter(tmp_path):
+    built = build_game_report(
+        _faceoff_game(), summary="", filters=StrengthFilters(faceoffs="5v5")
+    )
+
+    report = _round_trip(built, tmp_path)
+
+    assert report == built
+    assert report.faceoff_stats.strength_state == "5v5"
+    home_key, away_key = report.teams
+    home, away = report.faceoff_stats.stats.teams
+    assert (home.team_id, away.team_id) == (home_key, away_key)
+    assert (home.faceoffs.won, home.faceoffs.decided) == (2, 3)
+    assert home.faceoffs.undecided == 1
+    assert home.unattributed == 1
+    assert home.faceoffs.offensive.decided == 1
+    assert away.faceoffs.defensive.decided == 1
+    kim = next(
+        stats
+        for stats in report.faceoff_stats.stats.players
+        if report.players[stats.player_id].full_name == "Jordan Kim"
+    )
+    assert (kim.faceoffs.won, kim.faceoffs.decided) == (1, 2)
+    assert report.unresolved_faceoff_participants == {home_key: 1}
+
+
+def test_faceoff_stats_default_to_all_situations():
+    report = build_game_report(_faceoff_game(), summary="")
+
+    assert report.faceoff_stats.strength_state is ALL_SITUATIONS
+    home, _away = report.faceoff_stats.stats.teams
+    assert home.faceoffs.decided == 4
 
 
 def _two_game_season():
@@ -347,21 +402,22 @@ def test_bundle_from_a_newer_schema_version_is_rejected_with_a_clear_message(
 ):
     path = _synthetic_bundle(
         tmp_path / "future.hockeyreport",
-        {"format": _FORMAT, "schema_version": 2},
+        {"format": _FORMAT, "schema_version": 3},
         _MINIMAL_REPORT | {"brand_new_section": {"anything": 1}},
     )
 
     with pytest.raises(BundleTooNewError, match="Update the app") as rejection:
         read_bundle(path)
-    assert rejection.value.schema_version == 2
+    assert rejection.value.schema_version == 3
 
 
+@pytest.mark.parametrize("schema_version", [0, 1])
 def test_bundle_from_an_older_schema_version_opens_with_newer_fields_absent(
-    tmp_path,
+    tmp_path, schema_version
 ):
     path = _synthetic_bundle(
         tmp_path / "old.hockeyreport",
-        {"format": _FORMAT, "schema_version": 0},
+        {"format": _FORMAT, "schema_version": schema_version},
         {
             "kind": "game",
             "summary_markdown": "Old news.",
@@ -402,6 +458,8 @@ def test_bundle_from_an_older_schema_version_opens_with_newer_fields_absent(
     assert report.players == {}
     assert report.charts == ()
     assert report.unresolved_shift_changes == {}
+    assert report.faceoff_stats is None
+    assert report.unresolved_faceoff_participants == {}
 
 
 @pytest.mark.parametrize(

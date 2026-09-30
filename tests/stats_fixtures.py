@@ -9,6 +9,7 @@ from hockey_analyzer.domain.enums import (
     RinkType,
     ShotOutcome,
     ShotType,
+    Side,
     UnitType,
 )
 from hockey_analyzer.domain.game_data import GameData
@@ -134,13 +135,19 @@ class GameBuilder:
             at,
         )
 
-    def faceoff(self, x, *, at=None, strength="5v5"):
+    def faceoff(self, x, *, at=None, strength="5v5", home=None, away=None, winner=None):
+        """`home`/`away`: each side's participant's player id, or None for
+        an unknown player; `x=None` for a draw whose location was never
+        clicked; `winner` a `Side`, or None for an undecided draw."""
         return self._add(
             Faceoff(
                 faceoff_x=x,
-                faceoff_y=0.0,
-                faceoff_home_participant_unknown=True,
-                faceoff_away_participant_unknown=True,
+                faceoff_y=None if x is None else 0.0,
+                faceoff_home_participant_id=home,
+                faceoff_home_participant_unknown=home is None,
+                faceoff_away_participant_id=away,
+                faceoff_away_participant_unknown=away is None,
+                faceoff_winner=winner,
                 strength_state=strength,
             ),
             at,
@@ -179,8 +186,9 @@ class GameBuilder:
 def named_game(**kwargs):
     """A small complete game for the report tests: home "Icebreakers" (#14
     Jordan Kim, C, on Forward-Line 1; goalie #30) vs. away "Rivals" (#91 on
-    their Forward-Line 1, never tracked on ice). With Kim and #30 on: a
-    home 5v5 attempt, an away 5v5 goal, and a home 5v4 attempt. Every call
+    their Forward-Line 1, never tracked on ice). Kim wins the opening
+    center-ice draw against #91; then, with Kim and #30 on: a home 5v5
+    attempt, an away 5v5 goal, and a home 5v4 attempt. Every call
     rosters the same player ids, so several calls (with distinct `game_id`s)
     make one multi-game selection of the same players."""
     game = GameBuilder(**kwargs)
@@ -191,7 +199,7 @@ def named_game(**kwargs):
     rival = game.player(AWAY, 91)
     game.unit(HOME, UnitType.FORWARD_LINE, 1, kim)
     game.unit(AWAY, UnitType.FORWARD_LINE, 1, rival)
-    game.faceoff(0.0)
+    game.faceoff(0.0, home=kim, away=rival, winner=Side.HOME)
     game.shift(HOME, kim, True)
     game.shift(HOME, goalie, True)
     game.shot(HOME)
