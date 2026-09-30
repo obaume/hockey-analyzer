@@ -4,7 +4,7 @@
 
 ### Event
 
-The atomic fact recorded from a game: something observed at a specific moment in the footage. Every event carries a **video timestamp** (required, always), a `source` (`manual` or `vision`), and a `confirmed` flag, so vision-model output can be merged with manually-tagged events without a schema change. Event subtypes: `faceoff`, `shot_attempt`, `penalty`, `shift_change`, `stoppage`, `period_start`, `period_end`.
+The atomic fact recorded from a game: something observed at a specific moment in the footage. Every event carries a **video timestamp** (required, always), a `source` (`manual` or `vision`), and a `confirmed` flag, so vision-model output can be merged with manually-tagged events without a schema change. An unconfirmed `vision` event is a suggestion, not yet a fact: it counts toward no derived number (**Game clock**, stats) until the user confirms it, since a single wrong one — e.g. a false stop of play mid-shift — silently distorts everything derived after it. Event subtypes: `faceoff`, `shot_attempt`, `penalty`, `shift_change`, `stoppage`, `period_start`, `period_end`.
 
 ### Video timestamp
 
@@ -17,6 +17,18 @@ The period number and time-remaining-in-period a hockey viewer would recognize f
 ### Stoppage
 
 An event marking a whistle that halts play, logged **only** when the cause isn't already implied by another logged event (icing, offside, puck out of play, etc.). A goal or penalty is itself a stoppage-implying event and does not get an additional standalone `stoppage` event for the same whistle.
+
+### Whistle
+
+A moment where a vision model heard/saw the referee blow play dead. Not the same as a **Stoppage**: a whistle is raw detection that says play stopped but not *why*, and every whistle (including one ending play on a goal or penalty) is detected, whereas a Stoppage is only logged when nothing else explains the whistle. A whistle is a candidate awaiting the user's review, never an **Event** itself and never counted toward any derived number. Reviewing it **resolves** it one of four ways:
+
+- **Stoppage** — creates a confirmed `stoppage` event at the whistle's timestamp.
+- **Explained** — an already-logged goal, penalty, or period end accounts for it; suggested automatically when one sits shortly before the whistle. Creates nothing.
+- **Goal / Penalty** — opens the ordinary tagging form at the whistle's timestamp, since a whistle can't supply a shooter, location, or infraction.
+- **Not a whistle** — a false detection (crowd noise, another rink). Creates nothing.
+
+A resolved whistle is kept, with its resolution, rather than deleted: resolutions are the labels that train the next model, false detections especially. Re-running detection on a game replaces only its *unresolved* whistles; resolved ones are never touched, and a new detection landing on one is dropped as a duplicate.
+_Avoid_: using "stoppage" for a detected whistle.
 
 ### Faceoff
 
