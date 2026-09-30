@@ -330,8 +330,12 @@ def _build(
         games={data.game.id: key for key, data in enumerate(games, start=1)},
     )
 
-    unresolved = _summed(stats_engine.unresolved_shift_changes, games)
-    unresolved_faceoffs = _summed(stats_engine.unresolved_faceoff_participants, games)
+    unresolved = stats_engine.summed_per_team(
+        stats_engine.unresolved_shift_changes, games
+    )
+    unresolved_faceoffs = stats_engine.summed_per_team(
+        stats_engine.unresolved_faceoff_participants, games
+    )
 
     units = None
     if any(data.unit_assignments for data in games):
@@ -408,17 +412,6 @@ def _build(
         },
         charts=tuple(charts),
     )
-
-
-def _summed(
-    per_game: Callable[[GameData], Mapping[int, int]], games: Sequence[GameData]
-) -> dict[int, int]:
-    """A per-team caveat count, summed over `games`."""
-    totals: dict[int, int] = {}
-    for data in games:
-        for team_id, count in per_game(data).items():
-            totals[team_id] = totals.get(team_id, 0) + count
-    return totals
 
 
 def _team_refs(games: Sequence[GameData]) -> dict[int, TeamRef]:

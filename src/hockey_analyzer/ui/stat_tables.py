@@ -1,9 +1,8 @@
 """The stat tables shared by the live stats view (tickets 18, 19) and the
 report view (ticket 26): team, skater, position, line/unit, goalie,
 shot-quality, and faceoff (ticket 66) tabs, filled from `stats_engine`
-result types. Both views
-render through this one module, so a report shows its numbers exactly as
-the live stats view it was exported from did.
+result types. Both views render through this one module, so a report
+shows its numbers exactly as the live stats view it was exported from did.
 
 Formats only -- computes nothing beyond `stats_engine`'s own derived
 properties and `position_rollup`. Which team/player a stat belongs to is
@@ -274,7 +273,7 @@ def unresolved_faceoff_caveat_text(
     unknown player (missing from its players' FO%), one clause per team in
     `sides` order; empty when there are none."""
     parts = [
-        f"{name}: {unresolved[team_id]} decided faceoff(s) with an unknown player"
+        f"{name}: {unresolved[team_id]} decided faceoff(s) with an unknown or unset player"
         for team_id, name in sides
         if unresolved.get(team_id)
     ]
@@ -337,13 +336,13 @@ class StatTables:
         self.goalie_table = _read_only_table()
         self.shot_quality_table = _read_only_table()
         self.faceoff_team_table = _read_only_table()
-        self.faceoff_table = _read_only_table()
-        self.faceoff_table.verticalHeader().setVisible(False)
+        self.faceoff_player_table = _read_only_table()
+        self.faceoff_player_table.verticalHeader().setVisible(False)
         faceoffs = QWidget()
         faceoff_layout = QVBoxLayout(faceoffs)
         faceoff_layout.setContentsMargins(0, 0, 0, 0)
         faceoff_layout.addWidget(self.faceoff_team_table)
-        faceoff_layout.addWidget(self.faceoff_table, stretch=1)
+        faceoff_layout.addWidget(self.faceoff_player_table, stretch=1)
 
         self.tabs = QTabWidget(parent)
         self.tabs.addTab(self.team_table, "Team")
@@ -432,7 +431,7 @@ class StatTables:
             per_side,
         )
         _fill(
-            self.faceoff_table,
+            self.faceoff_player_table,
             _FACEOFF_COLUMNS,
             None,
             [

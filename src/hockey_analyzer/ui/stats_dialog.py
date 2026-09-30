@@ -116,18 +116,12 @@ class StatsDialog(QDialog):
         self.unit_strength_combo.setCurrentIndex(0)
         self.faceoff_strength_combo = self._strength_combo(strengths, ALL_SITUATIONS)
 
-        unresolved: dict[int, int] = {}
-        unresolved_faceoffs: dict[int, int] = {}
-        for data in self._games:
-            for totals, counts in (
-                (unresolved, stats_engine.unresolved_shift_changes(data)),
-                (
-                    unresolved_faceoffs,
-                    stats_engine.unresolved_faceoff_participants(data),
-                ),
-            ):
-                for team_id, count in counts.items():
-                    totals[team_id] = totals.get(team_id, 0) + count
+        unresolved = stats_engine.summed_per_team(
+            stats_engine.unresolved_shift_changes, self._games
+        )
+        unresolved_faceoffs = stats_engine.summed_per_team(
+            stats_engine.unresolved_faceoff_participants, self._games
+        )
         self.caveat_label = QLabel(
             caveat_text(
                 unresolved_caveat_text(unresolved, self._sides),
@@ -159,7 +153,7 @@ class StatsDialog(QDialog):
         self.goalie_table = self.tables.goalie_table
         self.shot_quality_table = self.tables.shot_quality_table
         self.faceoff_team_table = self.tables.faceoff_team_table
-        self.faceoff_table = self.tables.faceoff_table
+        self.faceoff_player_table = self.tables.faceoff_player_table
 
         filters = QFormLayout()
         filters.addRow("Skater / team strength", self.skater_strength_combo)

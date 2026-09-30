@@ -339,14 +339,14 @@ def test_faceoffs_tab_defaults_to_all_situations(qtbot, tagged_game):
     dialog = _dialog(qtbot, data)
 
     assert dialog.faceoff_strength_combo.currentText() == "All situations"
-    kim = row(dialog.faceoff_table, "Player", "#14 Jordan Kim")
+    kim = row(dialog.faceoff_player_table, "Player", "#14 Jordan Kim")
     assert (kim["FOW"], kim["Decided"], kim["FO%"]) == ("1", "2", "50.0%")
     teams = table_rows(dialog.faceoff_team_table)
     assert teams["FO%"] == ["50.0%", "50.0%"]
 
     _select(dialog.faceoff_strength_combo, "5v5")
 
-    kim = row(dialog.faceoff_table, "Player", "#14 Jordan Kim")
+    kim = row(dialog.faceoff_player_table, "Player", "#14 Jordan Kim")
     assert (kim["FOW"], kim["Decided"], kim["FO%"]) == ("1", "1", "100.0%")
     # The faceoff filter is independent of the skater/team one.
     assert dialog.skater_strength_combo.currentText() == "5v5"
@@ -357,7 +357,7 @@ def test_opposing_faceoffs_show_without_opponent_shifts_complete(qtbot, tagged_g
     assert not data.game.opponent_shifts_complete
     dialog = _dialog(qtbot, data)
 
-    assert row(dialog.faceoff_table, "Player", "#91")["FO%"] == "50.0%"
+    assert row(dialog.faceoff_player_table, "Player", "#91")["FO%"] == "50.0%"
 
 
 def test_undecided_and_unattributed_faceoffs_are_counted_per_team(
@@ -379,9 +379,9 @@ def test_undecided_and_unattributed_faceoffs_are_counted_per_team(
     teams = table_rows(dialog.faceoff_team_table)
     assert teams["Unattributed"] == ["1", "1"]
     assert teams["Undecided"] == ["1", "1"]
-    kim = row(dialog.faceoff_table, "Player", "#14 Jordan Kim")
+    kim = row(dialog.faceoff_player_table, "Player", "#14 Jordan Kim")
     assert kim["Undecided"] == "1"
     # Only the home team's unknown is an incomplete caveat.
     caveat = dialog.caveat_label.text()
-    assert "Icebreakers: 1 decided faceoff(s) with an unknown player" in caveat
+    assert "Icebreakers: 1 decided faceoff(s) with an unknown or unset player" in caveat
     assert "Rivals" not in caveat

@@ -106,7 +106,7 @@ class ReportView(QWidget):
         self.goalie_table = self.tables.goalie_table
         self.shot_quality_table = self.tables.shot_quality_table
         self.faceoff_team_table = self.tables.faceoff_team_table
-        self.faceoff_table = self.tables.faceoff_table
+        self.faceoff_player_table = self.tables.faceoff_player_table
 
         self.title_label = QLabel(self._title())
         font = self.title_label.font()

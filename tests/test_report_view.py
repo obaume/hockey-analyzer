@@ -34,7 +34,7 @@ _TABLES = (
     "goalie_table",
     "shot_quality_table",
     "faceoff_team_table",
-    "faceoff_table",
+    "faceoff_player_table",
 )
 
 
@@ -268,8 +268,8 @@ def test_player_report_shows_only_the_subject_player(qtbot):
     assert view.unit_table.rowCount() == 1
     assert view.goalie_table.rowCount() == 0
     assert column_headers(view.faceoff_team_table) == ["Icebreakers"]
-    assert view.faceoff_table.rowCount() == 1
-    assert view.faceoff_table.item(0, 0).text() == "#14 Jordan Kim"
+    assert view.faceoff_player_table.rowCount() == 1
+    assert view.faceoff_player_table.item(0, 0).text() == "#14 Jordan Kim"
 
 
 def test_coverage_naming_a_game_missing_from_the_game_list_still_opens(qtbot):
@@ -307,9 +307,9 @@ def test_game_report_shows_team_and_player_faceoffs_by_zone(qtbot):
     assert teams["FO%"] == ["100.0%", "0.0%"]
     assert teams["NZ"] == ["100.0% (1/1)", "0.0% (0/1)"]
     assert teams["OZ"] == ["—", "—"]
-    kim = row(view.faceoff_table, "Player", "#14 Jordan Kim")
+    kim = row(view.faceoff_player_table, "Player", "#14 Jordan Kim")
     assert (kim["FOW"], kim["Decided"], kim["FO%"]) == ("1", "1", "100.0%")
-    rival = row(view.faceoff_table, "Player", "#91")
+    rival = row(view.faceoff_player_table, "Player", "#91")
     assert rival["FO%"] == "0.0%"
 
 
@@ -331,7 +331,7 @@ def test_home_faceoffs_taken_by_an_unknown_player_carry_a_caveat(qtbot):
 
     view = _view(qtbot, build_game_report(data, summary=""))
 
-    assert "Icebreakers: 1 decided faceoff(s) with an unknown player" in (
+    assert "Icebreakers: 1 decided faceoff(s) with an unknown or unset player" in (
         view.caveat_label.text()
     )
     assert table_rows(view.faceoff_team_table)["Unattributed"] == ["1", "0"]
