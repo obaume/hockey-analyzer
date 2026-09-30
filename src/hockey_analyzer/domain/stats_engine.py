@@ -1062,12 +1062,14 @@ def _attacking_directions(
 ) -> dict[tuple[int, int], Direction]:
     """Which end (+1 = toward positive x) each team attacks in each
     period. Nothing stores this -- teams switch ends every period and the
-    tagger clicks raw rink coordinates -- so it's derived from where each
-    team's own shot attempts land that period (nearly all are taken in the
-    offensive half), by majority. A team with no majority that period (no
-    located shots, or a tie) attacks the end opposite the other team's;
-    with no majority from either, it stays unknown. A shot on the center
-    line (x == 0) points at neither end and doesn't vote."""
+    tagger clicks raw rink coordinates -- so it's derived once per period
+    for the home team, from where its own shot attempts land (nearly all
+    are taken in the offensive half), by majority. With no home majority
+    (no located shots, or a tie), home attacks the end opposite the away
+    team's majority; with neither, it stays unknown for both. The away
+    team always attacks the other end, so the two can never be found
+    attacking the same one. A shot on the center line (x == 0) points at
+    neither end and doesn't vote."""
     votes: dict[tuple[int, int], int] = {}
     for period, event in _with_periods(timeline):
         if (
@@ -1079,17 +1081,20 @@ def _attacking_directions(
             key = (event.shot_team_id, period)
             votes[key] = votes.get(key, 0) + (1 if event.shot_x > 0 else -1)
 
-    sides = (data.game.home_team_id, data.game.away_team_id)
+    home_id, away_id = data.game.home_team_id, data.game.away_team_id
     periods = {period for _, period in votes}
     directions: dict[tuple[int, int], Direction] = {}
     for period in periods:
-        for team_id, other_id in (sides, sides[::-1]):
-            own = votes.get((team_id, period), 0)
-            other = votes.get((other_id, period), 0)
-            if own:
-                directions[(team_id, period)] = 1 if own > 0 else -1
-            elif other:
-                directions[(team_id, period)] = -1 if other > 0 else 1
+        home_votes = votes.get((home_id, period), 0)
+        away_votes = votes.get((away_id, period), 0)
+        if home_votes:
+            home: Direction = 1 if home_votes > 0 else -1
+        elif away_votes:
+            home = -1 if away_votes > 0 else 1
+        else:
+            continue
+        directions[(home_id, period)] = home
+        directions[(away_id, period)] = 1 if home < 0 else -1
     return directions
 
 

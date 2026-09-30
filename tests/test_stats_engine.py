@@ -352,14 +352,84 @@ def test_attacking_direction_is_inferred_per_period_from_shot_locations():
 
 
 def test_attacking_direction_falls_back_to_opposite_of_the_other_teams():
-    game = GameBuilder()
+    game = GameBuilder(opponent_shifts_complete=True)
     kim = game.player(HOME, 14)
+    lee = game.player(AWAY, 8)
     game.shot(AWAY, x=-60.0)  # only the away team shot: it attacks -x
     game.stoppage()
     game.shift(HOME, kim, on=True)
+    game.shift(AWAY, lee, on=True)
     game.faceoff(69.0)
+    data = game.build()
 
-    assert _zone_starts(game.build(), kim).offensive == 1
+    assert _zone_starts(data, kim).offensive == 1
+    assert _zone_starts(data, lee).defensive == 1
+
+
+def test_home_majority_sets_the_direction_and_away_always_attacks_the_other_end():
+    game = GameBuilder(opponent_shifts_complete=True)
+    kim = game.player(HOME, 14)
+    lee = game.player(AWAY, 8)
+    game.shot(HOME, x=60.0)
+    game.shot(AWAY, x=50.0)  # away's majority is at +x too: home's wins
+    game.shot(AWAY, x=40.0)
+    game.stoppage()
+    game.shift(HOME, kim, on=True)
+    game.shift(AWAY, lee, on=True)
+    game.faceoff(69.0)
+    data = game.build()
+
+    kim_starts, lee_starts = _zone_starts(data, kim), _zone_starts(data, lee)
+
+    assert (kim_starts.offensive, kim_starts.defensive) == (1, 0)
+    assert (lee_starts.offensive, lee_starts.defensive) == (0, 1)
+
+
+def test_home_tie_falls_back_to_opposite_of_the_away_majority():
+    game = GameBuilder(opponent_shifts_complete=True)
+    kim = game.player(HOME, 14)
+    lee = game.player(AWAY, 8)
+    game.shot(HOME, x=60.0)
+    game.shot(HOME, x=-60.0)  # home tied: no majority
+    game.shot(AWAY, x=-50.0)  # away attacks -x, so home attacks +x
+    game.stoppage()
+    game.shift(HOME, kim, on=True)
+    game.shift(AWAY, lee, on=True)
+    game.faceoff(69.0)
+    data = game.build()
+
+    assert _zone_starts(data, kim).offensive == 1
+    assert _zone_starts(data, lee).defensive == 1
+
+
+def test_no_majority_from_either_team_leaves_both_undetermined():
+    game = GameBuilder(opponent_shifts_complete=True)
+    kim = game.player(HOME, 14)
+    lee = game.player(AWAY, 8)
+    game.shot(HOME, x=60.0)
+    game.shot(HOME, x=-60.0)
+    game.shot(AWAY, x=50.0)
+    game.shot(AWAY, x=-50.0)
+    game.stoppage()
+    game.shift(HOME, kim, on=True)
+    game.shift(AWAY, lee, on=True)
+    game.faceoff(69.0)
+    data = game.build()
+
+    for player in (kim, lee):
+        starts = _zone_starts(data, player)
+        assert (starts.offensive, starts.defensive, starts.undetermined) == (0, 0, 1)
+
+
+def test_oriented_shots_turn_away_attempts_by_the_home_anchored_direction():
+    game = GameBuilder()
+    home = game.shot(HOME, x=60.0, y=5.0)
+    away = game.shot(AWAY, x=40.0, y=-3.0)  # same end as home: away attacks -x
+
+    assert stats_engine.oriented_shots(game.build()) == [
+        (home, 60.0, 5.0),
+        (away, -40.0, 3.0),
+    ]
 
 
 def test_oriented_shots_turn_every_attempt_toward_its_teams_attacking_end():
