@@ -52,7 +52,7 @@ Every event with a physical location on the ice (currently: `faceoff`, `shot_att
 
 ### Attacking direction
 
-Which end of the rink (toward +x or −x in **Rink coordinates**) a team is shooting at during a given period — what turns a raw faceoff location into "offensive" or "defensive" *for that team* (e.g. for **Zone start (%)**). Never stored and never asked of the tagger: teams switch ends every period, and the tagger just clicks raw coordinates. Derived per team, per period (periods delimited by `period_start` events), from where that team's own `shot_attempt`s land that period, by majority — nearly every attempt is taken in the offensive half, so a stray dump-in doesn't flip it. A team with no majority in a period (no located attempts, or a tie) attacks the end opposite the other team's; with no majority from either team, the direction is unknown and any zone that depends on it is reported as undetermined, never guessed.
+Which end of the rink (toward +x or −x in **Rink coordinates**) a team is shooting at during a given period — what turns a raw faceoff location into "offensive" or "defensive" *for that team* (e.g. for **Zone start (%)**). Never stored and never asked of the tagger: teams switch ends every period, and the tagger just clicks raw coordinates. Derived once per period (periods delimited by `period_start` events) for the home team, from where its own `shot_attempt`s land that period, by majority — nearly every attempt is taken in the offensive half, so a stray dump-in doesn't flip it. With no home majority (no located attempts, or a tie), the home team attacks the end opposite the away team's majority. The away team always attacks the other end, so the two teams can never be found attacking the same end. With no majority from either team, the direction is unknown and any zone that depends on it is reported as undetermined, never guessed.
 
 ### Rink type
 
@@ -104,6 +104,16 @@ Possession stats built over the `shot_attempt` population: **Corsi** counts ever
 
 An individual stat: the share of a player's shifts that begin in the offensive zone, out of shifts that begin in the offensive or defensive zone. Only **faceoff-anchored** shift starts count — a shift beginning on the fly (no faceoff) or at a neutral-zone faceoff is excluded from the denominator entirely, never bucketed as a third category. Home-team players by default; opposing-team players once `opponent_shifts_complete` is set for that game.
 
+### Decided faceoff
+
+A **Faceoff** whose winning side is recorded. One with no winner recorded is *undecided*: an unrecorded outcome, never a loss for either side, so it is kept out of every faceoff win percentage and reported alongside it as a count instead.
+_Avoid_: calling an undecided faceoff a draw or a tie.
+
+### Faceoff win % (FO%)
+
+Faceoffs won / **decided faceoffs** taken. **Per player**: the draws that player took as a side's participant; an **Unknown player reference** on the *other* side doesn't matter (the player's own result is fully known), while a side whose own participant is unknown has that draw reported as unattributed, not silently dropped. **Per team**: every decided faceoff, whoever took it, so it needs only the winning side and the two teams' percentages always sum to 100%. Needs no on-ice attribution, so it's never gated by **Opponent shifts complete**, for either team. Defaults to an **all-situations** strength filter (5v5 available as an override), as **Goalie stats** do, because that's how it's conventionally reported. **By zone**: offensive, defensive or neutral, from the faceoff location and each side's **Attacking direction** that period, so one draw is always offensive for one side and defensive for the other. Neutral-zone draws count (unlike **Zone start (%)**); a draw with no location, or in a period whose direction is unknown, is bucketed as undetermined and still counts toward the overall percentage.
+_Avoid_: faceoff percentage computed over all faceoffs taken.
+
 ### Plus-minus (+/-)
 
 An individual stat: on-ice goals-for minus goals-against, strictly at whichever `strength_state` filter is active (default 5v5) — no special-case exclusion of power-play goals the way the classic NHL stat has. The classic number is simply what you get by using the 5v5 default; "all situations" is an intentionally different variant, not a patched-up classic +/-. Home-team players by default; opposing-team players once `opponent_shifts_complete` is set for that game.
@@ -138,7 +148,7 @@ Any stat computed over a hand-picked set of games rather than one: every count (
 
 ### Goalie stats (SV%, GAA, HD SV%, xGA)
 
-Individual goalie stats, identified via `Position: G` and tracked on/off ice via the ordinary `shift_change` event (no separate event type). **SV%** = saves / shots-on-goal-faced while that goalie is in net. **GAA** = (goals-against while in net) × 60 / minutes played, where minutes played uses derived **game clock** time (video time minus stoppage gaps within the goalie's on-ice interval), not raw video-elapsed time. Both default to an **all-situations** strength filter (5v5 available as an override) — unlike every other stat in this glossary, which defaults to 5v5 — because that's how SV%/GAA are conventionally reported. **HD SV%** (high-danger save percentage) = saves / shots-on-goal-faced restricted to shots where `shot_attempt.high_danger` is true — see **Danger zone**. **xGA** = sum of `shot_attempt.xg` (see **xG (expected goals)**) for shots against while that goalie was in net, at the active strength filter — the formula is defined now, but isn't computable until the xG model itself exists (deferred per the map's Notes, same as RAPM).
+Individual goalie stats, identified via `Position: G` and tracked on/off ice via the ordinary `shift_change` event (no separate event type). **SV%** = saves / shots-on-goal-faced while that goalie is in net. **GAA** = (goals-against while in net) × 60 / minutes played, where minutes played uses derived **game clock** time (video time minus stoppage gaps within the goalie's on-ice interval), not raw video-elapsed time. Both default to an **all-situations** strength filter (5v5 available as an override) — unlike every other stat in this glossary, which defaults to 5v5 (**Faceoff win % (FO%)** being the one other exception) — because that's how SV%/GAA are conventionally reported. **HD SV%** (high-danger save percentage) = saves / shots-on-goal-faced restricted to shots where `shot_attempt.high_danger` is true — see **Danger zone**. **xGA** = sum of `shot_attempt.xg` (see **xG (expected goals)**) for shots against while that goalie was in net, at the active strength filter — the formula is defined now, but isn't computable until the xG model itself exists (deferred per the map's Notes, same as RAPM).
 
 ### Stint (RAPM data requirement)
 
