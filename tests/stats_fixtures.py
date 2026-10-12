@@ -9,6 +9,7 @@ from hockey_analyzer.domain.enums import (
     RinkType,
     ShotOutcome,
     ShotType,
+    Side,
     UnitType,
 )
 from hockey_analyzer.domain.game_data import GameData
@@ -134,13 +135,18 @@ class GameBuilder:
             at,
         )
 
-    def faceoff(self, x, *, at=None, strength="5v5"):
+    def faceoff(self, x, *, at=None, strength="5v5", home=None, away=None, winner=None):
+        """`home`/`away` are the participants' player ids (None: unknown);
+        `winner` a `Side` (None: not recorded); `x` None: never located."""
         return self._add(
             Faceoff(
                 faceoff_x=x,
-                faceoff_y=0.0,
-                faceoff_home_participant_unknown=True,
-                faceoff_away_participant_unknown=True,
+                faceoff_y=None if x is None else 0.0,
+                faceoff_home_participant_id=home,
+                faceoff_home_participant_unknown=home is None,
+                faceoff_away_participant_id=away,
+                faceoff_away_participant_unknown=away is None,
+                faceoff_winner=winner,
                 strength_state=strength,
             ),
             at,
@@ -197,4 +203,24 @@ def named_game(**kwargs):
     game.shot(HOME)
     game.shot(AWAY, ShotOutcome.GOAL)
     game.shot(HOME, strength="5v4")
+    return game.build()
+
+
+def faceoff_game(**kwargs):
+    """Home "Icebreakers" (#14 Jordan Kim) vs. away "Rivals" (#91), home
+    attacking +x. Kim and #91 take three draws: Kim wins one in his
+    offensive zone at 5v5, #91 one in his offensive zone at 5v4, and one
+    at center goes unrecorded. Home also wins a 5v5 center draw whose home
+    taker is unknown."""
+    game = GameBuilder(**kwargs)
+    game.game.home_team = Team(id=HOME, name="Icebreakers")
+    game.game.away_team = Team(id=AWAY, name="Rivals")
+    kim = game.player(HOME, 14, name="Jordan Kim")
+    rival = game.player(AWAY, 91)
+    game.period_start(1)
+    game.shot(HOME, x=60.0)
+    game.faceoff(69.0, home=kim, away=rival, winner=Side.HOME)
+    game.faceoff(-69.0, home=kim, away=rival, winner=Side.AWAY, strength="5v4")
+    game.faceoff(0.0, away=rival, winner=Side.HOME)
+    game.faceoff(0.0, home=kim, away=rival)
     return game.build()
