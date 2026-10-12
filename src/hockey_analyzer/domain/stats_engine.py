@@ -432,8 +432,13 @@ class WonLost:
     lost: int = 0
 
     @property
+    def decided(self) -> int:
+        """Decided faceoffs taken: FO%'s denominator."""
+        return self.won + self.lost
+
+    @property
     def percentage(self) -> float | None:
-        return _ratio(self.won, self.won + self.lost)
+        return _ratio(self.won, self.decided)
 
     def __add__(self, other: WonLost) -> WonLost:
         return WonLost(self.won + other.won, self.lost + other.lost)
@@ -443,9 +448,9 @@ class WonLost:
 class FaceoffStats:
     """One side's (a team's or a player's) faceoff record: decided draws
     by zone from that side's point of view (see CONTEXT.md's Faceoff win %
-    entry), where `undetermined` holds draws with no location or in a
+    entry), where `undetermined` holds faceoffs with no location or in a
     period whose attacking direction is unknown -- still counted toward
-    the overall `percentage`. `undecided` counts draws with no winner
+    the overall `percentage`. `undecided` counts faceoffs with no winner
     recorded: reported alongside, never a loss."""
 
     offensive: WonLost = WonLost()
@@ -562,10 +567,14 @@ def faceoff_stats(
                     else rink.zone(event.faceoff_x, direction, data.game.rink_type),
                     WonLost(int(won), int(not won)),
                 )
-            if player_id is None or player_id not in jerseys:
-                _accumulate(teams, team_id, TeamFaceoffs(team_id, result, 1))
+            unattributed = player_id is None or player_id not in jerseys
+            _accumulate(
+                teams,
+                team_id,
+                TeamFaceoffs(team_id, result, unattributed=int(unattributed)),
+            )
+            if player_id is None or unattributed:
                 continue
-            _accumulate(teams, team_id, TeamFaceoffs(team_id, result))
             _accumulate(
                 players,
                 (player_id, team_id),

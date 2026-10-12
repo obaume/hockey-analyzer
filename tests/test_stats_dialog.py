@@ -281,7 +281,7 @@ def test_faceoffs_tab_shows_fo_percent_by_team_and_player_in_all_situations(qtbo
         "0.0% (0/1)",
     )
     assert "1 undecided" in home["Note"]
-    assert "1 with an unknown taker" in home["Note"]
+    assert "1 unattributed" in home["Note"]
     rivals = row(dialog.faceoff_team_table, "Team", "Rivals")
     assert rivals["FO%"] == "33.3%"
     kim = row(dialog.faceoff_player_table, "Player", "#14 Jordan Kim")

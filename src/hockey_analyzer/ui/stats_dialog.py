@@ -1,19 +1,19 @@
 """Stats view (tickets 18, 19): renders `StatsEngine`'s output for one or
 more loaded `GameData`s -- team, skater, position, line/unit, goalie,
-shot-quality, and faceoff tables -- and recomputes on a strength-state filter change.
-Computes nothing itself; every number shown comes straight from
-`stats_engine`, aggregated over the selected games sum-then-compute (a
-single game is just a one-game selection).
+shot-quality, and faceoff tables -- and recomputes on a strength-state
+filter change. Computes nothing itself; every number shown comes straight
+from `stats_engine`, aggregated over the selected games sum-then-compute
+(a single game is just a one-game selection).
 
 Skater, goalie, unit, and faceoff stats carry separate filters, since
 goalie and faceoff stats default to all situations, units to their own
 natural context, and everything else to 5v5 (see CONTEXT.md's Goalie
-stats, Faceoff win %, and Game unit assignment entries). Team, shot-quality, and position tables follow the
-skater filter. A stat that couldn't be computed says so in its row's Note
-rather than disappearing, unresolved shift changes (which leave some
-unknown player's ice time missing) get one caveat line per team, and a
-multi-game selection lists, per team, which games its on-ice stats were
-computed over.
+stats, Faceoff win %, and Game unit assignment entries). Team,
+shot-quality, and position tables follow the skater filter. A stat that
+couldn't be computed says so in its row's Note rather than disappearing,
+unresolved shift changes (which leave some unknown player's ice time
+missing) get one caveat line per team, and a multi-game selection lists,
+per team, which games its on-ice stats were computed over.
 
 The tables themselves are `StatTables`, shared with the report view, and
 "Export Report…" (ticket 26) freezes what's on screen -- these games, at

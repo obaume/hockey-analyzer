@@ -1,8 +1,8 @@
 """The stat tables shared by the live stats view (tickets 18, 19) and the
 report view (ticket 26): team, skater, position, line/unit, goalie,
-shot-quality, and faceoff tabs, filled from `stats_engine` result types. Both views
-render through this one module, so a report shows its numbers exactly as
-the live stats view it was exported from did.
+shot-quality, and faceoff tabs, filled from `stats_engine` result
+types. Both views render through this one module, so a report shows its
+numbers exactly as the live stats view it was exported from did.
 
 Formats only -- computes nothing beyond `stats_engine`'s own derived
 properties and `position_rollup`. Which team/player a stat belongs to is
@@ -186,28 +186,24 @@ def _shot_quality_rows(stats: TeamStats) -> dict[str, str]:
     }
 
 
-def _taken(record: WonLost) -> int:
-    return record.won + record.lost
-
-
 def _zone_record(record: WonLost) -> str:
     """A zone's FO% with the draws behind it, e.g. "60.0% (3/5)"."""
-    if not _taken(record):
+    if not record.decided:
         return MISSING
-    return f"{_percent(record.percentage)} ({record.won}/{_taken(record)})"
+    return f"{_percent(record.percentage)} ({record.won}/{record.decided})"
 
 
 def _faceoff_cells(stats: FaceoffStats, unattributed: int = 0) -> list[str]:
     """FOW/FOL/FO%, by zone, and a note on whatever the percentages leave
-    out or couldn't place: undecided draws, draws with no zone, and (for a
-    team) draws whose own taker is unknown."""
+    out or couldn't place: undecided faceoffs, decided ones with no zone,
+    and (for a team) unattributed ones, whose own taker is unknown."""
     notes = []
     if stats.undecided:
         notes.append(f"{stats.undecided} undecided")
-    if _taken(stats.undetermined):
-        notes.append(f"{_taken(stats.undetermined)} zone undetermined")
+    if stats.undetermined.decided:
+        notes.append(f"{stats.undetermined.decided} zone undetermined")
     if unattributed:
-        notes.append(f"{unattributed} with an unknown taker")
+        notes.append(f"{unattributed} unattributed")
     return [
         str(stats.won),
         str(stats.lost),
@@ -292,8 +288,8 @@ def coverage_text(
 
 class StatTables:
     """The stat tables, laid out as `tabs` -- the Faceoffs tab holds two,
-    teams above players. Each `show_*` refills one
-    group; a group left unshown stays an empty table."""
+    teams above players. Each `show_*` refills one group; a group left
+    unshown stays an empty table."""
 
     def __init__(
         self,
