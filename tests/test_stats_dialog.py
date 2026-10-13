@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from stats_fixtures import faceoff_game
 from table_helpers import column, row, table_rows
 
 from hockey_analyzer.domain.enums import (
@@ -268,6 +269,42 @@ def test_multi_game_view_sums_games_and_reports_included_and_excluded_games(
 # -- ticket 26: exporting what's on screen as a report bundle -----------
 
 
+def test_faceoffs_tab_shows_fo_percent_by_team_and_player_in_all_situations(qtbot):
+    dialog = _dialog(qtbot, faceoff_game())
+
+    assert dialog.faceoff_strength_combo.currentText() == "All situations"
+    home = row(dialog.faceoff_team_table, "Team", "Icebreakers")
+    assert (home["FOW"], home["FOL"], home["FO%"]) == ("2", "1", "66.7%")
+    assert (home["OZ FO%"], home["NZ FO%"], home["DZ FO%"]) == (
+        "100.0% (1/1)",
+        "100.0% (1/1)",
+        "0.0% (0/1)",
+    )
+    assert "1 undecided" in home["Note"]
+    assert "1 unattributed" in home["Note"]
+    rivals = row(dialog.faceoff_team_table, "Team", "Rivals")
+    assert rivals["FO%"] == "33.3%"
+    kim = row(dialog.faceoff_player_table, "Player", "#14 Jordan Kim")
+    assert (kim["Team"], kim["FOW"], kim["FOL"], kim["FO%"]) == (
+        "Icebreakers",
+        "1",
+        "1",
+        "50.0%",
+    )
+    assert kim["NZ FO%"] == "—"
+    rival = row(dialog.faceoff_player_table, "Player", "#91")
+    assert rival["OZ FO%"] == "100.0% (1/1)"
+
+
+def test_changing_the_faceoff_filter_recomputes_faceoff_stats(qtbot):
+    dialog = _dialog(qtbot, faceoff_game())
+
+    _select(dialog.faceoff_strength_combo, "5v5")
+
+    home = row(dialog.faceoff_team_table, "Team", "Icebreakers")
+    assert (home["FOW"], home["FOL"], home["FO%"]) == ("2", "0", "100.0%")
+
+
 class _FakeExportDialog:
     def __init__(self, games, *, filters, parent=None):
         self.games = games
@@ -294,6 +331,7 @@ def test_export_hands_the_games_and_current_filters_to_the_report_export(
     _select(dialog.skater_strength_combo, "All situations")
     _select(dialog.unit_strength_combo, "5v4")
     _select(dialog.goalie_strength_combo, "5v5")
+    _select(dialog.faceoff_strength_combo, "5v5")
 
     dialog.export_button.click()
 
@@ -302,5 +340,9 @@ def test_export_hands_the_games_and_current_filters_to_the_report_export(
     assert export.parent is dialog
     assert [game.game.id for game in export.games] == [data.game.id]
     assert export.filters == StrengthFilters(
-        team=ALL_SITUATIONS, skaters=ALL_SITUATIONS, goalies="5v5", units="5v4"
+        team=ALL_SITUATIONS,
+        skaters=ALL_SITUATIONS,
+        goalies="5v5",
+        units="5v4",
+        faceoffs="5v5",
     )

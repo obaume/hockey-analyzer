@@ -9,7 +9,7 @@ import datetime
 
 from PySide6.QtCore import QBuffer, QIODevice
 from PySide6.QtGui import QImage
-from stats_fixtures import AWAY, HOME, GameBuilder, named_game
+from stats_fixtures import AWAY, HOME, GameBuilder, faceoff_game, named_game
 from table_helpers import all_cells, column_headers, table_rows
 
 from hockey_analyzer.domain.report_bundle import (
@@ -32,6 +32,8 @@ _TABLES = (
     "unit_table",
     "goalie_table",
     "shot_quality_table",
+    "faceoff_team_table",
+    "faceoff_player_table",
 )
 
 
@@ -108,6 +110,7 @@ def test_each_stat_group_names_the_strength_filter_it_was_frozen_at(qtbot):
     assert "Team / skaters: 5v5" in text
     assert "Goalies: All situations" in text
     assert "Units: 5v4" in text
+    assert "Faceoffs: All situations" in text
 
 
 def test_stats_degraded_by_unknown_players_carry_a_caveat(qtbot):
@@ -166,13 +169,16 @@ def _tab(view, title):
 
 def test_stat_groups_an_older_bundle_lacks_are_marked_not_included(qtbot):
     report = dataclasses.replace(
-        build_game_report(named_game(), summary=""), skater_stats=None, unit_stats=None
+        build_game_report(named_game(), summary=""),
+        skater_stats=None,
+        unit_stats=None,
+        faceoff_stats=None,
     )
 
     view = _view(qtbot, report)
 
     tabs = view.tables.tabs
-    for title in ("Skaters", "Positions", "Units"):
+    for title in ("Skaters", "Positions", "Units", "Faceoffs"):
         assert tabs.isTabEnabled(_tab(view, title)) is False
         assert "not included" in tabs.tabToolTip(_tab(view, title))
     assert tabs.isTabEnabled(_tab(view, "Team")) is True
@@ -260,6 +266,34 @@ def test_player_report_shows_only_the_subject_player(qtbot):
     assert view.skater_table.item(0, 0).text() == "#14 Jordan Kim"
     assert view.unit_table.rowCount() == 1
     assert view.goalie_table.rowCount() == 0
+
+
+def _faceoff_rows(table):
+    return [table.item(index, 0).text() for index in range(table.rowCount())]
+
+
+def test_game_report_shows_both_teams_faceoffs_as_the_live_view_did(qtbot):
+    view = _view(qtbot, build_game_report(faceoff_game(), summary=""))
+
+    assert _faceoff_rows(view.faceoff_team_table) == ["Icebreakers", "Rivals"]
+    assert _faceoff_rows(view.faceoff_player_table) == ["#14 Jordan Kim", "#91"]
+
+
+def test_team_report_shows_only_the_subject_teams_faceoffs(qtbot):
+    view = _view(qtbot, build_team_report([faceoff_game()], AWAY, summary=""))
+
+    assert _faceoff_rows(view.faceoff_team_table) == ["Rivals"]
+    assert _faceoff_rows(view.faceoff_player_table) == ["#91"]
+
+
+def test_player_report_shows_only_the_subject_players_faceoffs(qtbot):
+    data = faceoff_game()
+    kim = data.roster[0].player_id
+
+    view = _view(qtbot, build_player_report([data], kim, summary=""))
+
+    assert _faceoff_rows(view.faceoff_team_table) == ["Icebreakers"]
+    assert _faceoff_rows(view.faceoff_player_table) == ["#14 Jordan Kim"]
 
 
 def test_coverage_naming_a_game_missing_from_the_game_list_still_opens(qtbot):

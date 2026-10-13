@@ -11,7 +11,13 @@ import zipfile
 import pytest
 from stats_fixtures import AWAY, HOME, GameBuilder
 
-from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType, UnitType
+from hockey_analyzer.domain.enums import (
+    Position,
+    ShotOutcome,
+    ShotType,
+    Side,
+    UnitType,
+)
 from hockey_analyzer.domain.models import Team
 from hockey_analyzer.domain.report_bundle import (
     AggregationMode,
@@ -34,6 +40,7 @@ from hockey_analyzer.domain.stats_engine import (
     OPPONENT_SHIFTS_INCOMPLETE,
     ForAgainst,
     GameCoverage,
+    WonLost,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"fake chart pixels"
@@ -177,6 +184,47 @@ def test_each_stat_group_keeps_its_own_strength_filter(tmp_path):
     assert report.skater_stats.stats.skaters[0].corsi == ForAgainst(1, 0)
     assert report.goalie_stats.strength_state is ALL_SITUATIONS
     assert report.goalie_stats.stats[0].shots_against == 2
+
+
+def test_faceoff_stats_round_trip_at_their_own_filter_keyed_by_bundle_ids(tmp_path):
+    game = GameBuilder()
+    kim = game.player(HOME, 14, name="Jordan Kim", player_id=900)
+    game.period_start(1)
+    game.shot(HOME, x=60.0)  # home attacks +x
+    game.faceoff(69.0, home=kim, winner=Side.HOME)
+    game.faceoff(None, home=kim, winner=Side.AWAY)
+    game.faceoff(0.0, home=kim, winner=Side.HOME, strength="5v4")
+    game.faceoff(0.0, winner=Side.AWAY)  # unknown home taker
+    game.faceoff(0.0, home=kim)  # undecided
+    filters = StrengthFilters(faceoffs="5v5")
+
+    report = _round_trip(
+        build_game_report(game.build(), summary="", filters=filters), tmp_path
+    )
+
+    assert report.faceoff_stats.strength_state == "5v5"
+    home_key, away_key = report.teams
+    home, away = report.faceoff_stats.stats.teams
+    assert (home.team_id, away.team_id) == (home_key, away_key)
+    assert home.faceoffs.offensive == WonLost(1, 0)
+    assert home.faceoffs.undetermined == WonLost(0, 1)
+    assert home.faceoffs.neutral == WonLost(0, 1)
+    assert (home.faceoffs.undecided, home.unattributed) == (1, 1)
+    assert away.faceoffs.defensive == WonLost(0, 1)
+    (player,) = report.faceoff_stats.stats.players
+    assert report.players[player.player_id] == PlayerRef("Jordan Kim", 14)
+    assert (player.team_id, player.jersey_number) == (home_key, 14)
+    assert (player.faceoffs.won, player.faceoffs.lost) == (1, 1)
+
+
+def test_faceoff_stats_default_to_all_situations():
+    game = GameBuilder()
+    game.faceoff(0.0, winner=Side.HOME, strength="5v4")
+
+    report = build_game_report(game.build(), summary="")
+
+    assert report.faceoff_stats.strength_state is ALL_SITUATIONS
+    assert report.faceoff_stats.stats.teams[0].faceoffs.won == 1
 
 
 def test_incomplete_data_caveats_survive_the_round_trip(tmp_path):
@@ -399,6 +447,7 @@ def test_bundle_from_an_older_schema_version_opens_with_newer_fields_absent(
     assert report.team_stats is None
     assert report.goalie_stats is None
     assert report.unit_stats is None
+    assert report.faceoff_stats is None
     assert report.players == {}
     assert report.charts == ()
     assert report.unresolved_shift_changes == {}

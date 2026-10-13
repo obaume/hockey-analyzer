@@ -50,16 +50,21 @@ from hockey_analyzer.domain.stats_engine import (
     NATURAL_STRENGTH,
     ExcludedSkater,
     ExcludedUnit,
+    FaceoffReport,
+    FaceoffStats,
     ForAgainst,
     GameCoverage,
     GoalieStats,
+    PlayerFaceoffs,
     ShotQuality,
     SkaterReport,
     SkaterStats,
+    TeamFaceoffs,
     TeamStats,
     UnitReport,
     UnitStats,
     UnitStrength,
+    WonLost,
     ZoneStarts,
 )
 
@@ -186,6 +191,7 @@ class StrengthFilters:
     skaters: str | None = EVEN_STRENGTH
     goalies: str | None = ALL_SITUATIONS
     units: str | None | UnitStrength = NATURAL_STRENGTH
+    faceoffs: str | None = ALL_SITUATIONS
 
 
 DEFAULT_FILTERS = StrengthFilters()
@@ -218,6 +224,7 @@ class Report:
     skater_stats: Filtered[SkaterReport] | None = None
     goalie_stats: Filtered[tuple[GoalieStats, ...]] | None = None
     unit_stats: Filtered[UnitReport] | None = None
+    faceoff_stats: Filtered[FaceoffReport] | None = None
     on_ice_coverage: Mapping[int, GameCoverage] = field(default_factory=dict)
     unresolved_shift_changes: Mapping[int, int] = field(default_factory=dict)
     charts: tuple[Chart, ...] = ()
@@ -375,6 +382,14 @@ def _build(
             ),
         ),
         unit_stats=units,
+        faceoff_stats=Filtered(
+            filters.faceoffs,
+            keys.faceoff_report(
+                stats_engine.combined_faceoff_stats(
+                    games, strength_state=filters.faceoffs
+                )
+            ),
+        ),
         on_ice_coverage={
             keys.teams[team_id]: GameCoverage(
                 included=tuple(keys.games[game_id] for game_id in coverage.included),
@@ -462,6 +477,14 @@ class _Keys:
             team_id=self.teams[stats.team_id],
         )
 
+    def faceoff_report(self, report: FaceoffReport) -> FaceoffReport:
+        return FaceoffReport(
+            teams=[
+                replace(team, team_id=self.teams[team.team_id]) for team in report.teams
+            ],
+            players=[self.player_stats(player) for player in report.players],
+        )
+
     def unit_report(self, report: UnitReport) -> UnitReport:
         return UnitReport(
             units=[self._unit(unit) for unit in report.units],
@@ -476,7 +499,9 @@ class _Keys:
         )
 
 
-_PlayerTeam = TypeVar("_PlayerTeam", SkaterStats, ExcludedSkater, GoalieStats)
+_PlayerTeam = TypeVar(
+    "_PlayerTeam", SkaterStats, ExcludedSkater, GoalieStats, PlayerFaceoffs
+)
 _Unit = TypeVar("_Unit", UnitStats, ExcludedUnit)
 
 
@@ -607,6 +632,28 @@ def _report_json(report: Report) -> dict[str, Any]:
                 for unit in report.unit_stats.stats.excluded
             ],
         }
+    if report.faceoff_stats is not None:
+        faceoffs = report.faceoff_stats.stats
+        obj["faceoff_stats"] = {
+            "strength_state": report.faceoff_stats.strength_state,
+            "teams": [
+                {
+                    "team": team.team_id,
+                    "faceoffs": _faceoffs_json(team.faceoffs),
+                    "unattributed": team.unattributed,
+                }
+                for team in faceoffs.teams
+            ],
+            "players": [
+                {
+                    "player": player.player_id,
+                    "team": player.team_id,
+                    "jersey_number": player.jersey_number,
+                    "faceoffs": _faceoffs_json(player.faceoffs),
+                }
+                for player in faceoffs.players
+            ],
+        }
     return obj
 
 
@@ -666,6 +713,20 @@ def _goalie_json(stats: GoalieStats) -> dict[str, Any]:
         "high_danger_goals_against": stats.high_danger_goals_against,
         "time_in_net_ms": stats.time_in_net_ms,
     }
+
+
+def _faceoffs_json(stats: FaceoffStats) -> dict[str, Any]:
+    return {
+        "offensive": _won_lost_json(stats.offensive),
+        "neutral": _won_lost_json(stats.neutral),
+        "defensive": _won_lost_json(stats.defensive),
+        "undetermined": _won_lost_json(stats.undetermined),
+        "undecided": stats.undecided,
+    }
+
+
+def _won_lost_json(record: WonLost) -> dict[str, int]:
+    return {"won": record.won, "lost": record.lost}
 
 
 def _unit_key_json(unit: UnitStats | ExcludedUnit) -> dict[str, Any]:
@@ -788,6 +849,7 @@ def _report_from_json(
             lambda section: tuple(_goalie(item) for item in section["goalies"]),
         ),
         unit_stats=_unit_section(obj.get("unit_stats")),
+        faceoff_stats=_section(obj, "faceoff_stats", _faceoff_report),
         on_ice_coverage={
             item["team"]: GameCoverage(
                 included=tuple(item["included_games"]),
@@ -898,6 +960,42 @@ def _goalie(obj: dict[str, Any]) -> GoalieStats:
         high_danger_goals_against=obj["high_danger_goals_against"],
         time_in_net_ms=obj["time_in_net_ms"],
     )
+
+
+def _faceoff_report(section: dict[str, Any]) -> FaceoffReport:
+    return FaceoffReport(
+        teams=[
+            TeamFaceoffs(
+                team_id=item["team"],
+                faceoffs=_faceoffs(item["faceoffs"]),
+                unattributed=item["unattributed"],
+            )
+            for item in section["teams"]
+        ],
+        players=[
+            PlayerFaceoffs(
+                player_id=item["player"],
+                team_id=item["team"],
+                jersey_number=item["jersey_number"],
+                faceoffs=_faceoffs(item["faceoffs"]),
+            )
+            for item in section["players"]
+        ],
+    )
+
+
+def _faceoffs(obj: dict[str, Any]) -> FaceoffStats:
+    return FaceoffStats(
+        offensive=_won_lost(obj["offensive"]),
+        neutral=_won_lost(obj["neutral"]),
+        defensive=_won_lost(obj["defensive"]),
+        undetermined=_won_lost(obj["undetermined"]),
+        undecided=obj["undecided"],
+    )
+
+
+def _won_lost(obj: dict[str, int]) -> WonLost:
+    return WonLost(won=obj["won"], lost=obj["lost"])
 
 
 def _unit_key(obj: dict[str, Any]) -> dict[str, Any]:
