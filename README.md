@@ -28,16 +28,22 @@ Definitions of every term and stat live in [CONTEXT.md](CONTEXT.md). Planned wor
 
 ## What you need
 
-- **Python 3.11 or newer**
+- **Python 3.11 or newer** (uv installs it for you)
 - **Windows** (primary platform) or **macOS** (tested in CI). Linux is untested but should work.
 - **One continuous video file per game.** The game clock is derived from the footage, so each period must be recorded without cuts. Any format your system's Qt Multimedia backend can play will work; MP4 (H.264) is the safe choice.
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/getting-started/installation/), which also fetches a suitable Python if you don't have one:
+
 ```sh
-git clone https://github.com/obaume/hockey-analyzer.git
-cd hockey-analyzer
-pip install .
+uv tool install git+https://github.com/obaume/hockey-analyzer
+```
+
+Or with pip, into a Python 3.11+ environment:
+
+```sh
+pip install git+https://github.com/obaume/hockey-analyzer
 ```
 
 Then start the app with:
@@ -66,11 +72,17 @@ Shortcuts are registered in `src/hockey_analyzer/ui/main_window.py` (playback) a
 
 ## Development
 
+The project is managed with [uv](https://docs.astral.sh/uv/). Dependencies are locked in `uv.lock`, and `.python-version` pins the dev Python (3.12).
+
 ```sh
-pip install -e ".[dev]"   # or scripts/build.ps1 on Windows for the editable install
-pytest                    # tests (Qt tests run through pytest-qt)
-ruff check . && ruff format --check .
+uv sync                    # create .venv with the app and dev tools
+uv run hockey-analyzer     # run the app from the checkout
+uv run pytest              # tests (Qt tests run through pytest-qt)
+uv run ruff check . && uv run ruff format --check .
+uv add <package>           # add a dependency (updates pyproject.toml and uv.lock)
 ```
+
+To get the `hockey-analyzer` command on your PATH while still running the checkout's code, use `uv tool install --editable .`.
 
 CI runs lint and the test suite on every PR and push to `main`: tests on Windows (Python 3.11 and 3.12) and macOS (Python 3.12).
 

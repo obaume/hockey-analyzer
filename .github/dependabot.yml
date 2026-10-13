@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Bumps uv.lock (and pyproject.toml pins such as ruff) -- one grouped PR a month.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
