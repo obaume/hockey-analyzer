@@ -21,22 +21,24 @@ dependencies = [
     "imageio-ffmpeg>=0.5",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-qt>=4.4",
-    "ruff==0.16.8",
-]
-
 [project.scripts]
 hockey-analyzer = "hockey_analyzer.app:main"
 
-[build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+[dependency-groups]
+# Installed by default on `uv sync`.
+dev = [
+    { include-group = "lint" },
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+# Its own group so CI's lint job can install ruff without PySide6.
+lint = [
+    "ruff==0.16.8",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

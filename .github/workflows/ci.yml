@@ -16,18 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      # Only ruff, at the version pinned in pyproject.toml's dev extras --
-      # the full dev install would pull in PySide6 for nothing.
-      - name: Install pinned ruff
-        run: pip install "$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml','rb'))['project']['optional-dependencies']['dev'] if d.startswith('ruff')))")"
+      - uses: astral-sh/setup-uv@v10.3.0
+      # Only the lint group (ruff, at its locked version) -- the full dev
+      # install would pull in PySide6 for nothing.
       - name: Lint
-        run: ruff check --output-format=github .
+        run: uv run --locked --only-group lint ruff check --output-format=github .
       - name: Format check
-        run: ruff format --check .
+        run: uv run --locked --only-group lint ruff format --check .
 
   test-windows:
     runs-on: windows-latest
@@ -37,24 +32,21 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      # python-version overrides .python-version so the matrix still applies.
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        run: uv sync --locked
       - name: Test
-        run: pytest
+        run: uv run --locked pytest
 
   test-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
+      - uses: astral-sh/setup-uv@v10.3.0
       - name: Install
-        run: pip install -e ".[dev]"
+        run: uv sync --locked
       - name: Test
-        run: pytest
+        run: uv run --locked pytest
