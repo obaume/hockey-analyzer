@@ -2,15 +2,25 @@
 
 `QMediaPlayer` decodes in-process and pushes each `QVideoFrame` here rather
 than handing off to a separate renderer process, keeping frame-stepping and
-scrubbing responsive (see ticket 13).
+scrubbing responsive (see ticket 13). Each frame is drawn at its own
+aspect ratio, letterboxed in black, never stretched to the widget's shape.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter, QPaintEvent
 from PySide6.QtMultimedia import QVideoFrame, QVideoSink
 from PySide6.QtWidgets import QWidget
+
+
+def letterbox_rect(frame_size: QSize, bounds: QRect) -> QRect:
+    """The largest rect of `frame_size`'s aspect ratio that fits in
+    `bounds`, centred in it."""
+    size = frame_size.scaled(bounds.size(), Qt.AspectRatioMode.KeepAspectRatio)
+    rect = QRect(0, 0, size.width(), size.height())
+    rect.moveCenter(bounds.center())
+    return rect
 
 
 class VideoFrameView(QWidget):
@@ -32,7 +42,8 @@ class VideoFrameView(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
         if self._image is not None:
-            painter.drawImage(self.rect(), self._image)
-        else:
-            painter.fillRect(self.rect(), Qt.GlobalColor.black)
+            painter.drawImage(
+                letterbox_rect(self._image.size(), self.rect()), self._image
+            )

@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -55,6 +55,7 @@ from hockey_analyzer.ui.game_list_dialog import GameListDialog
 from hockey_analyzer.ui.game_setup_dialog import GameSetupDialog
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
 from hockey_analyzer.ui.league_import_dialog import LeagueImportDialog
+from hockey_analyzer.ui.on_ice_dock import OnIceDock
 from hockey_analyzer.ui.playback_controller import (
     DEFAULT_SPEED_STEPS,
     PlaybackController,
@@ -115,6 +116,9 @@ def _clip_export_dialog(
 
 
 JUMP_SECONDS = 5
+_ON_ICE_VISIBLE_SETTING = "on_ice_dock/visible"
+_ON_ICE_TAB_SETTING = "on_ice_dock/tab"
+
 VIDEO_FILE_FILTER = "Video files (*.mp4 *.mkv *.mov *.avi);;All files (*)"
 OPEN_REPORT_FILE_FILTER = f"{REPORT_FILE_FILTER};;All files (*)"
 
@@ -148,6 +152,7 @@ class MainWindow(QMainWindow):
         report_file_dialog: Callable[[], str] | None = None,
         report_viewer_factory: ReportViewerFactory | None = None,
         report_error_notice: Callable[[str], None] | None = None,
+        settings: QSettings | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -243,6 +248,18 @@ class MainWindow(QMainWindow):
         playback_layout.addWidget(self.position_slider)
         playback_layout.addLayout(controls)
 
+        # Where the on-ice dock's visibility and tab are remembered between
+        # sessions; None (tests, by default) remembers nothing.
+        self._settings = settings
+        self.on_ice_dock = OnIceDock(self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.on_ice_dock)
+        self.on_ice_dock.tabs.setCurrentIndex(
+            int(self._setting(_ON_ICE_TAB_SETTING, 0))
+        )
+        self.on_ice_dock.tabs.currentChanged.connect(
+            lambda index: self._store_setting(_ON_ICE_TAB_SETTING, index)
+        )
+
         self.tagging_panel: TaggingPanel | None = None
         self._root_layout = QVBoxLayout()
         self._root_layout.addLayout(playback_layout, stretch=2)
@@ -301,6 +318,16 @@ class MainWindow(QMainWindow):
         # own games, so it doesn't depend on the active one.
         self.multi_game_stats_action = game_menu.addAction("Multi-Game Stats…")
         self.multi_game_stats_action.triggered.connect(self._show_multi_game_stats)
+
+        view_menu = self.menuBar().addMenu("&View")
+        # "	I" only labels the key: the binding itself lives in the
+        # shortcut registry (ADR-0007), like every other hotkey.
+        self.on_ice_action = view_menu.addAction("On Ice	I")
+        self.on_ice_action.setCheckable(True)
+        self.on_ice_action.toggled.connect(self._set_on_ice_visible)
+        visible = self._setting(_ON_ICE_VISIBLE_SETTING, False)
+        self.on_ice_action.setChecked(visible in (True, "true"))
+        self.on_ice_dock.setVisible(self.on_ice_action.isChecked())
         # No db_session means there's nowhere to persist a Game -- keep
         # this window in its ticket-13 video-only mode rather than
         # offering actions that would have nothing to write to.
@@ -322,6 +349,22 @@ class MainWindow(QMainWindow):
             pause=self._controller.pause,
         )
         self._root_layout.addWidget(self.tagging_panel, stretch=1)
+        self.tagging_panel.events_changed.connect(self.on_ice_dock.reload)
+        self.on_ice_dock.set_session(tagging_session)
+        self.on_ice_dock.set_position(self._player.position())
+
+    def _set_on_ice_visible(self, visible: bool) -> None:
+        self.on_ice_dock.setVisible(visible)
+        self._store_setting(_ON_ICE_VISIBLE_SETTING, visible)
+
+    def _setting(self, key: str, default: object) -> object:
+        if self._settings is None:
+            return default
+        return self._settings.value(key, default)
+
+    def _store_setting(self, key: str, value: object) -> None:
+        if self._settings is not None:
+            self._settings.setValue(key, value)
 
     def _activate_game(self, game_id: int | None) -> None:
         """Single path for both New Game and Select Game -- always
@@ -476,6 +519,10 @@ class MainWindow(QMainWindow):
             key_string(Qt.Key.Key_Comma): lambda: self._controller.step_frame(-1),
             key_string(Qt.Key.Key_BracketRight): self._speed_up,
             key_string(Qt.Key.Key_BracketLeft): self._speed_down,
+            key_string(Qt.Key.Key_I): self.on_ice_action.toggle,
+            key_string(
+                Qt.Key.Key_I, Qt.KeyboardModifier.ShiftModifier
+            ): self.on_ice_dock.flip_tab,
         }
         for key, action in bindings.items():
             self._shortcuts.register(key, PLAYBACK_SCOPE, action)
@@ -570,6 +617,7 @@ class MainWindow(QMainWindow):
 
     def _on_position_changed(self, position: int) -> None:
         self.time.setText(format_video_timestamp(position))
+        self.on_ice_dock.set_position(position)
         if not self.position_slider.isSliderDown():
             self.position_slider.blockSignals(True)
             self.position_slider.setValue(position)

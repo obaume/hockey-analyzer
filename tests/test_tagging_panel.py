@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QHBoxLayout
 
 from hockey_analyzer.domain.enums import (
     EventType,
@@ -204,16 +204,37 @@ def test_each_event_type_has_a_working_log_button(qtbot, tagging_session):
     assert logged_types == set(panel.log_buttons.keys())
 
 
-def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(
+def test_log_row_reads_in_tagging_order_with_each_buttons_hotkey(
     qtbot, tagging_session
 ):
+    panel = _make_panel(qtbot, tagging_session)
+    row = next(
+        layout
+        for layout in panel.findChildren(QHBoxLayout)
+        if layout.indexOf(panel.line_change_button) >= 0
+    )
+
+    assert [row.itemAt(i).widget().text() for i in range(row.count())] == [
+        "Period Start (1)",
+        "Period End (2)",
+        "Stoppage (3)",
+        "Faceoff (4)",
+        "Shot Attempt (5)",
+        "Shift Change (6)",
+        "Line Change (7)",
+        "Penalty (8)",
+    ]
+
+
+def test_hotkeys_log_each_event_type_via_the_shared_registry(qtbot, tagging_session):
     registry = ShortcutRegistry()
     _panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     # "1" goes last: it selects its faceoff and focuses the jersey field
     # (ticket 63), which -- in a window that really takes focus -- suspends
-    # the digit hotkeys until the field loses it (ADR-0007).
-    for key in (Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5, Qt.Key.Key_1):
+    # the digit hotkeys until the field loses it (ADR-0007). "4"/"5" open
+    # a rink click, so they're covered by the faceoff/shot tests instead.
+    for key in (Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_8, Qt.Key.Key_6, Qt.Key.Key_1):
         assert registry.dispatch(key_string(key)) is True
 
     # Six, not five: "1" logs a period start plus its faceoff.
@@ -225,6 +246,17 @@ def test_hotkeys_1_through_5_log_each_event_type_via_the_shared_registry(
         EventType.PERIOD_START,
         EventType.FACEOFF,
     ]
+
+
+def test_hotkey_7_opens_the_line_change(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    factory = _line_change_factory(accepted=False)
+    _make_panel(
+        qtbot, tagging_session, shortcuts=registry, line_change_dialog_factory=factory
+    )
+
+    assert registry.dispatch(key_string(Qt.Key.Key_7)) is True
+    assert len(factory.opened) == 1
 
 
 def test_logging_an_event_never_touches_a_player_or_controller(qtbot, tagging_session):

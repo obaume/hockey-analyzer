@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,12 +23,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -59,25 +62,30 @@ TAGGING_SCOPE = "tagging"
 # 1-5 (see _JerseyEntry).
 JERSEY_ENTRY_SCOPE = "jersey-entry"
 
-_LOG_BUTTONS: tuple[tuple[EventType, str, Qt.Key], ...] = (
-    (EventType.PERIOD_START, "Period Start", Qt.Key.Key_1),
-    (EventType.PERIOD_END, "Period End", Qt.Key.Key_2),
-    (EventType.STOPPAGE, "Stoppage", Qt.Key.Key_3),
-    (EventType.PENALTY, "Penalty", Qt.Key.Key_4),
-    (EventType.SHIFT_CHANGE, "Shift Change", Qt.Key.Key_5),
-    (EventType.FACEOFF, "Faceoff", Qt.Key.Key_6),
-    (EventType.SHOT_ATTEMPT, "Shot Attempt", Qt.Key.Key_7),
+# Ticket 17's bulk line change: not an event type of its own (it creates
+# ordinary shift_change events), so it holds a place in _LOG_ROW but
+# stays out of _TYPE_LABELS.
+_LINE_CHANGE = "line_change"
+
+# The log buttons, left to right in the order a tagger reaches for them.
+# Each one's hotkey is its position in the row (1-8), shown on its label.
+_LOG_ROW: tuple[tuple[EventType | str, str], ...] = (
+    (EventType.PERIOD_START, "Period Start"),
+    (EventType.PERIOD_END, "Period End"),
+    (EventType.STOPPAGE, "Stoppage"),
+    (EventType.FACEOFF, "Faceoff"),
+    (EventType.SHOT_ATTEMPT, "Shot Attempt"),
+    (EventType.SHIFT_CHANGE, "Shift Change"),
+    (_LINE_CHANGE, "Line Change"),
+    (EventType.PENALTY, "Penalty"),
 )
 
 # Single source of truth for each in-scope type's display label -- table
 # rows and log buttons both read from this rather than keeping a second,
 # hand-synced mapping.
-_TYPE_LABELS = {event_type: label for event_type, label, _ in _LOG_BUTTONS}
-
-# Ticket 17's bulk line change: not an event type of its own (it creates
-# ordinary shift_change events), so it sits outside _LOG_BUTTONS/
-# _TYPE_LABELS, on the next free digit after them.
-_LINE_CHANGE_KEY = Qt.Key.Key_8
+_TYPE_LABELS = {
+    entry: label for entry, label in _LOG_ROW if isinstance(entry, EventType)
+}
 
 _TYPES_WITH_PERIOD_NUMBER = {EventType.PERIOD_START, EventType.PERIOD_END}
 
@@ -136,7 +144,44 @@ class _JerseyEntry(QLineEdit):
         super().keyPressEvent(event)
 
 
+class _VerticalScrollArea(QScrollArea):
+    """Scrolls only vertically: always as wide as its contents need, so
+    the form inside never loses width -- only height -- in a tight
+    window. Re-reads that width whenever the contents' layout changes
+    (e.g. the edit form showing another event type's fields)."""
+
+    def __init__(self, widget: QWidget) -> None:
+        super().__init__()
+        self.setWidget(widget)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def _width_for(self, contents_width: int) -> int:
+        return contents_width + self.verticalScrollBar().sizeHint().width()
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        hint.setWidth(self._width_for(self.widget().minimumSizeHint().width()))
+        return hint
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        hint.setWidth(self._width_for(self.widget().sizeHint().width()))
+        return hint
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(watched, event)
+
+
 class TaggingPanel(QWidget):
+    # After every refresh -- i.e. after every logged, edited or deleted
+    # event -- for views derived from the whole timeline (the on-ice dock).
+    events_changed = Signal()
+
     def __init__(
         self,
         tagging_session: TaggingSession,
@@ -190,22 +235,21 @@ class TaggingPanel(QWidget):
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}
-        for event_type, label, key in _LOG_BUTTONS:
-            action = self._log_action(event_type)
-            button = QPushButton(label)
+        for position, (entry, label) in enumerate(_LOG_ROW, start=1):
+            if isinstance(entry, EventType):
+                action = self._log_action(entry)
+            else:
+                action = self._log_line_change
+            button = QPushButton(f"{label} ({position})")
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(action)
             log_row.addWidget(button)
-            self.log_buttons[event_type] = button
+            if isinstance(entry, EventType):
+                self.log_buttons[entry] = button
+            else:
+                self.line_change_button = button
+            key = Qt.Key(Qt.Key.Key_0.value + position)
             self._register_shortcut(key_string(key), TAGGING_SCOPE, action)
-
-        self.line_change_button = QPushButton("Line Change")
-        self.line_change_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.line_change_button.clicked.connect(self._log_line_change)
-        log_row.addWidget(self.line_change_button)
-        self._register_shortcut(
-            key_string(_LINE_CHANGE_KEY), TAGGING_SCOPE, self._log_line_change
-        )
 
         # Registered up front (see _JerseyEntry) but suspended until the
         # jersey field actually has focus -- suspended *before* binding, so
@@ -239,16 +283,40 @@ class TaggingPanel(QWidget):
         main_layout = QHBoxLayout()
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(log_row)
         layout.addWidget(self.event_table, stretch=1)
+        event_list = QWidget()
+        event_list.setLayout(layout)
+        # When the edit form opens in a tight window, the event list (log
+        # buttons and event table) gives up the room, scrolling sideways --
+        # never the form being edited, nor the on-ice dock beside the
+        # panel. Ignoring its preferred width lets the form take its own
+        # first.
+        self.event_list_scroll = QScrollArea()
+        self.event_list_scroll.setWidget(event_list)
+        self.event_list_scroll.setWidgetResizable(True)
+        self.event_list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.event_list_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.event_list_scroll.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
 
-        main_layout.addLayout(layout)
-        main_layout.addWidget(self.edit_group)
+        # Keeps its full width, but gives up height rather than shrinking
+        # the video above the panel.
+        self._edit_scroll = _VerticalScrollArea(self.edit_group)
+
+        main_layout.addWidget(self.event_list_scroll, stretch=1)
+        main_layout.addWidget(self._edit_scroll)
 
         self.setLayout(main_layout)
 
-        self.edit_group.setVisible(False)
+        self._set_edit_panel_visible(False)
         self.refresh()
+
+    def _set_edit_panel_visible(self, visible: bool) -> None:
+        self._edit_scroll.setVisible(visible)
+        self.edit_group.setVisible(visible)
 
     def _register_shortcut(
         self, key: str, scope: str, action: Callable[[], None]
@@ -557,9 +625,10 @@ class TaggingPanel(QWidget):
         self.event_table.blockSignals(False)
 
         if self._selected_event_id is None:
-            self.edit_group.setVisible(False)
+            self._set_edit_panel_visible(False)
         else:
             self._populate_edit_panel(self._selected_event_id)
+        self.events_changed.emit()
 
     def _row_delete_button(self, event_id: int) -> QPushButton:
         # Deletes this row's event, not the selected one -- bound to the
@@ -573,7 +642,7 @@ class TaggingPanel(QWidget):
         rows = self.event_table.selectionModel().selectedRows()
         if not rows:
             self._selected_event_id = None
-            self.edit_group.setVisible(False)
+            self._set_edit_panel_visible(False)
             return
         self._selected_event_id = self._row_event_ids[rows[0].row()]
         self._populate_edit_panel(self._selected_event_id)
@@ -591,7 +660,7 @@ class TaggingPanel(QWidget):
         self._selected_event_id = None
         self.jersey_field.clear()
         self.event_table.clearSelection()
-        self.edit_group.setVisible(False)
+        self._set_edit_panel_visible(False)
 
     # -- edit panel population/commit -----------------------------------
 
@@ -599,7 +668,7 @@ class TaggingPanel(QWidget):
         event = self._session.get_event(event_id)
         event_type = EventType(event.event_type)
 
-        self.edit_group.setVisible(True)
+        self._set_edit_panel_visible(True)
         self.strength_state_field.setText(event.strength_state or "")
 
         has_period_number = event_type in _TYPES_WITH_PERIOD_NUMBER
