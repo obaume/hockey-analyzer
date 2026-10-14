@@ -5,7 +5,7 @@ import zipfile
 from unittest.mock import Mock
 
 from clip_fixtures import FakeEncoder, FakePreviewPlayer
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
 from stats_fixtures import named_game
@@ -1284,3 +1284,78 @@ def test_export_clips_hands_the_dialog_the_apps_shortcut_registry(
     window.export_clips_action.trigger()
 
     assert opened[0].shortcuts is shortcuts
+
+
+# -- on-ice dock (#85) -------------------------------------------------------
+
+
+def _ini_settings(tmp_path):
+    return QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+
+
+def test_on_ice_dock_starts_hidden_and_i_toggles_it(qtbot):
+    window = _make_window(qtbot)
+    assert window.on_ice_dock.isHidden()
+
+    qtbot.keyClick(window, Qt.Key.Key_I)
+    assert not window.on_ice_dock.isHidden()
+    assert window.on_ice_action.isChecked()
+
+    qtbot.keyClick(window, Qt.Key.Key_I)
+    assert window.on_ice_dock.isHidden()
+
+
+def test_view_menu_toggles_the_on_ice_dock(qtbot):
+    window = _make_window(qtbot)
+
+    window.on_ice_action.trigger()
+
+    assert not window.on_ice_dock.isHidden()
+
+
+def test_shift_i_flips_the_on_ice_tabs(qtbot):
+    window = _make_window(qtbot)
+
+    qtbot.keyClick(window, Qt.Key.Key_I, Qt.KeyboardModifier.ShiftModifier)
+
+    assert window.on_ice_dock.tabs.currentIndex() == 1
+
+
+def test_on_ice_dock_visibility_and_tab_are_remembered(qtbot, tmp_path):
+    first = MainWindow(player=FakePlayer(), settings=_ini_settings(tmp_path))
+    qtbot.addWidget(first)
+    qtbot.keyClick(first, Qt.Key.Key_I)
+    qtbot.keyClick(first, Qt.Key.Key_I, Qt.KeyboardModifier.ShiftModifier)
+
+    second = MainWindow(player=FakePlayer(), settings=_ini_settings(tmp_path))
+    qtbot.addWidget(second)
+
+    assert second.on_ice_action.isChecked()
+    assert not second.on_ice_dock.isHidden()
+    assert second.on_ice_dock.tabs.currentIndex() == 1
+
+
+def test_on_ice_dock_follows_playback_and_newly_logged_events(qtbot, tagging_session):
+    player = FakePlayer()
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=player,
+        shortcuts=ShortcutRegistry(),
+        tagging_session=tagging_session,
+    )
+    qtbot.addWidget(window)
+    on = tagging_session.log_event(EventType.SHIFT_CHANGE, 1_000)
+    tagging_session.set_player_reference(on.id, "home", jersey_number=14)
+    tagging_session.update_event(on.id, shift_on_ice=True)
+
+    player.positionChanged.emit(5_000)
+    assert window.on_ice_dock.tabs.tabText(0) == "Home 0"  # not reloaded yet
+
+    # Any panel action refreshes it -- here, logging a stoppage.
+    qtbot.mouseClick(
+        window.tagging_panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton
+    )
+    assert window.on_ice_dock.tabs.tabText(0) == "Home 1"
+
+    player.positionChanged.emit(500)
+    assert window.on_ice_dock.tabs.tabText(0) == "Home 0"

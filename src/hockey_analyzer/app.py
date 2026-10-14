@@ -4,7 +4,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths
+from PySide6.QtCore import QSettings, QStandardPaths
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from hockey_analyzer.db import (
@@ -21,6 +21,10 @@ from hockey_analyzer.ui.main_window import MainWindow
 # user picks per launch -- a fixed path in the platform's per-user app-data
 # directory, auto-created on first run (see CONTEXT.md's Game entry).
 DB_FILENAME = "hockey_analyzer.db"
+
+# UI preferences (e.g. the on-ice dock's visibility), kept apart from the
+# tagging data in the database.
+SETTINGS_ORGANIZATION = SETTINGS_APPLICATION = "Hockey Analyzer"
 
 # (title, text) -> shows a modal box; injectable so tests needn't block on one.
 MessageBox = Callable[[str, str], None]
@@ -60,7 +64,10 @@ def start(
         show_error("Can't open the database", str(error))
         return None
     _show_upgrade_messages(messages, show_notice)
-    return MainWindow(db_session=make_session_factory(engine)())
+    return MainWindow(
+        db_session=make_session_factory(engine)(),
+        settings=QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION),
+    )
 
 
 def _show_upgrade_messages(messages: Sequence[str], show_notice: MessageBox) -> None:

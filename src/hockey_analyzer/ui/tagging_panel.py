@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -142,6 +142,10 @@ class _JerseyEntry(QLineEdit):
 
 
 class TaggingPanel(QWidget):
+    # After every refresh -- i.e. after every logged, edited or deleted
+    # event -- for views derived from the whole timeline (the on-ice dock).
+    events_changed = Signal()
+
     def __init__(
         self,
         tagging_session: TaggingSession,
@@ -564,6 +568,7 @@ class TaggingPanel(QWidget):
             self.edit_group.setVisible(False)
         else:
             self._populate_edit_panel(self._selected_event_id)
+        self.events_changed.emit()
 
     def _row_delete_button(self, event_id: int) -> QPushButton:
         # Deletes this row's event, not the selected one -- bound to the

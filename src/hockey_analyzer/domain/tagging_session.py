@@ -31,6 +31,7 @@ from hockey_analyzer.domain.enums import (
     Side,
     UnitType,
 )
+from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.models import (
     Event,
     Faceoff,
@@ -46,6 +47,7 @@ from hockey_analyzer.domain.models import (
     Stoppage,
     Team,
 )
+from hockey_analyzer.domain.on_ice import OnIceSet, on_ice_sets
 from hockey_analyzer.domain.rink import CENTER_ICE
 
 _MODEL_BY_TYPE: dict[EventType, type[Event]] = {
@@ -672,30 +674,20 @@ class TaggingSession:
     # -- strength-state defaulting -------------------------------------
 
     def _infer_strength_state(self, up_to_timestamp: int) -> str | None:
-        """The computed default from ticket 08: on-ice skater counts
-        implied by `shift_change` events tagged so far, as of
-        `up_to_timestamp`, formatted "{home}v{away}". A pure UI
+        """The computed default from ticket 08: each side's on-ice skater
+        count (goalies excluded -- see CONTEXT.md's On-ice set entry) as
+        of `up_to_timestamp`, formatted "{home}v{away}". A pure UI
         convenience -- never authoritative, always overridable -- so it
         deliberately returns `None` (leave the field to the tagger) once
         no shift data exists yet to infer anything from."""
-        home = self._skater_count(self.home_team_id, up_to_timestamp)
-        away = self._skater_count(self.away_team_id, up_to_timestamp)
+        sets = on_ice_sets(self.game_data(), up_to_timestamp)
+        home = len(sets.get(self.home_team_id, OnIceSet()).skaters)
+        away = len(sets.get(self.away_team_id, OnIceSet()).skaters)
         if home == 0 and away == 0:
             return None
         return f"{home}v{away}"
 
-    def _skater_count(self, team_id: int, up_to_timestamp: int) -> int:
-        stmt = (
-            select(ShiftChange)
-            .where(
-                ShiftChange.game_id == self.game_id,
-                ShiftChange.shift_team_id == team_id,
-                ShiftChange.shift_player_id.is_not(None),
-                ShiftChange.video_timestamp <= up_to_timestamp,
-            )
-            .order_by(ShiftChange.video_timestamp, ShiftChange.id)
-        )
-        on_ice: dict[int, bool] = {}
-        for change in self._db.scalars(stmt):
-            on_ice[change.shift_player_id] = bool(change.shift_on_ice)
-        return sum(1 for is_on in on_ice.values() if is_on)
+    def game_data(self) -> GameData:
+        """A fresh snapshot of this game, for derivations that read the
+        whole timeline (e.g. the on-ice dock's `on_ice_sets`)."""
+        return load_game_data(self._db, self.game_id)

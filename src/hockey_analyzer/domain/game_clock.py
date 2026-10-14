@@ -43,6 +43,26 @@ def stops_play(event: Event) -> bool:
     return isinstance(event, Stoppage | PeriodStart | PeriodEnd | Penalty)
 
 
+def live_intervals(events: Sequence[Event], until_ms: int) -> list[tuple[int, int]]:
+    """The stretches of live play up to `until_ms`, as video intervals:
+    from each faceoff to the next event that stops play, with a stretch
+    still running at `until_ms` closed there."""
+    intervals: list[tuple[int, int]] = []
+    live_since: int | None = None
+    for event in sorted(events, key=lambda event: (event.video_timestamp, event.id)):
+        now = event.video_timestamp
+        if now > until_ms:
+            break
+        if live_since is not None and stops_play(event):
+            intervals.append((live_since, now))
+            live_since = None
+        elif live_since is None and isinstance(event, Faceoff):
+            live_since = now
+    if live_since is not None:
+        intervals.append((live_since, until_ms))
+    return intervals
+
+
 def game_clocks(events: Sequence[Event]) -> dict[int, GameClock]:
     """The game clock at each event, by event id, read in log order (video
     timestamp, then id). An event is stamped with the clock as it stood

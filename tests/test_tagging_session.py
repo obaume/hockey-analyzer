@@ -5,6 +5,7 @@ import pytest
 from hockey_analyzer.db import create_sqlite_engine, init_db, make_session_factory
 from hockey_analyzer.domain.enums import (
     EventType,
+    Position,
     RinkType,
     ShotOutcome,
     ShotType,
@@ -321,6 +322,24 @@ def test_infer_strength_state_reflects_on_ice_counts_so_far(tagging_session):
     stoppage = tagging_session.log_event(EventType.STOPPAGE, 20)
 
     assert stoppage.strength_state == "5v4"
+
+
+def test_infer_strength_state_counts_skaters_not_goalies(tagging_session, session):
+    for side, team_id in (
+        ("home", tagging_session.home_team_id),
+        ("away", tagging_session.away_team_id),
+    ):
+        for jersey in (1, 2, 3, 4, 5, 30):
+            entry = tagging_session.resolve_or_create_roster_entry(team_id, jersey)
+            if jersey == 30:
+                session.get(Player, entry.player_id).position = Position.GOALIE
+            on = tagging_session.log_event(EventType.SHIFT_CHANGE, 10)
+            tagging_session.set_player_reference(on.id, side, jersey_number=jersey)
+            tagging_session.update_event(on.id, shift_on_ice=True)
+
+    stoppage = tagging_session.log_event(EventType.STOPPAGE, 20)
+
+    assert stoppage.strength_state == "5v5"
 
 
 def test_infer_strength_state_reflects_a_player_coming_back_off(tagging_session):
