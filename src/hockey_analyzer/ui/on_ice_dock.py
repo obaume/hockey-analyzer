@@ -33,6 +33,9 @@ from hockey_analyzer.domain.tagging_session import TaggingSession
 _SIDES = (Side.HOME, Side.AWAY)
 _SIDE_NAMES = {Side.HOME: "Home", Side.AWAY: "Away"}
 _COLUMNS = ("#", "Name", "Pos", "Shift")
+# What the dock's minimum width is measured against (see
+# `_TeamView._columns_min_width`).
+_WIDEST_ROW = ("#99", "Firstname Lastname", "RW", "19:59")
 # Translucent, so it reads on light and dark palettes alike.
 _LONG_SHIFT_BRUSH = QBrush(QColor(255, 170, 0, 110))
 
@@ -110,6 +113,7 @@ class _TeamView(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setMinimumWidth(self._columns_min_width())
         self.goalie_label = QLabel()
         self.unresolved_label = QLabel()
 
@@ -119,6 +123,31 @@ class _TeamView(QWidget):
         layout.addWidget(self.goalie_label)
         layout.addWidget(self.unresolved_label)
         self.setLayout(layout)
+
+    def _columns_min_width(self) -> int:
+        """Wide enough for every column at its usual widest (bold, as a long
+        shift is), so a tight window takes its room from the panel beside
+        the dock instead of hiding the Shift column. Fixed rather than
+        fitted to whoever is on, so the dock doesn't jump as players
+        change; a longer name is elided."""
+        self.table.setRowCount(1)
+        for column, text in enumerate(_WIDEST_ROW):
+            item = QTableWidgetItem(text)
+            font = QFont(item.font())
+            font.setBold(True)
+            item.setFont(font)
+            self.table.setItem(0, column, item)
+        header = self.table.horizontalHeader()
+        columns = sum(
+            max(self.table.sizeHintForColumn(column), header.sectionSizeHint(column))
+            for column in range(len(_COLUMNS))
+        )
+        self.table.setRowCount(0)
+        return (
+            columns
+            + 2 * self.table.frameWidth()
+            + self.table.verticalScrollBar().sizeHint().width()
+        )
 
     def show_set(self, on_ice: OnIceSet) -> None:
         self.header.setText(_header(on_ice))

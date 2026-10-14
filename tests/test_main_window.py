@@ -1359,3 +1359,36 @@ def test_on_ice_dock_follows_playback_and_newly_logged_events(qtbot, tagging_ses
 
     player.positionChanged.emit(500)
     assert window.on_ice_dock.tabs.tabText(0) == "Home 0"
+
+
+def test_editing_an_event_squeezes_the_edit_panel_not_the_on_ice_dock(
+    qtbot, tagging_session
+):
+    for jersey in (11, 9, 19, 2, 4):
+        on = tagging_session.log_event(EventType.SHIFT_CHANGE, 0)
+        tagging_session.set_player_reference(on.id, "home", jersey_number=jersey)
+        tagging_session.update_event(on.id, shift_on_ice=True)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        tagging_session=tagging_session,
+    )
+    qtbot.addWidget(window)
+    # A maximized window can't grow to fit a wider layout.
+    window.setFixedWidth(1300)
+    window.on_ice_action.setChecked(True)
+    window.show()
+    table = window.on_ice_dock.team_views["home"].table
+
+    def shift_column_fits() -> bool:
+        qtbot.wait(10)
+        right = table.columnViewportPosition(3) + table.columnWidth(3)
+        return right <= table.viewport().width()
+
+    assert shift_column_fits()
+
+    window.tagging_panel.event_table.selectRow(0)
+    assert window.tagging_panel.edit_group.isVisible()
+    assert shift_column_fits()
+    assert window.width() == 1300

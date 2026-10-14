@@ -23,12 +23,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -247,16 +250,41 @@ class TaggingPanel(QWidget):
         main_layout = QHBoxLayout()
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(log_row)
         layout.addWidget(self.event_table, stretch=1)
+        # When the edit form opens in a tight window, room comes out of the
+        # event list first (down to what its log row needs), then out of
+        # the form -- never out of the on-ice dock beside the panel. The
+        # list ignores its own preferred width so the form gets its
+        # preferred width first, and the form scrolls rather than
+        # insisting on its full width.
+        event_list = QWidget()
+        event_list.setLayout(layout)
+        event_list.setMinimumWidth(event_list.minimumSizeHint().width())
+        event_list.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self._edit_scroll = QScrollArea()
+        self._edit_scroll.setWidget(self.edit_group)
+        self._edit_scroll.setWidgetResizable(True)
+        self._edit_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._edit_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._edit_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
 
-        main_layout.addLayout(layout)
-        main_layout.addWidget(self.edit_group)
+        main_layout.addWidget(event_list, stretch=1)
+        main_layout.addWidget(self._edit_scroll)
 
         self.setLayout(main_layout)
 
-        self.edit_group.setVisible(False)
+        self._set_edit_panel_visible(False)
         self.refresh()
+
+    def _set_edit_panel_visible(self, visible: bool) -> None:
+        self._edit_scroll.setVisible(visible)
+        self.edit_group.setVisible(visible)
 
     def _register_shortcut(
         self, key: str, scope: str, action: Callable[[], None]
@@ -293,6 +321,9 @@ class TaggingPanel(QWidget):
     def _build_edit_panel(self) -> None:
         self.edit_group = QGroupBox("Selected event")
         self.edit_form = QFormLayout()
+        # Labels move above their fields when the form is narrow (see the
+        # scroll area in __init__), leaving the fields the width.
+        self.edit_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.strength_state_field = QLineEdit()
         self.strength_state_field.editingFinished.connect(
@@ -565,7 +596,7 @@ class TaggingPanel(QWidget):
         self.event_table.blockSignals(False)
 
         if self._selected_event_id is None:
-            self.edit_group.setVisible(False)
+            self._set_edit_panel_visible(False)
         else:
             self._populate_edit_panel(self._selected_event_id)
         self.events_changed.emit()
@@ -582,7 +613,7 @@ class TaggingPanel(QWidget):
         rows = self.event_table.selectionModel().selectedRows()
         if not rows:
             self._selected_event_id = None
-            self.edit_group.setVisible(False)
+            self._set_edit_panel_visible(False)
             return
         self._selected_event_id = self._row_event_ids[rows[0].row()]
         self._populate_edit_panel(self._selected_event_id)
@@ -600,7 +631,7 @@ class TaggingPanel(QWidget):
         self._selected_event_id = None
         self.jersey_field.clear()
         self.event_table.clearSelection()
-        self.edit_group.setVisible(False)
+        self._set_edit_panel_visible(False)
 
     # -- edit panel population/commit -----------------------------------
 
@@ -608,7 +639,7 @@ class TaggingPanel(QWidget):
         event = self._session.get_event(event_id)
         event_type = EventType(event.event_type)
 
-        self.edit_group.setVisible(True)
+        self._set_edit_panel_visible(True)
         self.strength_state_field.setText(event.strength_state or "")
 
         has_period_number = event_type in _TYPES_WITH_PERIOD_NUMBER
