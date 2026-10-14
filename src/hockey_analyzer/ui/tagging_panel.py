@@ -59,25 +59,30 @@ TAGGING_SCOPE = "tagging"
 # 1-5 (see _JerseyEntry).
 JERSEY_ENTRY_SCOPE = "jersey-entry"
 
-_LOG_BUTTONS: tuple[tuple[EventType, str, Qt.Key], ...] = (
-    (EventType.PERIOD_START, "Period Start", Qt.Key.Key_1),
-    (EventType.PERIOD_END, "Period End", Qt.Key.Key_2),
-    (EventType.STOPPAGE, "Stoppage", Qt.Key.Key_3),
-    (EventType.PENALTY, "Penalty", Qt.Key.Key_4),
-    (EventType.SHIFT_CHANGE, "Shift Change", Qt.Key.Key_5),
-    (EventType.FACEOFF, "Faceoff", Qt.Key.Key_6),
-    (EventType.SHOT_ATTEMPT, "Shot Attempt", Qt.Key.Key_7),
+# Ticket 17's bulk line change: not an event type of its own (it creates
+# ordinary shift_change events), so it holds a place in _LOG_ROW but
+# stays out of _TYPE_LABELS.
+_LINE_CHANGE = "line_change"
+
+# The log buttons, left to right in the order a tagger reaches for them.
+# Each one's hotkey is its position in the row (1-8), shown on its label.
+_LOG_ROW: tuple[tuple[EventType | str, str], ...] = (
+    (EventType.PERIOD_START, "Period Start"),
+    (EventType.PERIOD_END, "Period End"),
+    (EventType.STOPPAGE, "Stoppage"),
+    (EventType.FACEOFF, "Faceoff"),
+    (EventType.SHOT_ATTEMPT, "Shot Attempt"),
+    (EventType.SHIFT_CHANGE, "Shift Change"),
+    (_LINE_CHANGE, "Line Change"),
+    (EventType.PENALTY, "Penalty"),
 )
 
 # Single source of truth for each in-scope type's display label -- table
 # rows and log buttons both read from this rather than keeping a second,
 # hand-synced mapping.
-_TYPE_LABELS = {event_type: label for event_type, label, _ in _LOG_BUTTONS}
-
-# Ticket 17's bulk line change: not an event type of its own (it creates
-# ordinary shift_change events), so it sits outside _LOG_BUTTONS/
-# _TYPE_LABELS, on the next free digit after them.
-_LINE_CHANGE_KEY = Qt.Key.Key_8
+_TYPE_LABELS = {
+    entry: label for entry, label in _LOG_ROW if isinstance(entry, EventType)
+}
 
 _TYPES_WITH_PERIOD_NUMBER = {EventType.PERIOD_START, EventType.PERIOD_END}
 
@@ -190,22 +195,21 @@ class TaggingPanel(QWidget):
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}
-        for event_type, label, key in _LOG_BUTTONS:
-            action = self._log_action(event_type)
-            button = QPushButton(label)
+        for position, (entry, label) in enumerate(_LOG_ROW, start=1):
+            if isinstance(entry, EventType):
+                action = self._log_action(entry)
+            else:
+                action = self._log_line_change
+            button = QPushButton(f"{label} ({position})")
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(action)
             log_row.addWidget(button)
-            self.log_buttons[event_type] = button
+            if isinstance(entry, EventType):
+                self.log_buttons[entry] = button
+            else:
+                self.line_change_button = button
+            key = Qt.Key(Qt.Key.Key_0.value + position)
             self._register_shortcut(key_string(key), TAGGING_SCOPE, action)
-
-        self.line_change_button = QPushButton("Line Change")
-        self.line_change_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.line_change_button.clicked.connect(self._log_line_change)
-        log_row.addWidget(self.line_change_button)
-        self._register_shortcut(
-            key_string(_LINE_CHANGE_KEY), TAGGING_SCOPE, self._log_line_change
-        )
 
         # Registered up front (see _JerseyEntry) but suspended until the
         # jersey field actually has focus -- suspended *before* binding, so

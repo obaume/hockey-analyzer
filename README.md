@@ -64,7 +64,7 @@ Back that file up if you care about your tagging work.
 1. **Create a game**: *Game → New Game…* to set it up by hand (teams, rink type), or *Game → Import from League Link…* for an SIHF game. The rink type (IIHF / NHL) can't be changed afterwards.
 2. **Load the footage**: *File → Open Video…* (`Ctrl+O`). The video is remembered for that game, so reopening it later via *Game → Select Game…* loads it automatically.
 3. **Set up units** (optional): *Game → Units…* to assign players to lines, pairs, and special-teams units.
-4. **Tag events** as you watch: `Space` plays/pauses, `←`/`→` jump 5 seconds, `,`/`.` step one frame, `[`/`]` change speed. Number keys `1`–`7` log an event type and `8` logs a line change. Shots and faceoffs ask you to click their location on the rink. Players are identified by jersey number (`h`/`a` switches home/away), and new players can be added on the fly.
+4. **Tag events** as you watch: `Space` plays/pauses, `←`/`→` jump 5 seconds, `,`/`.` step one frame, `[`/`]` change speed. Number keys `1`–`8` match the event buttons left to right (each button shows its key): period start, period end, stoppage, faceoff, shot attempt, shift change, line change, penalty. Shots and faceoffs ask you to click their location on the rink. Players are identified by jersey number (`h`/`a` switches home/away), and new players can be added on the fly.
 5. **Look at the numbers**: *Game → Stats…* for the current game, or *Game → Multi-Game Stats…* to aggregate across several games.
 6. **Export clips**: *Game → Export Clips…* to filter events and export them as individual clips or a highlight reel.
 
