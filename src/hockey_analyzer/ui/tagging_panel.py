@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -144,6 +144,39 @@ class _JerseyEntry(QLineEdit):
         super().keyPressEvent(event)
 
 
+class _VerticalScrollArea(QScrollArea):
+    """Scrolls only vertically: always as wide as its contents need, so
+    the form inside never loses width -- only height -- in a tight
+    window. Re-reads that width whenever the contents' layout changes
+    (e.g. the edit form showing another event type's fields)."""
+
+    def __init__(self, widget: QWidget) -> None:
+        super().__init__()
+        self.setWidget(widget)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def _width_for(self, contents_width: int) -> int:
+        return contents_width + self.verticalScrollBar().sizeHint().width()
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        hint.setWidth(self._width_for(self.widget().minimumSizeHint().width()))
+        return hint
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        hint.setWidth(self._width_for(self.widget().sizeHint().width()))
+        return hint
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(watched, event)
+
+
 class TaggingPanel(QWidget):
     # After every refresh -- i.e. after every logged, edited or deleted
     # event -- for views derived from the whole timeline (the on-ice dock).
@@ -253,28 +286,27 @@ class TaggingPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(log_row)
         layout.addWidget(self.event_table, stretch=1)
-        # When the edit form opens in a tight window, room comes out of the
-        # event list first (down to what its log row needs), then out of
-        # the form -- never out of the on-ice dock beside the panel. The
-        # list ignores its own preferred width so the form gets its
-        # preferred width first, and the form scrolls rather than
-        # insisting on its full width.
         event_list = QWidget()
         event_list.setLayout(layout)
-        event_list.setMinimumWidth(event_list.minimumSizeHint().width())
-        event_list.setSizePolicy(
+        # When the edit form opens in a tight window, the event list (log
+        # buttons and event table) gives up the room, scrolling sideways --
+        # never the form being edited, nor the on-ice dock beside the
+        # panel. Ignoring its preferred width lets the form take its own
+        # first.
+        self.event_list_scroll = QScrollArea()
+        self.event_list_scroll.setWidget(event_list)
+        self.event_list_scroll.setWidgetResizable(True)
+        self.event_list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.event_list_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.event_list_scroll.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self._edit_scroll = QScrollArea()
-        self._edit_scroll.setWidget(self.edit_group)
-        self._edit_scroll.setWidgetResizable(True)
-        self._edit_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._edit_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._edit_scroll.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
-        )
 
-        main_layout.addWidget(event_list, stretch=1)
+        # Keeps its full width, but gives up height rather than shrinking
+        # the video above the panel.
+        self._edit_scroll = _VerticalScrollArea(self.edit_group)
+
+        main_layout.addWidget(self.event_list_scroll, stretch=1)
         main_layout.addWidget(self._edit_scroll)
 
         self.setLayout(main_layout)
@@ -321,9 +353,6 @@ class TaggingPanel(QWidget):
     def _build_edit_panel(self) -> None:
         self.edit_group = QGroupBox("Selected event")
         self.edit_form = QFormLayout()
-        # Labels move above their fields when the form is narrow (see the
-        # scroll area in __init__), leaving the fields the width.
-        self.edit_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.strength_state_field = QLineEdit()
         self.strength_state_field.editingFinished.connect(

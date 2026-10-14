@@ -1361,7 +1361,7 @@ def test_on_ice_dock_follows_playback_and_newly_logged_events(qtbot, tagging_ses
     assert window.on_ice_dock.tabs.tabText(0) == "Home 0"
 
 
-def test_editing_an_event_squeezes_the_edit_panel_not_the_on_ice_dock(
+def test_editing_an_event_squeezes_the_event_list_not_the_edit_form_or_dock(
     qtbot, tagging_session
 ):
     for jersey in (11, 9, 19, 2, 4):
@@ -1392,3 +1392,8 @@ def test_editing_an_event_squeezes_the_edit_panel_not_the_on_ice_dock(
     assert window.tagging_panel.edit_group.isVisible()
     assert shift_column_fits()
     assert window.width() == 1300
+    # The form being edited keeps its full width; the event list (log
+    # buttons and event table) is what narrows, scrolling sideways.
+    panel = window.tagging_panel
+    assert panel.edit_group.width() >= panel.edit_group.sizeHint().width()
+    assert panel.event_list_scroll.horizontalScrollBar().maximum() > 0
