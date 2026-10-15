@@ -18,6 +18,7 @@ restart with no data loss.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from enum import Enum
 from typing import NamedTuple
 
 from sqlalchemy import inspect, select
@@ -49,6 +50,8 @@ from hockey_analyzer.domain.models import (
 )
 from hockey_analyzer.domain.on_ice import OnIceSet, on_ice_sets
 from hockey_analyzer.domain.rink import CENTER_ICE
+from hockey_analyzer.domain.undo_history import Step, UndoHistory
+from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 
 _MODEL_BY_TYPE: dict[EventType, type[Event]] = {
     EventType.PERIOD_START: PeriodStart,
@@ -153,6 +156,91 @@ UNIT_TYPE_LABELS: dict[UnitType, str] = {
 }
 
 
+# How an event type is named in a sentence, e.g. "Deleted Shot attempt at
+# 0:12:34" -- the undo history's step descriptions. The tagging panel
+# title-cases these for its buttons and event log.
+EVENT_TYPE_NAMES: dict[EventType, str] = {
+    EventType.PERIOD_START: "Period start",
+    EventType.PERIOD_END: "Period end",
+    EventType.STOPPAGE: "Stoppage",
+    EventType.FACEOFF: "Faceoff",
+    EventType.SHOT_ATTEMPT: "Shot attempt",
+    EventType.PENALTY: "Penalty",
+    EventType.SHIFT_CHANGE: "Shift change",
+}
+
+# faceoff/shot_attempt (ticket 16): each location-bearing subtype's
+# (x_column, y_column) pair.
+LOCATION_FIELDS: dict[EventType, tuple[str, str]] = {
+    EventType.FACEOFF: ("faceoff_x", "faceoff_y"),
+    EventType.SHOT_ATTEMPT: ("shot_x", "shot_y"),
+}
+
+
+def _event_label(event: Event) -> str:
+    """e.g. "Faceoff at 0:12:34"."""
+    name = EVENT_TYPE_NAMES[EventType(event.event_type)]
+    return f"{name} at {format_video_timestamp(event.video_timestamp)}"
+
+
+# How an edited field is named in a step description, e.g. "Set outcome:
+# goal".
+_FIELD_NAMES = {
+    "video_timestamp": "time",
+    "strength_state": "strength state",
+    "period_number": "period",
+    "shift_on_ice": "on ice",
+    "penalty_duration_minutes": "duration",
+    "penalty_infraction": "infraction",
+    "shot_outcome": "outcome",
+    "shot_type": "shot type",
+    "shot_rush": "rush",
+    "shot_rebound": "rebound",
+    "shot_screened": "screened",
+    "shot_one_timer": "one-timer",
+    "faceoff_winner": "winner",
+}
+
+# How each player reference is named in a sentence, e.g. "Set shooter: #14
+# Jordan Kim" -- public, since the tagging panel labels its reference
+# picker with them too.
+REFERENCE_NAMES = {
+    "player": "player",
+    "home_participant": "home participant",
+    "away_participant": "away participant",
+    "shooter": "shooter",
+    "assist1": "assist 1",
+    "assist2": "assist 2",
+}
+
+
+def _describe_edit(event_type: EventType, fields: dict[str, object]) -> str:
+    """e.g. "Set winner: home", "Set location: (40.0, 5.0)"."""
+    location_columns = LOCATION_FIELDS.get(event_type)
+    if location_columns is not None and set(fields) == set(location_columns):
+        x, y = (fields[column] for column in location_columns)
+        return f"Set location: ({x:.1f}, {y:.1f})"
+    if len(fields) != 1:
+        names = ", ".join(_FIELD_NAMES.get(name, name) for name in fields)
+        return f"Edited {names}"
+    ((name, value),) = fields.items()
+    return f"Set {_FIELD_NAMES.get(name, name)}: {_describe_value(name, value)}"
+
+
+def _describe_value(name: str, value: object) -> str:
+    if value is None:
+        return "not set"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, Enum):
+        return str(value.value)
+    if name == "video_timestamp":
+        return format_video_timestamp(value)
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
 def unit_label(unit_type: UnitType, unit_number: int) -> str:
     """e.g. "Forward line 1" -- the one spelling of a unit's name."""
     return f"{UNIT_TYPE_LABELS[unit_type]} {unit_number}"
@@ -191,6 +279,8 @@ class TaggingSession:
         self.game_id = game_id
         self.home_team_id = home_team_id
         self.away_team_id = away_team_id
+        # Parents first -- see UndoHistory.
+        self._history = UndoHistory(db_session, (Player, GameRosterEntry, Event))
 
     @property
     def rink_type(self) -> RinkType:
@@ -199,6 +289,51 @@ class TaggingSession:
         after creation (ADR-0008). The UI layer reads this to pick which
         rink template to render, without a separate DB query of its own."""
         return self._db.get(Game, self.game_id).rink_type
+
+    # -- undo/redo (#64) ----------------------------------------------
+
+    # One linear history for this session's game, in memory only: each
+    # mutating method below is exactly one step, however many saves it
+    # makes. A new step clears the redo history.
+
+    @property
+    def can_undo(self) -> bool:
+        return self._history.can_undo
+
+    @property
+    def can_redo(self) -> bool:
+        return self._history.can_redo
+
+    @property
+    def undo_description(self) -> str | None:
+        """What `undo` would undo, e.g. "Logged Faceoff at 0:12:34"."""
+        return self._history.undo_description
+
+    @property
+    def redo_description(self) -> str | None:
+        return self._history.redo_description
+
+    @property
+    def last_step(self) -> Step | None:
+        """The step the most recent mutating call recorded -- `None` if it
+        changed nothing (e.g. an edit re-saving a field's current value),
+        so there's nothing to undo or report."""
+        return self._history.last_step
+
+    def undo(self) -> Step | None:
+        """Undo the last step, returning it (`None` with nothing to undo).
+        Rows it created are removed; rows it changed or deleted come back
+        exactly as they were, with the same ids."""
+        return self._history.undo()
+
+    def redo(self) -> Step | None:
+        return self._history.redo()
+
+    def clear_history(self) -> None:
+        """Forget every undo and redo step -- for a save made around this
+        session (e.g. through `GameSetupService`) that its steps would
+        otherwise silently undo or clash with."""
+        self._history.clear()
 
     # -- event CRUD -------------------------------------------------
 
@@ -210,6 +345,7 @@ class TaggingSession:
         strength_state: str | None = None,
         shot_outcome: ShotOutcome | None = None,
         shot_type: ShotType | None = None,
+        location: tuple[float, float] | None = None,
     ) -> Event:
         """Instantly capture an event's timestamp -- see module docstring.
         `strength_state` defaults to the computed on-ice-count guess
@@ -221,7 +357,9 @@ class TaggingSession:
         make them mandatory on every row of that subtype with no "unknown"
         stand-in for outcome, so a bare stub can't be committed without
         them -- the tagger supplies both the moment the shot is logged,
-        alongside the rink-coordinate click (see ticket 16).
+        alongside the rink-coordinate click (see ticket 16). That click is
+        `location`, an `(x, y)` rink coordinate for the event types in
+        `LOCATION_FIELDS`, saved with the event as one undo step.
 
         A `period_start` also logs its center-ice faceoff -- two rows from
         one call, of which the period start is returned (see
@@ -238,15 +376,22 @@ class TaggingSession:
                 raise ValueError("shot_attempt requires shot_outcome and shot_type")
             fields["shot_outcome"] = shot_outcome
             fields["shot_type"] = shot_type
+        if location is not None:
+            if event_type not in LOCATION_FIELDS:
+                raise ValueError(f"{event_type.value} events have no location")
+            fields.update(zip(LOCATION_FIELDS[event_type], location, strict=True))
 
-        event = self._stub_event(
-            event_type,
-            video_timestamp,
-            self._strength_state_or_inferred(strength_state, video_timestamp),
-            **fields,
-        )
-        self._db.add(event)
-        self._db.commit()
+        with self._history.record() as step:
+            event = self._stub_event(
+                event_type,
+                video_timestamp,
+                self._strength_state_or_inferred(strength_state, video_timestamp),
+                **fields,
+            )
+            self._db.add(event)
+            self._db.commit()
+            step.description = f"Logged {_event_label(event)}"
+            step.event_id = event.id
         return event
 
     def log_period_start(
@@ -279,10 +424,16 @@ class TaggingSession:
         )
         # Flushed one at a time so ids follow insertion order, the event
         # log's tiebreak for events at the same timestamp.
-        self._db.add(period_start)
-        self._db.flush()
-        self._db.add(faceoff)
-        self._db.commit()
+        with self._history.record() as step:
+            self._db.add(period_start)
+            self._db.flush()
+            self._db.add(faceoff)
+            self._db.commit()
+            step.description = (
+                f"Logged {_event_label(period_start)} and its center-ice faceoff"
+            )
+            # The faceoff is what the tagger goes on to fill in.
+            step.event_id = faceoff.id
         return period_start, faceoff
 
     def _stub_event(
@@ -319,17 +470,26 @@ class TaggingSession:
         beyond this call."""
         event = self._get(event_id)
         valid_columns = {column.key for column in inspect(event).mapper.columns}
-        for name, value in fields.items():
+        for name in fields:
             if name not in valid_columns:
                 raise ValueError(f"{type(event).__name__} has no field {name!r}")
-            setattr(event, name, value)
-        self._db.commit()
+        with self._history.record() as step:
+            for name, value in fields.items():
+                setattr(event, name, value)
+            self._db.commit()
+            step.description = _describe_edit(EventType(event.event_type), fields)
+            step.event_id = event.id
         return event
 
     def delete_event(self, event_id: int) -> None:
+        """Undoing it restores the same row -- same id, every column value
+        -- so the event comes back in the same place in the event log."""
         event = self._get(event_id)
-        self._db.delete(event)
-        self._db.commit()
+        with self._history.record() as step:
+            step.description = f"Deleted {_event_label(event)}"
+            step.event_id = event.id
+            self._db.delete(event)
+            self._db.commit()
 
     def list_events(self) -> list[Event]:
         """Every event for this session's game, in the order the
@@ -494,23 +654,32 @@ class TaggingSession:
                 f"not {Side(team_side).value!r}"
             )
 
+        if not unknown and jersey_number is None:
+            raise ValueError("jersey_number is required unless unknown=True")
+
         team_id = self._team_id_for_side(team_side)
-        if spec.team_column is not None:
-            setattr(event, spec.team_column, team_id)
+        # One step with any Player/GameRosterEntry created on the fly, so
+        # undoing it removes those too.
+        with self._history.record() as step:
+            if spec.team_column is not None:
+                setattr(event, spec.team_column, team_id)
 
-        if unknown:
-            setattr(event, spec.id_column, None)
-            setattr(event, spec.unknown_column, True)
-        else:
-            if jersey_number is None:
-                raise ValueError("jersey_number is required unless unknown=True")
-            entry = self.resolve_or_create_roster_entry(
-                team_id, jersey_number, full_name=full_name
+            if unknown:
+                setattr(event, spec.id_column, None)
+                setattr(event, spec.unknown_column, True)
+            else:
+                entry = self.resolve_or_create_roster_entry(
+                    team_id, jersey_number, full_name=full_name
+                )
+                setattr(event, spec.id_column, entry.player_id)
+                setattr(event, spec.unknown_column, False)
+
+            self._db.commit()
+            who = self._describe_player(
+                getattr(event, spec.id_column), getattr(event, spec.unknown_column)
             )
-            setattr(event, spec.id_column, entry.player_id)
-            setattr(event, spec.unknown_column, False)
-
-        self._db.commit()
+            step.description = f"Set {REFERENCE_NAMES[reference]}: {who}"
+            step.event_id = event.id
         return event
 
     def resolve_or_create_roster_entry(
@@ -529,18 +698,20 @@ class TaggingSession:
         if existing is not None:
             return existing
 
-        player = Player(full_name=full_name)
-        self._db.add(player)
-        self._db.flush()  # assigns player.id, needed by the roster entry below
+        with self._history.record() as step:
+            player = Player(full_name=full_name)
+            self._db.add(player)
+            self._db.flush()  # assigns player.id, needed by the roster entry below
 
-        entry = GameRosterEntry(
-            game_id=self.game_id,
-            player_id=player.id,
-            team_id=team_id,
-            jersey_number=jersey_number,
-        )
-        self._db.add(entry)
-        self._db.commit()
+            entry = GameRosterEntry(
+                game_id=self.game_id,
+                player_id=player.id,
+                team_id=team_id,
+                jersey_number=jersey_number,
+            )
+            self._db.add(entry)
+            self._db.commit()
+            step.description = f"Rostered {roster_entry_label(entry)}"
         return entry
 
     def _team_id_for_side(self, team_side: TeamSide) -> int:
@@ -608,15 +779,15 @@ class TaggingSession:
         resulting events afterward, so each is edited or deleted in the
         event log exactly like a hand-tagged one (see CONTEXT.md's Game
         unit assignment entry). `unit` comes from `list_units`."""
+        label = unit_label(unit.unit_type, unit.unit_number)
         if not unit.player_ids:
-            raise ValueError(
-                f"{unit_label(unit.unit_type, unit.unit_number)} has no members"
-            )
+            raise ValueError(f"{label} has no members")
         return self._log_shift_changes(
             self._team_id_for_side(unit.team_side),
             unit.player_ids,
             video_timestamp,
             on_ice=on_ice,
+            label=label,
         )
 
     def log_ad_hoc_line_change(
@@ -636,13 +807,19 @@ class TaggingSession:
         if not unique_jerseys:
             raise ValueError("a line change needs at least one jersey number")
         team_id = self._team_id_for_side(team_side)
-        player_ids = [
-            self.resolve_or_create_roster_entry(team_id, jersey).player_id
-            for jersey in unique_jerseys
-        ]
-        return self._log_shift_changes(
-            team_id, player_ids, video_timestamp, on_ice=on_ice
-        )
+        # One step with the shift changes, rostering included.
+        with self._history.record():
+            player_ids = [
+                self.resolve_or_create_roster_entry(team_id, jersey).player_id
+                for jersey in unique_jerseys
+            ]
+            return self._log_shift_changes(
+                team_id,
+                player_ids,
+                video_timestamp,
+                on_ice=on_ice,
+                label=", ".join(f"#{jersey}" for jersey in unique_jerseys),
+            )
 
     def _log_shift_changes(
         self,
@@ -651,7 +828,10 @@ class TaggingSession:
         video_timestamp: int,
         *,
         on_ice: bool,
+        label: str,
     ) -> list[ShiftChange]:
+        """One step, described by `label` (who changed), whose event is
+        the change's first `shift_change`."""
         # Inferred once, before any sibling exists: the whole change is one
         # moment of play, so every member shares the pre-change guess.
         strength_state = self._infer_strength_state(video_timestamp)
@@ -667,8 +847,12 @@ class TaggingSession:
             )
             for player_id in player_ids
         ]
-        self._db.add_all(events)
-        self._db.commit()
+        state = "ON" if on_ice else "OFF"
+        with self._history.record() as step:
+            self._db.add_all(events)
+            self._db.commit()
+            step.description = f"Line change: {label} {state}"
+            step.event_id = events[0].id
         return events
 
     # -- strength-state defaulting -------------------------------------

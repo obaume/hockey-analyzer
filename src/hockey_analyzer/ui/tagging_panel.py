@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -41,8 +40,12 @@ from PySide6.QtWidgets import (
 
 from hockey_analyzer.domain.enums import EventType, ShotOutcome, ShotType, Side
 from hockey_analyzer.domain.tagging_session import (
+    EVENT_TYPE_NAMES,
     EVENT_TYPE_REFERENCE_NAMES,
     EVENT_TYPES_WITH_PLAYER_REFERENCE,
+    LOCATION_FIELDS,
+    REFERENCE_NAMES,
+    Step,
     TaggingSession,
     TeamSide,
     Unit,
@@ -62,6 +65,18 @@ TAGGING_SCOPE = "tagging"
 # 1-5 (see _JerseyEntry).
 JERSEY_ENTRY_SCOPE = "jersey-entry"
 
+# Undo/redo (#64), bound in both scopes like Esc so they work while the
+# jersey field has focus too. The main window's Edit menu labels them.
+UNDO_KEY = key_string(Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+REDO_KEY = key_string(Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+
+# Each in-scope type's display label, title-cased from the domain's own
+# name for it (e.g. "Shot Attempt") -- table rows and log buttons both
+# read from this rather than keeping a second, hand-synced mapping.
+_TYPE_LABELS = {
+    event_type: name.title() for event_type, name in EVENT_TYPE_NAMES.items()
+}
+
 # Ticket 17's bulk line change: not an event type of its own (it creates
 # ordinary shift_change events), so it holds a place in _LOG_ROW but
 # stays out of _TYPE_LABELS.
@@ -70,39 +85,29 @@ _LINE_CHANGE = "line_change"
 # The log buttons, left to right in the order a tagger reaches for them.
 # Each one's hotkey is its position in the row (1-8), shown on its label.
 _LOG_ROW: tuple[tuple[EventType | str, str], ...] = (
-    (EventType.PERIOD_START, "Period Start"),
-    (EventType.PERIOD_END, "Period End"),
-    (EventType.STOPPAGE, "Stoppage"),
-    (EventType.FACEOFF, "Faceoff"),
-    (EventType.SHOT_ATTEMPT, "Shot Attempt"),
-    (EventType.SHIFT_CHANGE, "Shift Change"),
+    *(
+        (event_type, _TYPE_LABELS[event_type])
+        for event_type in (
+            EventType.PERIOD_START,
+            EventType.PERIOD_END,
+            EventType.STOPPAGE,
+            EventType.FACEOFF,
+            EventType.SHOT_ATTEMPT,
+            EventType.SHIFT_CHANGE,
+        )
+    ),
     (_LINE_CHANGE, "Line Change"),
-    (EventType.PENALTY, "Penalty"),
+    (EventType.PENALTY, _TYPE_LABELS[EventType.PENALTY]),
 )
 
-# Single source of truth for each in-scope type's display label -- table
-# rows and log buttons both read from this rather than keeping a second,
-# hand-synced mapping.
-_TYPE_LABELS = {
-    entry: label for entry, label in _LOG_ROW if isinstance(entry, EventType)
-}
+# How the status bar tells a tagger a delete can be taken back.
+_UNDO_HINT = f"{UNDO_KEY} to undo"
 
 _TYPES_WITH_PERIOD_NUMBER = {EventType.PERIOD_START, EventType.PERIOD_END}
 
-# faceoff/shot_attempt (ticket 16): each subtype's (x_column, y_column)
-# pair, and the auto-pause-on-log set both are drawn from -- a rink click
-# is required to log either, unlike every other event type.
-_LOCATION_FIELDS: dict[EventType, tuple[str, str]] = {
-    EventType.FACEOFF: ("faceoff_x", "faceoff_y"),
-    EventType.SHOT_ATTEMPT: ("shot_x", "shot_y"),
-}
-_TYPES_WITH_LOCATION = frozenset(_LOCATION_FIELDS)
-
-_REFERENCE_LABELS = {
-    "shooter": "Shooter",
-    "assist1": "Assist 1",
-    "assist2": "Assist 2",
-}
+# faceoff/shot_attempt (ticket 16): a rink click is required to log
+# either, unlike every other event type, so both auto-pause on log.
+_TYPES_WITH_LOCATION = frozenset(LOCATION_FIELDS)
 
 _SHOT_CONTEXT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("shot_rush", "Rush"),
@@ -179,8 +184,12 @@ class _VerticalScrollArea(QScrollArea):
 
 class TaggingPanel(QWidget):
     # After every refresh -- i.e. after every logged, edited or deleted
-    # event -- for views derived from the whole timeline (the on-ice dock).
+    # event, and every undo or redo -- for views derived from the whole
+    # timeline (the on-ice dock) and from the undo history (the Edit menu).
     events_changed = Signal()
+    # What the last tagging action, undo or redo did, in words -- for the
+    # main window's status bar.
+    status_message = Signal(str)
 
     def __init__(
         self,
@@ -200,7 +209,6 @@ class TaggingPanel(QWidget):
             LineChangeDialog,
         ]
         | None = None,
-        confirm: Callable[[str], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -214,6 +222,8 @@ class TaggingPanel(QWidget):
         self._registered_keys: list[tuple[str, str]] = []
         self._selected_event_id: int | None = None
         self._row_event_ids: list[int] = []
+        # Set while an undo/redo is applied -- see `_apply_history_step`.
+        self._applying_history = False
         # `pause` is the only interface this panel has to playback (ticket
         # 16's auto-pause for faceoff/shot_attempt) -- omitted entirely,
         # this panel simply never pauses anything, same as every other
@@ -228,10 +238,6 @@ class TaggingPanel(QWidget):
         self._line_change_dialog_factory = line_change_dialog_factory or (
             lambda units, roster: LineChangeDialog(units, roster, self)
         )
-        # Asked before either delete path (row button or edit panel)
-        # removes an event -- there's no undo, so a stray click mustn't
-        # silently lose a tag.
-        self._confirm = confirm or self._ask_confirm_delete
 
         log_row = QHBoxLayout()
         self.log_buttons: dict[EventType, QPushButton] = {}
@@ -264,12 +270,15 @@ class TaggingPanel(QWidget):
             key_string(Qt.Key.Key_A), JERSEY_ENTRY_SCOPE, self._side_action("away")
         )
 
-        # Esc cancels the selected event's edit (ticket 60), whether or not
-        # the jersey field has suspended TAGGING_SCOPE.
+        # Esc cancels the selected event's edit (ticket 60), and Ctrl+Z/
+        # Ctrl+Y undo/redo (#64), whether or not the jersey field has
+        # suspended TAGGING_SCOPE.
         for scope in (TAGGING_SCOPE, JERSEY_ENTRY_SCOPE):
             self._register_shortcut(
                 key_string(Qt.Key.Key_Escape), scope, self._cancel_selection
             )
+            self._register_shortcut(UNDO_KEY, scope, self.undo)
+            self._register_shortcut(REDO_KEY, scope, self.redo)
 
         self.event_table = QTableWidget(0, 4)
         self.event_table.setHorizontalHeaderLabels(["Time", "Type", "Summary", ""])
@@ -313,6 +322,12 @@ class TaggingPanel(QWidget):
 
         self._set_edit_panel_visible(False)
         self.refresh()
+
+    @property
+    def session(self) -> TaggingSession:
+        """The session this panel tags through -- for the main window's
+        Edit menu, which names its next undo and redo."""
+        return self._session
 
     def _set_edit_panel_visible(self, visible: bool) -> None:
         self._edit_scroll.setVisible(visible)
@@ -495,15 +510,35 @@ class TaggingPanel(QWidget):
 
         self.edit_group.setLayout(self.edit_form)
 
+        # Ctrl+Z/Ctrl+Y typed into one of these undo tagging, not the
+        # typing: Qt's own text undo would otherwise take the keys. (The
+        # jersey field already routes every key through the registry.)
+        for field in (
+            self.strength_state_field,
+            self.period_number_field,
+            self.duration_field,
+            self.infraction_field,
+        ):
+            field.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.KeyPress:
+            key = key_string_from_event(event)
+            if key in (UNDO_KEY, REDO_KEY):
+                return self._shortcuts.dispatch(key)
+        return super().eventFilter(watched, event)
+
     # -- instant capture ---------------------------------------------------
 
     def _log(self, event_type: EventType) -> None:
         if event_type is EventType.PERIOD_START:
             self._log_period_start()
         elif event_type in _TYPES_WITH_LOCATION:
-            self._log_location_bearing(event_type)
+            if not self._log_location_bearing(event_type):
+                return
         else:
             self._session.log_event(event_type, self._current_position_ms())
+        self._report_last_step()
         self.refresh()
 
     def _log_period_start(self) -> None:
@@ -515,18 +550,18 @@ class TaggingPanel(QWidget):
         _, faceoff = self._session.log_period_start(self._current_position_ms())
         self._selected_event_id = faceoff.id
 
-    def _log_location_bearing(self, event_type: EventType) -> None:
+    def _log_location_bearing(self, event_type: EventType) -> bool:
         """faceoff/shot_attempt (ticket 16): pause playback, then prompt
         for a rink-coordinate click before the event exists at all -- the
         opposite of every other type's zero-friction instant capture,
         forced by shot_attempt's outcome/shot_type being required at the
         DB level from the moment of creation (see TaggingSession.
         log_event) and by faceoff/shot_attempt both needing a location a
-        tagger can only supply by pausing to look at the frame."""
+        tagger can only supply by pausing to look at the frame. Whether
+        the event was logged: dismissing the dialog logs nothing."""
         if self._pause is not None:
             self._pause()
 
-        x_column, y_column = _LOCATION_FIELDS[event_type]
         if event_type is EventType.SHOT_ATTEMPT:
             dialog = self._shot_attempt_dialog_factory()
             if (
@@ -534,12 +569,13 @@ class TaggingPanel(QWidget):
                 or dialog.x is None
                 or dialog.y is None
             ):
-                return
-            event = self._session.log_event(
+                return False
+            self._session.log_event(
                 event_type,
                 self._current_position_ms(),
                 shot_outcome=dialog.shot_outcome,
                 shot_type=dialog.shot_type,
+                location=(dialog.x, dialog.y),
             )
         else:
             dialog = self._rink_click_dialog_factory()
@@ -548,10 +584,13 @@ class TaggingPanel(QWidget):
                 or dialog.x is None
                 or dialog.y is None
             ):
-                return
-            event = self._session.log_event(event_type, self._current_position_ms())
-
-        self._session.update_event(event.id, **{x_column: dialog.x, y_column: dialog.y})
+                return False
+            self._session.log_event(
+                event_type,
+                self._current_position_ms(),
+                location=(dialog.x, dialog.y),
+            )
+        return True
 
     def _log_line_change(self) -> None:
         """Ticket 17: bulk-create one shift_change per member of a
@@ -588,6 +627,7 @@ class TaggingPanel(QWidget):
                 video_timestamp,
                 on_ice=dialog.on_ice,
             )
+        self._report_last_step()
         self.refresh()
 
     # -- event log -----------------------------------------------------
@@ -693,7 +733,7 @@ class TaggingPanel(QWidget):
                 self.reference_combo.clear()
                 for name in reference_names:
                     self.reference_combo.addItem(
-                        _REFERENCE_LABELS.get(name, name), name
+                        REFERENCE_NAMES[name].capitalize(), name
                     )
                 self.reference_combo.setCurrentIndex(0)
                 self.reference_combo.blockSignals(False)
@@ -765,16 +805,17 @@ class TaggingPanel(QWidget):
         is_location_bearing = event_type in _TYPES_WITH_LOCATION
         self.edit_form.setRowVisible(self.location_row, is_location_bearing)
         if is_location_bearing:
-            x_column, y_column = _LOCATION_FIELDS[event_type]
+            x_column, y_column = LOCATION_FIELDS[event_type]
             x_value, y_value = getattr(event, x_column), getattr(event, y_column)
             self.location_label.setText(
                 "not set" if x_value is None else f"({x_value:.1f}, {y_value:.1f})"
             )
 
     def _commit_field(self, field: str, value: object) -> None:
-        if self._selected_event_id is None:
+        if self._selected_event_id is None or self._applying_history:
             return
         self._session.update_event(self._selected_event_id, **{field: value})
+        self._report_last_step()
         self.refresh()
 
     def _on_winner_changed(self) -> None:
@@ -810,6 +851,7 @@ class TaggingPanel(QWidget):
                 jersey_number=int(text),
                 **reference_kwargs,
             )
+        self._report_last_step()
         self.refresh()
 
     def _relocate_selected(self) -> None:
@@ -817,7 +859,7 @@ class TaggingPanel(QWidget):
             return
         event = self._session.get_event(self._selected_event_id)
         event_type = EventType(event.event_type)
-        x_column, y_column = _LOCATION_FIELDS[event_type]
+        x_column, y_column = LOCATION_FIELDS[event_type]
 
         dialog = self._rink_click_dialog_factory()
         if (
@@ -829,6 +871,7 @@ class TaggingPanel(QWidget):
         self._session.update_event(
             self._selected_event_id, **{x_column: dialog.x, y_column: dialog.y}
         )
+        self._report_last_step()
         self.refresh()
 
     def _delete_selected(self) -> None:
@@ -837,25 +880,52 @@ class TaggingPanel(QWidget):
         self._delete_event(self._selected_event_id)
 
     def _delete_event(self, event_id: int) -> None:
-        """Deletes `event_id` once the tagger confirms. Deleting the
-        selected event hides the edit panel (refresh() drops a selection
-        whose event is gone); deleting any other row keeps the selection."""
-        event = self._session.get_event(event_id)
-        prompt = (
-            f"Delete this {_TYPE_LABELS[EventType(event.event_type)]} "
-            f"at {format_video_timestamp(event.video_timestamp)}?"
-        )
-        if not self._confirm(prompt):
-            return
+        """Deletes `event_id` at once -- no confirmation, since Ctrl+Z
+        brings it back (#64). Deleting the selected event hides the edit
+        panel (refresh() drops a selection whose event is gone); deleting
+        any other row keeps the selection."""
         self._session.delete_event(event_id)
+        self._report_last_step(f" \N{EM DASH} {_UNDO_HINT}")
         self.refresh()
 
-    def _ask_confirm_delete(self, prompt: str) -> bool:
-        answer = QMessageBox.question(
-            self,
-            "Delete event",
-            prompt,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        return answer == QMessageBox.StandardButton.Yes
+    # -- undo/redo (#64) -------------------------------------------------
+
+    def undo(self) -> None:
+        if not self._session.can_undo:
+            self.status_message.emit("Nothing to undo")
+            return
+        self._apply_history_step(self._session.undo, "Undid")
+
+    def redo(self) -> None:
+        if not self._session.can_redo:
+            self.status_message.emit("Nothing to redo")
+            return
+        self._apply_history_step(self._session.redo, "Redid")
+
+    def _apply_history_step(self, apply: Callable[[], Step | None], verb: str) -> None:
+        """Undo or redo one step, then select the event it concerned if
+        that still exists. Text typed into a field but not yet saved is
+        dropped, as Esc drops it: reselecting moves focus (to the jersey
+        field, or out of a field hidden for the new event's type), and a
+        field committing on focus-out then must not save its stale text
+        -- so `_commit_field` saves nothing until refresh() has
+        overwritten every field from the database."""
+        self.jersey_field.clear()
+        self._applying_history = True
+        try:
+            step = apply()
+            self._selected_event_id = step.event_id
+            self.refresh()
+        finally:
+            self._applying_history = False
+        if self._selected_event_id is not None:
+            row = self._row_event_ids.index(self._selected_event_id)
+            self.event_table.scrollToItem(self.event_table.item(row, 0))
+        self.status_message.emit(f"{verb}: {step.description}")
+
+    def _report_last_step(self, suffix: str = "") -> None:
+        """Announce what the tagging action just made did -- nothing, if
+        it changed nothing (e.g. a field re-saved with its own value)."""
+        step = self._session.last_step
+        if step is not None:
+            self.status_message.emit(step.description + suffix)

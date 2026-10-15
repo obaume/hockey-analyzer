@@ -10,7 +10,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
 from stats_fixtures import named_game
 
-from hockey_analyzer.domain.enums import EventType, Side
+from hockey_analyzer.domain.enums import EventType, Side, UnitType
 from hockey_analyzer.domain.models import Event
 from hockey_analyzer.domain.report_bundle import (
     SCHEMA_VERSION,
@@ -1397,3 +1397,161 @@ def test_editing_an_event_squeezes_the_event_list_not_the_edit_form_or_dock(
     panel = window.tagging_panel
     assert panel.edit_group.width() >= panel.edit_group.sizeHint().width()
     assert panel.event_list_scroll.horizontalScrollBar().maximum() > 0
+
+
+# -- Edit menu and status bar: undo/redo (#64) ---------------------------------
+
+
+def _tagging_window(qtbot, session, game_setup_service, **kwargs):
+    """A window with `game` selected and its tagging panel installed."""
+    game, _home, _away = _game_with_sides(game_setup_service)
+    picker = _FakeGameListDialog(selected_game_id=game.id)
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: picker,
+        **kwargs,
+    )
+    qtbot.addWidget(window)
+    window.select_game_action.trigger()
+    return window, game, picker
+
+
+def _log_stoppage(qtbot, window) -> None:
+    qtbot.mouseClick(
+        window.tagging_panel.log_buttons[EventType.STOPPAGE],
+        Qt.MouseButton.LeftButton,
+    )
+
+
+def test_edit_menu_items_are_disabled_with_nothing_to_undo_or_redo(
+    qtbot, session, game_setup_service
+):
+    window, _game, _picker = _tagging_window(qtbot, session, game_setup_service)
+
+    assert window.undo_action.isEnabled() is False
+    assert window.redo_action.isEnabled() is False
+    assert window.undo_action.text() == "Undo\tCtrl+Z"
+    assert window.redo_action.text() == "Redo\tCtrl+Y"
+
+
+def test_edit_menu_items_name_the_next_undo_and_redo(
+    qtbot, session, game_setup_service
+):
+    window, _game, _picker = _tagging_window(qtbot, session, game_setup_service)
+    _log_stoppage(qtbot, window)
+
+    assert window.undo_action.isEnabled() is True
+    assert window.undo_action.text() == "Undo Logged Stoppage at 0:00:00\tCtrl+Z"
+
+    window.undo_action.trigger()
+
+    assert session.query(Event).count() == 0
+    assert window.undo_action.isEnabled() is False
+    assert window.redo_action.isEnabled() is True
+    assert window.redo_action.text() == "Redo Logged Stoppage at 0:00:00\tCtrl+Y"
+
+    window.redo_action.trigger()
+
+    assert session.query(Event).count() == 1
+
+
+def test_ctrl_z_and_ctrl_y_undo_and_redo_from_the_window(
+    qtbot, session, game_setup_service
+):
+    window, _game, _picker = _tagging_window(qtbot, session, game_setup_service)
+    _log_stoppage(qtbot, window)
+    ctrl = Qt.KeyboardModifier.ControlModifier
+
+    qtbot.keyClick(window, Qt.Key.Key_Z, ctrl)
+    assert session.query(Event).count() == 0
+
+    qtbot.keyClick(window, Qt.Key.Key_Y, ctrl)
+    assert session.query(Event).count() == 1
+
+
+def test_the_status_bar_reports_each_tagging_action_undo_and_redo(
+    qtbot, session, game_setup_service
+):
+    window, _game, _picker = _tagging_window(qtbot, session, game_setup_service)
+
+    _log_stoppage(qtbot, window)
+    assert window.statusBar().currentMessage() == "Logged Stoppage at 0:00:00"
+
+    window.undo_action.trigger()
+    assert window.statusBar().currentMessage() == "Undid: Logged Stoppage at 0:00:00"
+
+    window.redo_action.trigger()
+    assert window.statusBar().currentMessage() == "Redid: Logged Stoppage at 0:00:00"
+
+
+def test_switching_games_clears_the_undo_history(qtbot, session, game_setup_service):
+    window, _game, picker = _tagging_window(qtbot, session, game_setup_service)
+    _log_stoppage(qtbot, window)
+    _log_stoppage(qtbot, window)
+    window.undo_action.trigger()
+    other, _home, _away = _game_with_sides(game_setup_service)
+
+    picker.selected_game_id = other.id
+    window.select_game_action.trigger()
+
+    assert window.undo_action.isEnabled() is False
+    assert window.redo_action.isEnabled() is False
+
+
+def test_switching_to_a_game_not_ready_for_tagging_still_clears_the_history(
+    qtbot, session, game_setup_service
+):
+    window, _game, picker = _tagging_window(qtbot, session, game_setup_service)
+    _log_stoppage(qtbot, window)
+    unready, _home, _away = _game_with_sides(game_setup_service, both_sides=False)
+
+    picker.selected_game_id = unready.id
+    window.select_game_action.trigger()
+
+    assert window.undo_action.isEnabled() is False
+    window.undo_action.trigger()
+    assert session.query(Event).count() == 1
+
+
+class _SavingUnitsDialog(_FakeUnitsDialog):
+    """A Units dialog that saves one unit assignment, as a tagger putting
+    a player on a line would."""
+
+    def __init__(self, service, **kwargs) -> None:
+        super().__init__(service, **kwargs)
+        self._service = service
+
+    def exec(self) -> QDialog.DialogCode:
+        game_id = self.opened_for["game_id"]
+        team_id = self.opened_for["home_team_id"]
+        (entry,) = self._service.list_roster(game_id, team_id)
+        self._service.assign_unit(
+            game_id=game_id,
+            team_id=team_id,
+            player_id=entry.player_id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=1,
+        )
+        return super().exec()
+
+
+def test_a_units_save_clears_the_undo_history_and_says_why(
+    qtbot, session, game_setup_service
+):
+    window, game, _picker = _tagging_window(
+        qtbot, session, game_setup_service, units_dialog_factory=_SavingUnitsDialog
+    )
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=game.home_team_id, jersey_number=14
+    )
+    _log_stoppage(qtbot, window)
+
+    window.units_action.trigger()
+
+    assert window.undo_action.isEnabled() is False
+    assert window.statusBar().currentMessage() == (
+        "Undo history cleared: units changed"
+    )
