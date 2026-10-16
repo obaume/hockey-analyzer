@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from hockey_analyzer.clip_encoder import FfmpegClipEncoder, probe_footage
 from hockey_analyzer.domain.clip_export import ClipEncodingError
+from hockey_analyzer.domain.event_navigation import Direction, event_stop
 from hockey_analyzer.domain.game_data import GameData, load_game_data
 from hockey_analyzer.domain.game_setup import GameSetupService
 from hockey_analyzer.domain.report_bundle import (
@@ -62,7 +63,14 @@ from hockey_analyzer.ui.playback_controller import (
 )
 from hockey_analyzer.ui.report_export_dialog import REPORT_FILE_FILTER
 from hockey_analyzer.ui.report_view import ReportViewerDialog
-from hockey_analyzer.ui.shortcuts import PLAYBACK_SCOPE, ShortcutRegistry
+from hockey_analyzer.ui.shortcuts import (
+    FIRST_EVENT_KEY,
+    LAST_EVENT_KEY,
+    NEXT_EVENT_KEY,
+    PLAYBACK_SCOPE,
+    PREVIOUS_EVENT_KEY,
+    ShortcutRegistry,
+)
 from hockey_analyzer.ui.stats_dialog import StatsDialog
 from hockey_analyzer.ui.tagging_panel import REDO_KEY, UNDO_KEY, TaggingPanel
 from hockey_analyzer.ui.units_dialog import UnitsDialog
@@ -586,6 +594,10 @@ class MainWindow(QMainWindow):
             key_string(Qt.Key.Key_Space): self._toggle_play_pause,
             key_string(Qt.Key.Key_Right): lambda: self._controller.jump(JUMP_SECONDS),
             key_string(Qt.Key.Key_Left): lambda: self._controller.jump(-JUMP_SECONDS),
+            NEXT_EVENT_KEY: lambda: self._go_to_stop(Direction.NEXT),
+            PREVIOUS_EVENT_KEY: lambda: self._go_to_stop(Direction.PREVIOUS),
+            FIRST_EVENT_KEY: lambda: self._go_to_stop(Direction.FIRST),
+            LAST_EVENT_KEY: lambda: self._go_to_stop(Direction.LAST),
             key_string(Qt.Key.Key_Period): lambda: self._controller.step_frame(1),
             key_string(Qt.Key.Key_Comma): lambda: self._controller.step_frame(-1),
             key_string(Qt.Key.Key_BracketRight): self._speed_up,
@@ -597,6 +609,24 @@ class MainWindow(QMainWindow):
         }
         for key, action in bindings.items():
             self._shortcuts.register(key, PLAYBACK_SCOPE, action)
+
+    def _go_to_stop(self, direction: Direction) -> None:
+        """Seeks to the active game's next/previous/first/last event
+        (#88) -- seek only: no row selected, playback left as it was.
+        Nowhere to go (or no game) does nothing."""
+        session = self._tagging_session()
+        if session is None:
+            return
+        target = event_stop(
+            (event.video_timestamp for event in session.list_events()),
+            self._player.position(),
+            direction,
+            playing=(
+                self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            ),
+        )
+        if target is not None:
+            self._controller.seek(target)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self._shortcuts.dispatch(key_string_from_event(event)):

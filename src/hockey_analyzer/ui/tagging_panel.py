@@ -55,7 +55,13 @@ from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.keys import key_string, key_string_from_event
 from hockey_analyzer.ui.line_change_dialog import LineChangeDialog
 from hockey_analyzer.ui.rink_view import RinkClickDialog, ShotAttemptCaptureDialog
-from hockey_analyzer.ui.shortcuts import ShortcutRegistry
+from hockey_analyzer.ui.shortcuts import (
+    FIRST_EVENT_KEY,
+    LAST_EVENT_KEY,
+    NEXT_EVENT_KEY,
+    PREVIOUS_EVENT_KEY,
+    ShortcutRegistry,
+)
 
 TAGGING_SCOPE = "tagging"
 # A text-entry field taking focus suspends the shortcuts scoped around it
@@ -117,6 +123,13 @@ _SHOT_CONTEXT_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Event-navigation keys (#88) that also move the jersey field's cursor
+# and selection: while it has focus, they edit the number instead.
+_TEXT_EDITING_KEYS = frozenset(
+    {NEXT_EVENT_KEY, PREVIOUS_EVENT_KEY, FIRST_EVENT_KEY, LAST_EVENT_KEY}
+)
+
+
 class _JerseyEntry(QLineEdit):
     """A jersey-number field whose "h"/"a" keys resolve the team-scope
     hotkey (ticket 08) instead of typing the letter. Per ADR-0007, this
@@ -143,7 +156,8 @@ class _JerseyEntry(QLineEdit):
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self._shortcuts.dispatch(key_string_from_event(event)):
+        key = key_string_from_event(event)
+        if key not in _TEXT_EDITING_KEYS and self._shortcuts.dispatch(key):
             event.accept()
             return
         super().keyPressEvent(event)
@@ -285,6 +299,10 @@ class TaggingPanel(QWidget):
         self.event_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.event_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.event_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Like the buttons: a focused table would eat Left/Right/Home/End
+        # before MainWindow.keyPressEvent dispatches them (#88). Rows are
+        # picked by clicking, not by Up/Down.
+        self.event_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.event_table.itemSelectionChanged.connect(self._on_selection_changed)
 
         self._build_edit_panel()

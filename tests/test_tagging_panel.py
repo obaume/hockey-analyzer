@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtWidgets import QDialog, QHBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLineEdit
 
 from hockey_analyzer.domain.enums import (
     EventType,
@@ -264,6 +264,15 @@ def test_log_buttons_opt_out_of_keyboard_focus(qtbot, tagging_session):
         assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
 
 
+def test_event_table_opts_out_of_keyboard_focus(qtbot, tagging_session):
+    # Regression (#88): a focused table eats Left/Right/Home/End before
+    # MainWindow.keyPressEvent dispatches them, so clicking a row broke
+    # the transport and event-navigation keys.
+    panel = _make_panel(qtbot, tagging_session)
+
+    assert panel.event_table.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
 # -- always-visible event log + inline edit ---------------------------------
 
 
@@ -444,6 +453,51 @@ def test_jersey_entry_scope_is_suspended_until_the_field_has_focus(
     _make_panel(qtbot, tagging_session, shortcuts=registry)
 
     assert registry.dispatch(key_string(Qt.Key.Key_H)) is False
+
+
+def test_jersey_field_keeps_its_text_editing_keys_over_shortcuts(
+    qtbot, tagging_session
+):
+    # Shift+Left/Right and Home/End are event-navigation keys (#88), but
+    # while the jersey field has focus they edit the number instead.
+    registry = ShortcutRegistry()
+    registry.enter_scope("navigation")
+    fired = []
+    for key in (
+        key_string(Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier),
+        key_string(Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier),
+        key_string(Qt.Key.Key_Home),
+        key_string(Qt.Key.Key_End),
+    ):
+        registry.register(key, "navigation", lambda key=key: fired.append(key))
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
+    _select_row(panel, 0)
+    _focus_jersey_field(panel)
+    qtbot.keyClicks(panel.jersey_field, "14")
+    # What these keys do to text is the platform's call (on macOS,
+    # Home/End don't move the caret), so the field is held to a plain
+    # line edit's behaviour rather than to fixed cursor positions.
+    plain = QLineEdit()
+    qtbot.addWidget(plain)
+    qtbot.keyClicks(plain, "14")
+
+    for key, modifier in (
+        (Qt.Key.Key_Home, Qt.KeyboardModifier.NoModifier),
+        (Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier),
+        (Qt.Key.Key_End, Qt.KeyboardModifier.NoModifier),
+        (Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier),
+    ):
+        qtbot.keyClick(panel.jersey_field, key, modifier)
+        qtbot.keyClick(plain, key, modifier)
+        assert (
+            panel.jersey_field.cursorPosition(),
+            panel.jersey_field.selectedText(),
+        ) == (plain.cursorPosition(), plain.selectedText())
+    assert plain.selectedText() != ""  # the keys did edit something
+    assert fired == []
 
 
 def test_unknown_checkbox_starts_unchecked_even_though_a_fresh_stub_is_unknown(

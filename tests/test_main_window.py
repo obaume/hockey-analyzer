@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 import zipfile
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
+import pytest
 from clip_fixtures import FakeEncoder, FakePreviewPlayer
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
 from stats_fixtures import named_game
 
-from hockey_analyzer.domain.enums import EventType, Side, UnitType
+from hockey_analyzer.domain.enums import EventSource, EventType, Side, UnitType
 from hockey_analyzer.domain.models import Event
 from hockey_analyzer.domain.report_bundle import (
     SCHEMA_VERSION,
@@ -1555,3 +1556,124 @@ def test_a_units_save_clears_the_undo_history_and_says_why(
     assert window.statusBar().currentMessage() == (
         "Undo history cleared: units changed"
     )
+
+
+# -- event navigation keys (#88) -------------------------------------------
+
+
+class _PlayheadPlayer(FakePlayer):
+    def __init__(self, position: int, *, playing: bool = False) -> None:
+        super().__init__()
+        self._position = position
+        self._playing = playing
+
+    def position(self) -> int:
+        return self._position
+
+    def playbackState(self) -> QMediaPlayer.PlaybackState:
+        if self._playing:
+            return QMediaPlayer.PlaybackState.PlayingState
+        return QMediaPlayer.PlaybackState.PausedState
+
+
+def _navigation_window(qtbot, tagging_session, player, controller):
+    window = MainWindow(
+        controller=controller,
+        player=player,
+        shortcuts=ShortcutRegistry(),
+        tagging_session=tagging_session,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+_SHIFT = Qt.KeyboardModifier.ShiftModifier
+_NO_MODIFIER = Qt.KeyboardModifier.NoModifier
+
+
+@pytest.mark.parametrize(
+    ("key", "modifier", "target"),
+    [
+        (Qt.Key.Key_Right, _SHIFT, 30_000),
+        (Qt.Key.Key_Left, _SHIFT, 10_000),
+        (Qt.Key.Key_Home, _NO_MODIFIER, 10_000),
+        (Qt.Key.Key_End, _NO_MODIFIER, 40_000),
+    ],
+)
+def test_navigation_keys_seek_to_an_event(
+    qtbot, tagging_session, key, modifier, target
+):
+    for timestamp in (10_000, 20_000, 30_000, 40_000):
+        tagging_session.log_event(EventType.STOPPAGE, timestamp)
+    controller = Mock(spec=PlaybackController)
+    window = _navigation_window(
+        qtbot, tagging_session, _PlayheadPlayer(20_000), controller
+    )
+
+    qtbot.keyClick(window, key, modifier)
+
+    controller.seek.assert_called_once_with(target)
+
+
+def test_navigation_only_seeks(qtbot, tagging_session):
+    """No row selected, no edit form, and playback left as it was."""
+    tagging_session.log_event(EventType.STOPPAGE, 10_000)
+    controller = Mock(spec=PlaybackController)
+    window = _navigation_window(
+        qtbot, tagging_session, _PlayheadPlayer(0, playing=True), controller
+    )
+
+    qtbot.keyClick(window, Qt.Key.Key_Right, _SHIFT)
+
+    assert controller.method_calls == [call.seek(10_000)]
+    assert window.tagging_panel.event_table.selectedItems() == []
+
+
+def test_previous_while_playing_skips_the_event_just_landed_on(qtbot, tagging_session):
+    for timestamp in (10_000, 20_000):
+        tagging_session.log_event(EventType.STOPPAGE, timestamp)
+    controller = Mock(spec=PlaybackController)
+    window = _navigation_window(
+        qtbot, tagging_session, _PlayheadPlayer(20_400, playing=True), controller
+    )
+
+    qtbot.keyClick(window, Qt.Key.Key_Left, _SHIFT)
+
+    controller.seek.assert_called_once_with(10_000)
+
+
+def test_an_unconfirmed_vision_suggestion_is_a_stop(qtbot, session, tagging_session):
+    suggestion = tagging_session.log_event(EventType.STOPPAGE, 10_000)
+    suggestion.source = EventSource.VISION
+    suggestion.confirmed = False
+    session.commit()
+    controller = Mock(spec=PlaybackController)
+    window = _navigation_window(qtbot, tagging_session, _PlayheadPlayer(0), controller)
+
+    qtbot.keyClick(window, Qt.Key.Key_Right, _SHIFT)
+
+    controller.seek.assert_called_once_with(10_000)
+
+
+def test_navigation_with_nowhere_to_go_does_nothing(qtbot, tagging_session):
+    tagging_session.log_event(EventType.STOPPAGE, 10_000)
+    controller = Mock(spec=PlaybackController)
+    window = _navigation_window(
+        qtbot, tagging_session, _PlayheadPlayer(20_000), controller
+    )
+
+    qtbot.keyClick(window, Qt.Key.Key_Right, _SHIFT)
+
+    controller.seek.assert_not_called()
+
+
+def test_navigation_with_no_game_loaded_does_nothing(qtbot):
+    controller = Mock(spec=PlaybackController)
+    window = _make_window(qtbot, controller=controller)
+
+    for key in (Qt.Key.Key_Home, Qt.Key.Key_End):
+        qtbot.keyClick(window, key)
+    for key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+        qtbot.keyClick(window, key, _SHIFT)
+
+    controller.seek.assert_not_called()
