@@ -10,11 +10,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import Qt
+
+from hockey_analyzer.ui.keys import key_string
+
 Action = Callable[[], None]
 
 # The main window's transport keys; suspended while a modal dialog that
 # plays footage of its own (the clip preview) is open.
 PLAYBACK_SCOPE = "playback"
+
+# Event navigation (#88), bound in PLAYBACK_SCOPE. The jersey field keeps
+# these for editing its text while it has focus.
+NEXT_EVENT_KEY = key_string(Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+PREVIOUS_EVENT_KEY = key_string(Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier)
+FIRST_EVENT_KEY = key_string(Qt.Key.Key_Home)
+LAST_EVENT_KEY = key_string(Qt.Key.Key_End)
 
 
 class ShortcutConflictError(Exception):
