@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtWidgets import QDialog, QHBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLineEdit
 
 from hockey_analyzer.domain.enums import (
     EventType,
@@ -477,17 +477,26 @@ def test_jersey_field_keeps_its_text_editing_keys_over_shortcuts(
     _select_row(panel, 0)
     _focus_jersey_field(panel)
     qtbot.keyClicks(panel.jersey_field, "14")
+    # What these keys do to text is the platform's call (on macOS,
+    # Home/End don't move the caret), so the field is held to a plain
+    # line edit's behaviour rather than to fixed cursor positions.
+    plain = QLineEdit()
+    qtbot.addWidget(plain)
+    qtbot.keyClicks(plain, "14")
 
-    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_Home)
-    qtbot.keyClick(
-        panel.jersey_field, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier
-    )
-    assert panel.jersey_field.selectedText() == "1"
-    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_End)
-    qtbot.keyClick(
-        panel.jersey_field, Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier
-    )
-    assert panel.jersey_field.selectedText() == "4"
+    for key, modifier in (
+        (Qt.Key.Key_Home, Qt.KeyboardModifier.NoModifier),
+        (Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier),
+        (Qt.Key.Key_End, Qt.KeyboardModifier.NoModifier),
+        (Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier),
+    ):
+        qtbot.keyClick(panel.jersey_field, key, modifier)
+        qtbot.keyClick(plain, key, modifier)
+        assert (
+            panel.jersey_field.cursorPosition(),
+            panel.jersey_field.selectedText(),
+        ) == (plain.cursorPosition(), plain.selectedText())
+    assert plain.selectedText() != ""  # the keys did edit something
     assert fired == []
 
 
