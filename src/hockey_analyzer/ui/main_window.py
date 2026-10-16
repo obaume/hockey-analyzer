@@ -64,7 +64,7 @@ from hockey_analyzer.ui.report_export_dialog import REPORT_FILE_FILTER
 from hockey_analyzer.ui.report_view import ReportViewerDialog
 from hockey_analyzer.ui.shortcuts import PLAYBACK_SCOPE, ShortcutRegistry
 from hockey_analyzer.ui.stats_dialog import StatsDialog
-from hockey_analyzer.ui.tagging_panel import TaggingPanel
+from hockey_analyzer.ui.tagging_panel import REDO_KEY, UNDO_KEY, TaggingPanel
 from hockey_analyzer.ui.units_dialog import UnitsDialog
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
 
@@ -113,6 +113,13 @@ def _clip_export_dialog(
         shortcuts=shortcuts,
         parent=parent,
     )
+
+
+def _edit_label(verb: str, description: str | None, key: str) -> str:
+    """e.g. "Undo Logged Faceoff at 0:12:34\tCtrl+Z" -- "\tCtrl+Z" only
+    labels the key, as on the View menu."""
+    action = verb if description is None else f"{verb} {description}"
+    return f"{action}\t{key}"
 
 
 JUMP_SECONDS = 5
@@ -180,8 +187,12 @@ class MainWindow(QMainWindow):
         self._shortcuts.enter_scope(PLAYBACK_SCOPE)
 
         self._db_session = db_session
+        # A setup save (e.g. in the Units… dialog) clears the tagging undo
+        # history -- see `_on_setup_saved`.
         self._game_setup_service = (
-            GameSetupService(db_session) if db_session is not None else None
+            GameSetupService(db_session, on_save=self._on_setup_saved)
+            if db_session is not None
+            else None
         )
         self._game_setup_dialog_factory = game_setup_dialog_factory or GameSetupDialog
         self._game_list_dialog_factory = game_list_dialog_factory or GameListDialog
@@ -269,8 +280,12 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(self._root_layout)
         self.setCentralWidget(container)
+        # What the last tagging action, undo or redo did (#64). A message
+        # stays until the next one replaces it.
+        self.statusBar()
 
         self._build_menus()
+        self._refresh_edit_actions()
 
         # Buttons/combo/slider opt out of keyboard focus above so a click
         # never leaves one of them holding focus and intercepting a
@@ -289,6 +304,15 @@ class MainWindow(QMainWindow):
         # never touches this install's games, so it needs no db_session.
         self.open_report_action = file_menu.addAction("Open Report…")
         self.open_report_action.triggered.connect(self._open_report)
+
+        # Undo/redo of tagging actions (#64). Each item names what it would
+        # do -- see `_refresh_edit_actions`; the keys themselves are bound
+        # by the tagging panel through the shortcut registry (ADR-0007).
+        edit_menu = self.menuBar().addMenu("&Edit")
+        self.undo_action = edit_menu.addAction("Undo")
+        self.undo_action.triggered.connect(self._undo)
+        self.redo_action = edit_menu.addAction("Redo")
+        self.redo_action.triggered.connect(self._redo)
 
         game_menu = self.menuBar().addMenu("&Game")
         self.new_game_action = game_menu.addAction("New Game…")
@@ -350,8 +374,50 @@ class MainWindow(QMainWindow):
         )
         self._root_layout.addWidget(self.tagging_panel, stretch=1)
         self.tagging_panel.events_changed.connect(self.on_ice_dock.reload)
+        self.tagging_panel.events_changed.connect(self._refresh_edit_actions)
+        self.tagging_panel.status_message.connect(self.statusBar().showMessage)
         self.on_ice_dock.set_session(tagging_session)
         self.on_ice_dock.set_position(self._player.position())
+
+    def _refresh_edit_actions(self) -> None:
+        """Names the next undo and redo in the Edit menu, greyed out when
+        there's nothing to undo or redo. Re-read after every tagging
+        action, undo and redo (the panel's `events_changed`) and every
+        history clear."""
+        session = self._tagging_session()
+        undo = session.undo_description if session is not None else None
+        redo = session.redo_description if session is not None else None
+        self.undo_action.setText(_edit_label("Undo", undo, UNDO_KEY))
+        self.undo_action.setEnabled(undo is not None)
+        self.redo_action.setText(_edit_label("Redo", redo, REDO_KEY))
+        self.redo_action.setEnabled(redo is not None)
+
+    def _tagging_session(self) -> TaggingSession | None:
+        return self.tagging_panel.session if self.tagging_panel is not None else None
+
+    def _undo(self) -> None:
+        if self.tagging_panel is not None:
+            self.tagging_panel.undo()
+
+    def _redo(self) -> None:
+        if self.tagging_panel is not None:
+            self.tagging_panel.redo()
+
+    def _clear_undo_history(self) -> bool:
+        """Clears the tagging undo history; whether there was any."""
+        session = self._tagging_session()
+        if session is None or not (session.can_undo or session.can_redo):
+            return False
+        session.clear_history()
+        self._refresh_edit_actions()
+        return True
+
+    def _on_setup_saved(self, reason: str) -> None:
+        """A `GameSetupService` save: undoing a tagging step across it
+        could clash with it (#64), so the history goes, and the status
+        bar says why."""
+        if self._clear_undo_history():
+            self.statusBar().showMessage(f"Undo history cleared: {reason}")
 
     def _set_on_ice_visible(self, visible: bool) -> None:
         self.on_ice_dock.setVisible(visible)
@@ -371,7 +437,11 @@ class MainWindow(QMainWindow):
         re-fetches home/away/video_path from the Game itself rather than
         trusting values threaded in by the caller, so there's one source
         of truth instead of each call site re-deriving and re-passing the
-        same three fields."""
+        same three fields.
+
+        The undo history never carries over to another game -- not even
+        when the new one can't be tagged yet and the old panel stays."""
+        self._clear_undo_history()
         self._active_game_id = game_id
         self._refresh_game_actions()
         if game_id is None:
@@ -385,6 +455,7 @@ class MainWindow(QMainWindow):
                 away_team_id=game.away_team_id,
             )
             self._install_tagging_panel(tagging_session)
+            self._refresh_edit_actions()
         # Tagging needs both sides' teams (see TaggingSession); a game can
         # still be "active" for video-attachment purposes before roster
         # setup is finished -- see `_open_video`.

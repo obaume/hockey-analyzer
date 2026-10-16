@@ -14,7 +14,7 @@ or special-cased fields -- see CONTEXT.md's Game roster entry entry
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -78,10 +78,27 @@ class PlayerNotRosteredError(Exception):
 class GameSetupService:
     """Takes an already-open SQLAlchemy `Session`; every method here
     commits before returning, matching `TaggingSession`'s autosave
-    treatment."""
+    treatment.
 
-    def __init__(self, db_session: Session) -> None:
+    `on_save` is told, in a few words (e.g. "units changed"), about every
+    save that changes a game's setup -- the main window clears the
+    tagging undo history on it (#64), since undoing a tagging step across
+    a setup change could clash with it. Attaching footage isn't one: it
+    touches nothing a tagging step does."""
+
+    def __init__(
+        self,
+        db_session: Session,
+        *,
+        on_save: Callable[[str], None] | None = None,
+    ) -> None:
         self._db = db_session
+        self._on_save = on_save
+
+    def _commit_and_report(self, reason: str) -> None:
+        self._db.commit()
+        if self._on_save is not None:
+            self._on_save(reason)
 
     # -- game -----------------------------------------------------------
 
@@ -94,7 +111,7 @@ class GameSetupService:
         it in place."""
         game = Game(rink_type=rink_type)
         self._db.add(game)
-        self._db.commit()
+        self._commit_and_report("game created")
         return game
 
     def get_game(self, game_id: int) -> Game:
@@ -122,7 +139,7 @@ class GameSetupService:
             game.home_team_id = team_id
         else:
             game.away_team_id = team_id
-        self._db.commit()
+        self._commit_and_report("game setup changed")
         return game
 
     def set_video_path(self, game_id: int, path: str) -> Game:
@@ -142,7 +159,7 @@ class GameSetupService:
     def create_team(self, name: str, *, is_user_team: bool = False) -> Team:
         team = Team(name=name, is_user_team=is_user_team)
         self._db.add(team)
-        self._db.commit()
+        self._commit_and_report("team created")
         return team
 
     # -- players ----------------------------------------------------------
@@ -161,13 +178,13 @@ class GameSetupService:
         `set_player_full_name`."""
         player = Player(full_name=full_name, position=position)
         self._db.add(player)
-        self._db.commit()
+        self._commit_and_report("player created")
         return player
 
     def set_player_full_name(self, player_id: int, full_name: str | None) -> Player:
         player = self._get_player(player_id)
         player.full_name = full_name
-        self._db.commit()
+        self._commit_and_report("player changed")
         return player
 
     def set_player_position(self, player_id: int, position: Position | None) -> Player:
@@ -175,7 +192,7 @@ class GameSetupService:
         not per game (see CONTEXT.md's Position entry)."""
         player = self._get_player(player_id)
         player.position = position
-        self._db.commit()
+        self._commit_and_report("player changed")
         return player
 
     def _get_player(self, player_id: int) -> Player:
@@ -220,7 +237,7 @@ class GameSetupService:
             jersey_number=jersey_number,
         )
         self._db.add(entry)
-        self._db.commit()
+        self._commit_and_report("roster changed")
         return entry
 
     def list_roster(self, game_id: int, team_id: int) -> list[GameRosterEntry]:
@@ -277,7 +294,7 @@ class GameSetupService:
             self._db.add(assignment)
         assignment.team_id = team_id
         assignment.unit_number = unit_number
-        self._db.commit()
+        self._commit_and_report("units changed")
         return assignment
 
     def unassign_unit(
@@ -289,7 +306,7 @@ class GameSetupService:
         if assignment is None:
             return
         self._db.delete(assignment)
-        self._db.commit()
+        self._commit_and_report("units changed")
 
     def set_player_units(
         self,

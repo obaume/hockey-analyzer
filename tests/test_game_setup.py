@@ -5,6 +5,7 @@ import pytest
 from hockey_analyzer.domain.enums import EventSource, Position, RinkType, UnitType
 from hockey_analyzer.domain.game_setup import (
     DuplicateJerseyNumberError,
+    GameSetupService,
     PlayerNotRosteredError,
     SameTeamBothSidesError,
 )
@@ -749,3 +750,75 @@ def test_unit_numbers_is_scoped_to_one_team(game_setup_service):
         )
         == {}
     )
+
+
+# -- on_save: telling the window a save happened (#64) ------------------------
+
+
+def test_unit_saves_report_units_changed(session):
+    reasons: list[str] = []
+    service = GameSetupService(session, on_save=reasons.append)
+    game = service.create_game()
+    team = service.create_team("Icebreakers")
+    entry = service.add_roster_entry(game_id=game.id, team_id=team.id, jersey_number=14)
+    reasons.clear()
+
+    service.assign_unit(
+        game_id=game.id,
+        team_id=team.id,
+        player_id=entry.player_id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+    service.unassign_unit(
+        game_id=game.id, player_id=entry.player_id, unit_type=UnitType.FORWARD_LINE
+    )
+
+    assert reasons == ["units changed", "units changed"]
+
+
+def test_each_kind_of_setup_save_has_its_own_reason(session):
+    reasons: list[str] = []
+    service = GameSetupService(session, on_save=reasons.append)
+
+    game = service.create_game()
+    team = service.create_team("Icebreakers")
+    service.set_side_team(game.id, "home", team.id)
+    player = service.create_player(full_name="Jordan Kim")
+    service.set_player_full_name(player.id, "Jordan Kimball")
+    service.set_player_position(player.id, Position.CENTER)
+    service.add_roster_entry(
+        game_id=game.id, team_id=team.id, jersey_number=14, player_id=player.id
+    )
+
+    assert reasons == [
+        "game created",
+        "team created",
+        "game setup changed",
+        "player created",
+        "player changed",
+        "player changed",
+        "roster changed",
+    ]
+
+
+def test_attaching_footage_is_not_reported_as_a_setup_save(session):
+    reasons: list[str] = []
+    service = GameSetupService(session, on_save=reasons.append)
+    game = service.create_game()
+    reasons.clear()
+
+    service.set_video_path(game.id, "C:/footage/game.mp4")
+
+    assert reasons == []
+
+
+def test_unassigning_a_unit_nobody_holds_is_not_a_save(session):
+    reasons: list[str] = []
+    service = GameSetupService(session, on_save=reasons.append)
+    game = service.create_game()
+    reasons.clear()
+
+    service.unassign_unit(game_id=game.id, player_id=1, unit_type=UnitType.POWER_PLAY)
+
+    assert reasons == []

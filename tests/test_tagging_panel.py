@@ -15,7 +15,6 @@ from hockey_analyzer.domain.enums import (
     UnitType,
 )
 from hockey_analyzer.domain.game_setup import GameSetupService
-from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.keys import key_string
 from hockey_analyzer.ui.rink_view import RinkClickDialog
 from hockey_analyzer.ui.shortcuts import ShortcutRegistry
@@ -105,20 +104,6 @@ def _line_change_factory(**choice):
     return factory
 
 
-class _FakeConfirm:
-    """Stands in for the panel's delete confirmation (a real
-    `QMessageBox.question` blocks on a modal event loop). Records every
-    prompt it was asked and answers each with `answer`."""
-
-    def __init__(self, answer: bool = True) -> None:
-        self.answer = answer
-        self.prompts: list[str] = []
-
-    def __call__(self, prompt: str) -> bool:
-        self.prompts.append(prompt)
-        return self.answer
-
-
 def _make_panel(
     qtbot,
     tagging_session,
@@ -129,7 +114,6 @@ def _make_panel(
     rink_click_dialog_factory=None,
     shot_attempt_dialog_factory=None,
     line_change_dialog_factory=None,
-    confirm=None,
 ):
     panel = TaggingPanel(
         tagging_session,
@@ -145,7 +129,6 @@ def _make_panel(
         or _FakeShotAttemptDialog,
         line_change_dialog_factory=line_change_dialog_factory
         or _line_change_factory(accepted=False),
-        confirm=confirm if confirm is not None else _FakeConfirm(),
     )
     qtbot.addWidget(panel)
     # Shown so isVisible() (used to assert the edit panel appears/hides)
@@ -154,6 +137,12 @@ def _make_panel(
     panel.show()
     qtbot.waitExposed(panel)
     return panel
+
+
+def _status_messages(panel) -> list[str]:
+    messages: list[str] = []
+    panel.status_message.connect(messages.append)
+    return messages
 
 
 def _select_row(panel, row: int) -> None:
@@ -501,34 +490,18 @@ def test_delete_button_removes_the_event_and_hides_the_edit_panel(
     assert panel.edit_group.isVisible() is False
 
 
-def test_panel_delete_button_asks_for_confirmation_naming_the_event(
+def test_panel_delete_button_deletes_at_once_and_says_how_to_undo(
     qtbot, tagging_session
 ):
-    confirm = _FakeConfirm(answer=True)
-    panel = _make_panel(qtbot, tagging_session, position_ms=65000, confirm=confirm)
+    panel = _make_panel(qtbot, tagging_session, position_ms=65000)
+    messages = _status_messages(panel)
     qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
     _select_row(panel, 0)
 
     qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
 
-    assert confirm.prompts == [
-        f"Delete this Stoppage at {format_video_timestamp(65000)}?"
-    ]
     assert tagging_session.list_events() == []
-
-
-def test_declining_the_panel_delete_confirmation_keeps_the_event(
-    qtbot, tagging_session
-):
-    panel = _make_panel(qtbot, tagging_session, confirm=_FakeConfirm(answer=False))
-    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
-    _select_row(panel, 0)
-
-    qtbot.mouseClick(panel.delete_button, Qt.MouseButton.LeftButton)
-
-    assert len(tagging_session.list_events()) == 1
-    assert panel.event_table.rowCount() == 1
-    assert panel.edit_group.isVisible() is True
+    assert messages[-1] == "Deleted Stoppage at 0:01:05 \N{EM DASH} Ctrl+Z to undo"
 
 
 def test_each_row_has_a_delete_button_that_opts_out_of_keyboard_focus(
@@ -545,38 +518,21 @@ def test_each_row_has_a_delete_button_that_opts_out_of_keyboard_focus(
         assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
 
 
-def test_confirming_a_row_delete_removes_that_rows_event(qtbot, tagging_session):
+def test_a_row_delete_removes_that_rows_event_at_once(qtbot, tagging_session):
     positions = iter([1000, 3000])
-    confirm = _FakeConfirm(answer=True)
-    panel = _make_panel(
-        qtbot,
-        tagging_session,
-        position_ms=lambda: next(positions),
-        confirm=confirm,
-    )
+    panel = _make_panel(qtbot, tagging_session, position_ms=lambda: next(positions))
+    messages = _status_messages(panel)
     qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
     qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
 
     qtbot.mouseClick(_row_delete_button(panel, 1), Qt.MouseButton.LeftButton)
 
-    assert confirm.prompts == [
-        f"Delete this Penalty at {format_video_timestamp(3000)}?"
-    ]
     assert [event.event_type for event in tagging_session.list_events()] == [
         EventType.STOPPAGE
     ]
     assert panel.event_table.rowCount() == 1
     assert panel.event_table.item(0, 1).text() == "Stoppage"
-
-
-def test_declining_a_row_delete_keeps_the_event(qtbot, tagging_session):
-    panel = _make_panel(qtbot, tagging_session, confirm=_FakeConfirm(answer=False))
-    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
-
-    qtbot.mouseClick(_row_delete_button(panel, 0), Qt.MouseButton.LeftButton)
-
-    assert len(tagging_session.list_events()) == 1
-    assert panel.event_table.rowCount() == 1
+    assert messages[-1] == "Deleted Penalty at 0:00:03 \N{EM DASH} Ctrl+Z to undo"
 
 
 def test_row_delete_of_an_unselected_row_keeps_the_current_selection(
@@ -757,7 +713,7 @@ def test_period_start_faceoff_takes_both_participants_straight_from_the_keyboard
 
 
 def test_deleting_the_period_start_row_keeps_its_faceoff(qtbot, tagging_session):
-    panel = _make_panel(qtbot, tagging_session, confirm=_FakeConfirm(answer=True))
+    panel = _make_panel(qtbot, tagging_session)
     qtbot.mouseClick(
         panel.log_buttons[EventType.PERIOD_START], Qt.MouseButton.LeftButton
     )
@@ -1408,3 +1364,245 @@ def test_esc_with_nothing_selected_does_nothing(qtbot, tagging_session):
     assert tagging_session.list_events() == before
     assert panel.edit_group.isVisible() is False
     assert panel.event_table.selectionModel().selectedRows() == []
+
+
+# -- undo/redo (#64) -----------------------------------------------------------
+
+_CTRL = Qt.KeyboardModifier.ControlModifier
+_UNDO = key_string(Qt.Key.Key_Z, _CTRL)
+_REDO = key_string(Qt.Key.Key_Y, _CTRL)
+
+
+def test_ctrl_z_undoes_the_last_tagging_action_and_ctrl_y_redoes_it(
+    qtbot, tagging_session
+):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    messages = _status_messages(panel)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+
+    assert registry.dispatch(_UNDO) is True
+    assert tagging_session.list_events() == []
+    assert panel.event_table.rowCount() == 0
+    assert messages[-1] == "Undid: Logged Stoppage at 0:00:00"
+
+    assert registry.dispatch(_REDO) is True
+    assert panel.event_table.rowCount() == 1
+    assert messages[-1] == "Redid: Logged Stoppage at 0:00:00"
+
+
+def test_every_tagging_action_reports_what_it_did(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session, position_ms=754_000)
+    messages = _status_messages(panel)
+
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    assert messages[-1] == "Logged Penalty at 0:12:34"
+
+    _select_row(panel, 0)
+    _focus_jersey_field(panel)
+    qtbot.keyClicks(panel.jersey_field, "14")
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_H)
+    assert messages[-1] == "Set player: #14"
+
+    _blur_jersey_field(panel)
+    panel.infraction_field.setText("Tripping")
+    panel.infraction_field.editingFinished.emit()
+    assert messages[-1] == "Set infraction: Tripping"
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+    assert messages[-1] == "Logged Faceoff at 0:12:34"
+
+
+def test_re_saving_a_field_unchanged_reports_nothing(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    messages = _status_messages(panel)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+
+    panel.strength_state_field.editingFinished.emit()
+
+    assert messages == ["Logged Stoppage at 0:00:00"]
+
+
+def test_a_line_change_reports_who_changed(qtbot, tagging_session):
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        line_change_dialog_factory=_line_change_factory(
+            team_side="away", on_ice=True, jersey_numbers=[9, 91]
+        ),
+    )
+    messages = _status_messages(panel)
+
+    qtbot.mouseClick(panel.line_change_button, Qt.MouseButton.LeftButton)
+
+    assert messages[-1] == "Line change: #9, #91 ON"
+
+
+def test_undoing_a_delete_selects_the_restored_event(qtbot, tagging_session):
+    positions = iter([1000, 2000])
+    registry = ShortcutRegistry()
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        shortcuts=registry,
+        position_ms=lambda: next(positions),
+    )
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    _select_row(panel, 1)
+    qtbot.mouseClick(_row_delete_button(panel, 0), Qt.MouseButton.LeftButton)
+
+    registry.dispatch(_UNDO)
+
+    assert panel.event_table.rowCount() == 2
+    assert [
+        index.row() for index in panel.event_table.selectionModel().selectedRows()
+    ] == [0]
+    assert panel.edit_group.isVisible() is True
+
+
+def test_undoing_a_log_clears_the_selection_and_hides_the_edit_panel(
+    qtbot, tagging_session
+):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    _select_row(panel, 1)
+
+    registry.dispatch(_UNDO)
+
+    assert panel.event_table.rowCount() == 1
+    assert panel.event_table.selectionModel().selectedRows() == []
+    assert panel.edit_group.isVisible() is False
+
+
+def test_undo_and_redo_never_move_the_video(qtbot, tagging_session):
+    pauses = []
+    registry = ShortcutRegistry()
+    panel = _make_panel(
+        qtbot, tagging_session, shortcuts=registry, pause=lambda: pauses.append(1)
+    )
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+    pauses.clear()
+
+    registry.dispatch(_UNDO)
+    registry.dispatch(_REDO)
+
+    # The panel's only handle on playback is `pause`; nothing seeks.
+    assert pauses == []
+
+
+def test_ctrl_z_in_the_jersey_field_undoes_and_drops_the_typed_number(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session)
+    messages = _status_messages(panel)
+    qtbot.mouseClick(
+        panel.log_buttons[EventType.SHIFT_CHANGE], Qt.MouseButton.LeftButton
+    )
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+    _focus_jersey_field(panel)
+    qtbot.keyClicks(panel.jersey_field, "14")
+
+    qtbot.keyClick(panel.jersey_field, Qt.Key.Key_Z, _CTRL)
+
+    assert messages[-1] == "Undid: Logged Penalty at 0:00:00"
+    assert panel.jersey_field.text() == ""
+    (shift_change,) = tagging_session.list_events()
+    assert shift_change.shift_player_unknown is True
+
+
+def test_ctrl_z_in_a_text_field_undoes_tagging_not_the_typing(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    event_id = tagging_session.list_events()[0].id
+    _select_row(panel, 0)
+    panel.strength_state_field.setText("5v5")
+    panel.strength_state_field.editingFinished.emit()
+    qtbot.keyClicks(panel.strength_state_field, "4")
+
+    qtbot.keyClick(panel.strength_state_field, Qt.Key.Key_Z, _CTRL)
+    # Focus leaving the field afterward must not save the typed "4".
+    panel.strength_state_field.editingFinished.emit()
+
+    assert tagging_session.get_event(event_id).strength_state is None
+    assert tagging_session.can_redo
+
+
+def test_ctrl_y_in_a_spin_box_redoes(qtbot, tagging_session):
+    panel = _make_panel(qtbot, tagging_session)
+    qtbot.mouseClick(panel.log_buttons[EventType.PERIOD_END], Qt.MouseButton.LeftButton)
+    _select_row(panel, 0)
+    panel.period_number_field.setValue(2)
+    panel.period_number_field.editingFinished.emit()
+    qtbot.keyClick(panel.period_number_field, Qt.Key.Key_Z, _CTRL)
+    assert tagging_session.list_events()[0].period_number is None
+
+    qtbot.keyClick(panel.period_number_field, Qt.Key.Key_Y, _CTRL)
+
+    assert tagging_session.list_events()[0].period_number == 2
+
+
+def test_ctrl_z_with_nothing_to_undo_says_so(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    panel = _make_panel(qtbot, tagging_session, shortcuts=registry)
+    messages = _status_messages(panel)
+
+    registry.dispatch(_UNDO)
+    registry.dispatch(_REDO)
+
+    assert messages == ["Nothing to undo", "Nothing to redo"]
+
+
+def test_ctrl_z_never_saves_text_typed_in_a_field_it_moves_focus_from(
+    qtbot, tagging_session
+):
+    panel = _make_panel(qtbot, tagging_session)
+    messages = _status_messages(panel)
+    qtbot.mouseClick(panel.log_buttons[EventType.PENALTY], Qt.MouseButton.LeftButton)
+    event_id = tagging_session.list_events()[0].id
+    _select_row(panel, 0)
+    panel.duration_field.setValue(2.0)
+    panel.duration_field.editingFinished.emit()
+    _blur_jersey_field(panel)
+    qtbot.keyClicks(panel.infraction_field, "Trip")
+    # Undoing reselects the penalty, which focuses the jersey field: in a
+    # real window the infraction field loses focus then, mid-undo, and
+    # finishes editing. This test process has no real focus (see
+    # _focus_jersey_field), so stand in for Qt's focus-out.
+    take_focus = panel.jersey_field.setFocus
+    panel.jersey_field.setFocus = lambda: (
+        panel.infraction_field.editingFinished.emit(),
+        take_focus(),
+    )
+
+    qtbot.keyClick(panel.infraction_field, Qt.Key.Key_Z, _CTRL)
+
+    event = tagging_session.get_event(event_id)
+    assert event.penalty_infraction is None
+    assert event.penalty_duration_minutes is None
+    assert tagging_session.can_redo
+    assert messages[-1] == "Undid: Set duration: 2"
+
+
+def test_cancelling_a_rink_click_reports_nothing(qtbot, tagging_session):
+    registry = ShortcutRegistry()
+    panel = _make_panel(
+        qtbot,
+        tagging_session,
+        shortcuts=registry,
+        rink_click_dialog_factory=lambda: _FakeRinkClickDialog(accepted=False),
+    )
+    messages = _status_messages(panel)
+    qtbot.mouseClick(panel.log_buttons[EventType.STOPPAGE], Qt.MouseButton.LeftButton)
+    registry.dispatch(_UNDO)
+
+    qtbot.mouseClick(panel.log_buttons[EventType.FACEOFF], Qt.MouseButton.LeftButton)
+
+    assert messages == [
+        "Logged Stoppage at 0:00:00",
+        "Undid: Logged Stoppage at 0:00:00",
+    ]
