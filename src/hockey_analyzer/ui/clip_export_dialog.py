@@ -52,7 +52,6 @@ from hockey_analyzer.domain.clip_export import (
     ExportPlan,
     OutputShape,
     Padding,
-    involved_players,
     padding_window,
     plan_export,
     run_export,
@@ -62,6 +61,7 @@ from hockey_analyzer.domain.enums import EventType, ShotOutcome
 from hockey_analyzer.domain.game_clock import GameClock, game_clocks
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import Event, ShotAttempt
+from hockey_analyzer.domain.player_references import involved_players
 from hockey_analyzer.domain.tagging_session import roster_entry_label
 from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 from hockey_analyzer.ui.clip_preview import ClipPreview, PreviewPlayer

@@ -63,6 +63,7 @@ from hockey_analyzer.ui.playback_controller import (
 )
 from hockey_analyzer.ui.report_export_dialog import REPORT_FILE_FILTER
 from hockey_analyzer.ui.report_view import ReportViewerDialog
+from hockey_analyzer.ui.roster_dialog import RosterDialog
 from hockey_analyzer.ui.shortcuts import (
     FIRST_EVENT_KEY,
     LAST_EVENT_KEY,
@@ -91,6 +92,21 @@ class UnitsDialogFactory(Protocol):
         away_team_id: int,
         parent: QWidget | None = None,
     ) -> UnitsDialog: ...
+
+
+class RosterDialogFactory(Protocol):
+    """`RosterDialog`'s constructor shape, as `_edit_roster` calls it --
+    see `UnitsDialogFactory`."""
+
+    def __call__(
+        self,
+        service: GameSetupService,
+        *,
+        game_id: int,
+        home_team_id: int,
+        away_team_id: int,
+        parent: QWidget | None = None,
+    ) -> RosterDialog: ...
 
 
 class ClipExportDialogFactory(Protocol):
@@ -158,6 +174,7 @@ class MainWindow(QMainWindow):
         | None = None,
         league_source: LeagueSource | None = None,
         units_dialog_factory: UnitsDialogFactory | None = None,
+        roster_dialog_factory: RosterDialogFactory | None = None,
         stats_dialog_factory: Callable[[Sequence[GameData], QWidget], StatsDialog]
         | None = None,
         stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
@@ -209,6 +226,7 @@ class MainWindow(QMainWindow):
         )
         self._league_source = league_source or SihfHttpSource()
         self._units_dialog_factory = units_dialog_factory or UnitsDialog
+        self._roster_dialog_factory = roster_dialog_factory or RosterDialog
         self._stats_dialog_factory = stats_dialog_factory or StatsDialog
         self._stats_game_picker_factory = stats_game_picker_factory or (
             lambda service: GameListDialog(service, multi_select=True)
@@ -335,6 +353,11 @@ class MainWindow(QMainWindow):
         self.units_action = game_menu.addAction("Units…")
         self.units_action.triggered.connect(self._edit_units)
         self.units_action.setEnabled(False)
+        # Correcting a roster after the fact (#89) -- both sides' rosters
+        # at once, so the same enabling rule as Units.
+        self.roster_action = game_menu.addAction("Roster…")
+        self.roster_action.triggered.connect(self._edit_roster)
+        self.roster_action.setEnabled(False)
         # Stats (ticket 18) are for/against one side vs. the other, so
         # they need both sides too -- same enabling rule as Units.
         self.stats_action = game_menu.addAction("Stats…")
@@ -472,7 +495,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_game_actions(self) -> None:
         """Enables the actions that act on the active game by what it has
-        so far: both sides for units/stats, plus footage for clips."""
+        so far: both sides for units/roster/stats, plus footage for
+        clips."""
         game = (
             self._game_setup_service.get_game(self._active_game_id)
             if self._active_game_id is not None
@@ -484,6 +508,7 @@ class MainWindow(QMainWindow):
             and game.away_team_id is not None
         )
         self.units_action.setEnabled(has_both_sides)
+        self.roster_action.setEnabled(has_both_sides)
         self.stats_action.setEnabled(has_both_sides)
         self.export_clips_action.setEnabled(has_both_sides and bool(game.video_path))
 
@@ -527,6 +552,26 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+
+    def _edit_roster(self) -> None:
+        if self._game_setup_service is None or self._active_game_id is None:
+            return
+        game = self._game_setup_service.get_game(self._active_game_id)
+        if game.home_team_id is None or game.away_team_id is None:
+            return
+        dialog = self._roster_dialog_factory(
+            self._game_setup_service,
+            game_id=game.id,
+            home_team_id=game.home_team_id,
+            away_team_id=game.away_team_id,
+            parent=self,
+        )
+        dialog.exec()
+        # A renumber or merge changes the jersey every one of that
+        # player's events shows; the panel's refresh reloads the on-ice
+        # dock too (`events_changed`).
+        if self.tagging_panel is not None:
+            self.tagging_panel.refresh()
 
     def _show_stats(self) -> None:
         if self._db_session is None or self._active_game_id is None:

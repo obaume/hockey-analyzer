@@ -2,21 +2,35 @@ from __future__ import annotations
 
 import pytest
 
-from hockey_analyzer.domain.enums import EventSource, Position, RinkType, UnitType
+from hockey_analyzer.domain.enums import (
+    EventSource,
+    Position,
+    RinkType,
+    ShotOutcome,
+    ShotType,
+    UnitType,
+)
 from hockey_analyzer.domain.game_setup import (
     DuplicateJerseyNumberError,
     GameSetupService,
     PlayerNotRosteredError,
+    PlayersShareEventsError,
+    RosterEntryInUseError,
     SameTeamBothSidesError,
 )
 from hockey_analyzer.domain.models import (
+    Faceoff,
     Game,
     GameRosterEntry,
     GameUnitAssignment,
+    Penalty,
     Player,
+    ShiftChange,
+    ShotAttempt,
     Stoppage,
     Team,
 )
+from hockey_analyzer.domain.tagging_session import TaggingSession
 
 # -- create_game: no pre-existing data required ---------------------------
 
@@ -822,3 +836,265 @@ def test_unassigning_a_unit_nobody_holds_is_not_a_save(session):
     service.unassign_unit(game_id=game.id, player_id=1, unit_type=UnitType.POWER_PLAY)
 
     assert reasons == []
+
+
+# -- correcting a roster entry after the fact (#89) ---------------------------
+
+
+def _game_with_sides(service):
+    game = service.create_game()
+    home = service.create_team("Icebreakers")
+    away = service.create_team("Rivals")
+    service.set_side_team(game.id, "home", home.id)
+    service.set_side_team(game.id, "away", away.id)
+    return game, home, away
+
+
+def _shot(session, game_id, *, at, shooter_id, assist1_id=None):
+    shot = ShotAttempt(
+        game_id=game_id,
+        video_timestamp=at,
+        shot_type=ShotType.WRIST,
+        shot_outcome=ShotOutcome.SAVED,
+        shooter_id=shooter_id,
+        assist1_id=assist1_id,
+    )
+    session.add(shot)
+    session.commit()
+    return shot
+
+
+def test_renumber_roster_entry_changes_the_jersey_and_events_follow(
+    game_setup_service, session
+):
+    game, home, away = _game_with_sides(game_setup_service)
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=41
+    )
+    shot = _shot(session, game.id, at=1000, shooter_id=entry.player_id)
+
+    game_setup_service.renumber_roster_entry(entry.id, 14)
+
+    roster = game_setup_service.list_roster(game.id, home.id)
+    assert [entry.jersey_number for entry in roster] == [14]
+    tagging = TaggingSession(
+        session, game_id=game.id, home_team_id=home.id, away_team_id=away.id
+    )
+    assert "#14" in tagging.describe_event(shot)
+
+
+def test_renumber_onto_a_taken_number_is_rejected(game_setup_service):
+    game, home, _ = _game_with_sides(game_setup_service)
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14
+    )
+    stray = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=41
+    )
+
+    with pytest.raises(DuplicateJerseyNumberError):
+        game_setup_service.renumber_roster_entry(stray.id, 14)
+
+
+def test_remove_roster_entry_drops_it_its_units_and_its_only_player(
+    game_setup_service, session
+):
+    game, home, _ = _game_with_sides(game_setup_service)
+    stray = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=41
+    )
+    game_setup_service.assign_unit(
+        game_id=game.id,
+        team_id=home.id,
+        player_id=stray.player_id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+    player_id = stray.player_id
+
+    game_setup_service.remove_roster_entry(stray.id)
+
+    assert game_setup_service.list_roster(game.id, home.id) == []
+    assert game_setup_service.player_unit_assignments(game.id, player_id) == {}
+    assert player_id not in [player.id for player in game_setup_service.list_players()]
+
+
+def test_remove_roster_entry_keeps_a_player_rostered_in_another_game(
+    game_setup_service,
+):
+    game, home, _ = _game_with_sides(game_setup_service)
+    other_game = game_setup_service.create_game()
+    player = game_setup_service.create_player(full_name="Jordan Kim")
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14, player_id=player.id
+    )
+    game_setup_service.add_roster_entry(
+        game_id=other_game.id, team_id=home.id, jersey_number=14, player_id=player.id
+    )
+
+    game_setup_service.remove_roster_entry(entry.id)
+
+    assert game_setup_service.list_roster(game.id, home.id) == []
+    assert game_setup_service.get_player(player.id).full_name == "Jordan Kim"
+
+
+def test_remove_roster_entry_is_refused_while_an_event_references_its_player(
+    game_setup_service, session
+):
+    game, home, away = _game_with_sides(game_setup_service)
+    stray = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=41
+    )
+    opponent = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=away.id, jersey_number=9
+    )
+    shot = _shot(session, game.id, at=754_000, shooter_id=stray.player_id)
+    faceoff = Faceoff(
+        game_id=game.id,
+        video_timestamp=10_000,
+        faceoff_home_participant_id=stray.player_id,
+        faceoff_away_participant_id=opponent.player_id,
+    )
+    session.add(faceoff)
+    session.commit()
+    _shot(session, game.id, at=20_000, shooter_id=opponent.player_id)
+
+    with pytest.raises(RosterEntryInUseError) as refusal:
+        game_setup_service.remove_roster_entry(stray.id)
+
+    assert refusal.value.events == [faceoff, shot]
+    assert [
+        entry.jersey_number
+        for entry in game_setup_service.list_roster(game.id, home.id)
+    ] == [41]
+
+
+def test_merge_roster_entry_moves_every_reference_and_removes_the_source(
+    game_setup_service, session
+):
+    game, home, away = _game_with_sides(game_setup_service)
+    target = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14, full_name="Smith"
+    )
+    stray = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=41
+    )
+    opponent = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=away.id, jersey_number=9
+    )
+    for player_id, unit_number in ((target.player_id, 1), (stray.player_id, 2)):
+        game_setup_service.assign_unit(
+            game_id=game.id,
+            team_id=home.id,
+            player_id=player_id,
+            unit_type=UnitType.FORWARD_LINE,
+            unit_number=unit_number,
+        )
+    stray_player_id = stray.player_id
+    shot = _shot(
+        session,
+        game.id,
+        at=1000,
+        shooter_id=opponent.player_id,
+        assist1_id=stray_player_id,
+    )
+    shot.assist2_unknown = True
+    faceoff = Faceoff(
+        game_id=game.id,
+        video_timestamp=2000,
+        faceoff_home_participant_id=stray_player_id,
+        faceoff_away_participant_id=opponent.player_id,
+    )
+    penalty = Penalty(
+        game_id=game.id, video_timestamp=3000, penalty_player_id=stray_player_id
+    )
+    shift = ShiftChange(
+        game_id=game.id,
+        video_timestamp=4000,
+        shift_player_id=stray_player_id,
+        shift_on_ice=True,
+    )
+    session.add_all([faceoff, penalty, shift])
+    session.commit()
+
+    game_setup_service.merge_roster_entry(stray.id, target.id)
+
+    assert shot.assist1_id == target.player_id
+    assert shot.assist2_id is None and shot.assist2_unknown
+    assert faceoff.faceoff_home_participant_id == target.player_id
+    assert penalty.penalty_player_id == target.player_id
+    assert shift.shift_player_id == target.player_id
+    roster = game_setup_service.list_roster(game.id, home.id)
+    assert [entry.jersey_number for entry in roster] == [14]
+    assert game_setup_service.player_unit_assignments(game.id, target.player_id) == {
+        UnitType.FORWARD_LINE: 1
+    }
+    assert game_setup_service.player_unit_assignments(game.id, stray_player_id) == {}
+    assert stray_player_id not in [
+        player.id for player in game_setup_service.list_players()
+    ]
+
+
+def test_merge_is_refused_while_an_event_names_both_players(
+    game_setup_service, session
+):
+    game, home, _ = _game_with_sides(game_setup_service)
+    target = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14
+    )
+    stray = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=41
+    )
+    _shot(session, game.id, at=1000, shooter_id=stray.player_id)
+    shared = _shot(
+        session,
+        game.id,
+        at=2000,
+        shooter_id=stray.player_id,
+        assist1_id=target.player_id,
+    )
+
+    with pytest.raises(PlayersShareEventsError) as refusal:
+        game_setup_service.merge_roster_entry(stray.id, target.id)
+
+    assert refusal.value.events == [shared]
+    session.expire_all()
+    roster = game_setup_service.list_roster(game.id, home.id)
+    assert [entry.jersey_number for entry in roster] == [14, 41]
+    assert shared.shooter_id == stray.player_id
+
+
+def test_events_referencing_counts_a_players_events_in_one_game(
+    game_setup_service, session
+):
+    game, home, _ = _game_with_sides(game_setup_service)
+    other_game = game_setup_service.create_game()
+    player = game_setup_service.create_player()
+    for each_game in (game, other_game):
+        game_setup_service.add_roster_entry(
+            game_id=each_game.id, team_id=home.id, jersey_number=41, player_id=player.id
+        )
+        _shot(session, each_game.id, at=1000, shooter_id=player.id)
+    _shot(session, game.id, at=500, shooter_id=player.id)
+
+    events = game_setup_service.events_referencing(game.id, player.id)
+
+    assert [event.video_timestamp for event in events] == [500, 1000]
+
+
+def test_roster_corrections_report_roster_changed(session):
+    reasons: list[str] = []
+    service = GameSetupService(session, on_save=reasons.append)
+    game, home, _ = _game_with_sides(service)
+    keeper = service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14
+    )
+    stray = service.add_roster_entry(game_id=game.id, team_id=home.id, jersey_number=41)
+    other = service.add_roster_entry(game_id=game.id, team_id=home.id, jersey_number=7)
+    reasons.clear()
+
+    service.renumber_roster_entry(stray.id, 40)
+    service.merge_roster_entry(stray.id, keeper.id)
+    service.remove_roster_entry(other.id)
+
+    assert reasons == ["roster changed"] * 3

@@ -21,12 +21,14 @@ from sqlalchemy.orm import Session
 
 from hockey_analyzer.domain.enums import Position, RinkType, Side, UnitType
 from hockey_analyzer.domain.models import (
+    Event,
     Game,
     GameRosterEntry,
     GameUnitAssignment,
     Player,
     Team,
 )
+from hockey_analyzer.domain.player_references import involved_players, replace_player
 
 
 class SameTeamBothSidesError(Exception):
@@ -73,6 +75,38 @@ class PlayerNotRosteredError(Exception):
         self.game_id = game_id
         self.team_id = team_id
         self.player_id = player_id
+
+
+class RosterEntryInUseError(Exception):
+    """Raised instead of removing a roster entry whose player an event in
+    that game still names -- removal never silently rewrites or drops a
+    tagged event (see CONTEXT.md's Game roster entry entry). `events` are
+    the ones to change first, in video order."""
+
+    def __init__(self, entry_id: int, events: list[Event]) -> None:
+        super().__init__(
+            f"roster entry {entry_id} is still used by {len(events)} event(s)"
+        )
+        self.entry_id = entry_id
+        self.events = events
+
+
+class PlayersShareEventsError(Exception):
+    """Raised instead of merging two roster entries while an event names
+    both their players (e.g. one shoots, the other assists) -- the merged
+    event would name one player twice, so those `events` have to be fixed
+    first. In video order."""
+
+    def __init__(
+        self, source_entry_id: int, target_entry_id: int, events: list[Event]
+    ) -> None:
+        super().__init__(
+            f"roster entries {source_entry_id} and {target_entry_id} "
+            f"share {len(events)} event(s)"
+        )
+        self.source_entry_id = source_entry_id
+        self.target_entry_id = target_entry_id
+        self.events = events
 
 
 class GameSetupService:
@@ -223,7 +257,7 @@ class GameSetupService:
                 "full_name/position only apply when creating a new player, not when player_id is given"
             )
 
-        if self._roster_entry(game_id, team_id, jersey_number) is not None:
+        if self.find_roster_entry(game_id, team_id, jersey_number) is not None:
             raise DuplicateJerseyNumberError(team_id, jersey_number)
 
         if player_id is None:
@@ -240,6 +274,120 @@ class GameSetupService:
         self._commit_and_report("roster changed")
         return entry
 
+    def get_roster_entry(self, entry_id: int) -> GameRosterEntry:
+        entry = self._db.get(GameRosterEntry, entry_id)
+        if entry is None:
+            raise KeyError(f"no roster entry with id {entry_id}")
+        return entry
+
+    def renumber_roster_entry(
+        self, entry_id: int, jersey_number: int
+    ) -> GameRosterEntry:
+        """Change an entry's jersey number -- the usual cleanup for one
+        created on the fly from a mistyped number (see CONTEXT.md's Game
+        roster entry entry). Events reference the `Player`, not the
+        number, so they all follow. A number already taken on that
+        team's roster is still rejected; `merge_roster_entry` is the way
+        onto it."""
+        entry = self.get_roster_entry(entry_id)
+        if entry.jersey_number == jersey_number:
+            return entry
+        if (
+            self.find_roster_entry(entry.game_id, entry.team_id, jersey_number)
+            is not None
+        ):
+            raise DuplicateJerseyNumberError(entry.team_id, jersey_number)
+        entry.jersey_number = jersey_number
+        self._commit_and_report("roster changed")
+        return entry
+
+    def remove_roster_entry(self, entry_id: int) -> None:
+        """Take an entry off its game's roster, with that player's unit
+        assignments for the game, and the `Player` too when this was their
+        only roster entry in any game -- so a phantom player never shows
+        up when rostering future games (see CONTEXT.md's Game roster entry
+        entry)."""
+        entry = self.get_roster_entry(entry_id)
+        events = self.events_referencing(entry.game_id, entry.player_id)
+        if events:
+            raise RosterEntryInUseError(entry_id, events)
+        self._drop_roster_entry(entry)
+        self._commit_and_report("roster changed")
+
+    def merge_roster_entry(self, source_entry_id: int, target_entry_id: int) -> None:
+        """Fold `source_entry_id` into `target_entry_id`, an entry on the
+        same team's roster for the same game -- what renumbering onto a
+        taken number means (see CONTEXT.md's Game roster entry entry).
+        Every reference to the source's player in that game's events is
+        repointed to the target's player, then the source entry goes
+        exactly as `remove_roster_entry` takes it: its unit assignments
+        are dropped, never carried over. Irreversible."""
+        source = self.get_roster_entry(source_entry_id)
+        target = self.get_roster_entry(target_entry_id)
+        if (source.game_id, source.team_id) != (target.game_id, target.team_id):
+            raise ValueError("only entries on one team's roster for one game merge")
+        if source.player_id == target.player_id:
+            raise ValueError("both roster entries are already the same player")
+        shared = self.merge_conflicts(source_entry_id, target_entry_id)
+        if shared:
+            raise PlayersShareEventsError(source_entry_id, target_entry_id, shared)
+        for event in self.events_referencing(source.game_id, source.player_id):
+            replace_player(event, source.player_id, target.player_id)
+        self._drop_roster_entry(source)
+        self._commit_and_report("roster changed")
+
+    def merge_conflicts(
+        self, source_entry_id: int, target_entry_id: int
+    ) -> list[Event]:
+        """The events in the way of `merge_roster_entry`: those naming both
+        entries' players, in video order -- empty when the merge can go
+        ahead. Lets the UI refuse before asking to confirm an irreversible
+        merge."""
+        source = self.get_roster_entry(source_entry_id)
+        target = self.get_roster_entry(target_entry_id)
+        return [
+            event
+            for event in self.events_referencing(source.game_id, source.player_id)
+            if target.player_id in involved_players(event)
+        ]
+
+    def events_referencing(self, game_id: int, player_id: int) -> list[Event]:
+        """Every event in `game_id` naming `player_id` in any role, in
+        video order."""
+        return [
+            event
+            for event in self._game_events(game_id)
+            if player_id in involved_players(event)
+        ]
+
+    def _game_events(self, game_id: int) -> list[Event]:
+        stmt = (
+            select(Event)
+            .where(Event.game_id == game_id)
+            .order_by(Event.video_timestamp, Event.id)
+        )
+        return list(self._db.scalars(stmt))
+
+    def _drop_roster_entry(self, entry: GameRosterEntry) -> None:
+        assignments = select(GameUnitAssignment).where(
+            GameUnitAssignment.game_id == entry.game_id,
+            GameUnitAssignment.player_id == entry.player_id,
+        )
+        for assignment in self._db.scalars(assignments):
+            self._db.delete(assignment)
+        other_entries = select(GameRosterEntry).where(
+            GameRosterEntry.player_id == entry.player_id,
+            GameRosterEntry.id != entry.id,
+        )
+        is_last_entry = self._db.scalars(other_entries).first() is None
+        player = entry.player
+        self._db.delete(entry)
+        if is_last_entry:
+            # Flushed first: the entry's foreign key to the player has to
+            # be gone before the player is.
+            self._db.flush()
+            self._db.delete(player)
+
     def list_roster(self, game_id: int, team_id: int) -> list[GameRosterEntry]:
         stmt = (
             select(GameRosterEntry)
@@ -250,7 +398,7 @@ class GameSetupService:
         )
         return list(self._db.scalars(stmt))
 
-    def _roster_entry(
+    def find_roster_entry(
         self, game_id: int, team_id: int, jersey_number: int
     ) -> GameRosterEntry | None:
         stmt = select(GameRosterEntry).where(

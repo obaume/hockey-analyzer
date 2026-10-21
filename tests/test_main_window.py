@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QDialog
 from stats_fixtures import named_game
 
 from hockey_analyzer.domain.enums import EventSource, EventType, Side, UnitType
-from hockey_analyzer.domain.models import Event
+from hockey_analyzer.domain.models import Event, ShiftChange
 from hockey_analyzer.domain.report_bundle import (
     SCHEMA_VERSION,
     build_game_report,
@@ -1677,3 +1677,116 @@ def test_navigation_with_no_game_loaded_does_nothing(qtbot):
         qtbot.keyClick(window, key, _SHIFT)
 
     controller.seek.assert_not_called()
+
+
+# -- Game > Roster: correct the active game's roster after the fact (#89) ----
+
+
+class _RenumberingRosterDialog(_FakeUnitsDialog):
+    """A Roster dialog that renumbers the home side's only entry to #14,
+    as a tagger fixing a mistyped jersey would."""
+
+    def __init__(self, service, **kwargs) -> None:
+        super().__init__(service, **kwargs)
+        self._service = service
+
+    def exec(self) -> QDialog.DialogCode:
+        (entry,) = self._service.list_roster(
+            self.opened_for["game_id"], self.opened_for["home_team_id"]
+        )
+        self._service.renumber_roster_entry(entry.id, 14)
+        return super().exec()
+
+
+def _window_with_roster_dialog(qtbot, session, opened, *, setup_dialog=None):
+    def factory(service, **kwargs):
+        dialog = _FakeUnitsDialog(service, **kwargs)
+        opened.append(dialog)
+        return dialog
+
+    window = MainWindow(
+        controller=Mock(spec=PlaybackController),
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_setup_dialog_factory=lambda service: setup_dialog,
+        roster_dialog_factory=factory,
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def test_roster_action_is_disabled_with_no_active_game(qtbot, session):
+    window = _window_with_roster_dialog(qtbot, session, [])
+
+    assert window.roster_action.isEnabled() is False
+
+
+def test_roster_action_stays_disabled_until_both_sides_are_set(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service, both_sides=False)
+    window = _window_with_roster_dialog(
+        qtbot, session, [], setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+
+    window.new_game_action.trigger()
+
+    assert window.roster_action.isEnabled() is False
+
+
+def test_roster_action_opens_the_roster_dialog_for_the_active_game(
+    qtbot, session, game_setup_service
+):
+    game, home, away = _game_with_sides(game_setup_service)
+    opened = []
+    window = _window_with_roster_dialog(
+        qtbot, session, opened, setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+    window.new_game_action.trigger()
+    assert window.roster_action.isEnabled() is True
+
+    window.roster_action.trigger()
+
+    assert opened[0].executed is True
+    assert opened[0].parent is window
+    assert opened[0].opened_for == {
+        "game_id": game.id,
+        "home_team_id": home.id,
+        "away_team_id": away.id,
+    }
+
+
+def test_closing_the_roster_dialog_shows_renumbered_jerseys_at_once(
+    qtbot, session, game_setup_service
+):
+    window, game, _picker = _tagging_window(
+        qtbot,
+        session,
+        game_setup_service,
+        roster_dialog_factory=_RenumberingRosterDialog,
+    )
+    entry = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=game.home_team_id, jersey_number=41
+    )
+    session.add(
+        ShiftChange(
+            game_id=game.id,
+            video_timestamp=0,
+            shift_team_id=game.home_team_id,
+            shift_player_id=entry.player_id,
+            shift_on_ice=True,
+        )
+    )
+    session.commit()
+    window.tagging_panel.refresh()
+    _log_stoppage(qtbot, window)
+
+    window.roster_action.trigger()
+
+    assert "#14" in window.tagging_panel.event_table.item(0, 2).text()
+    on_ice = window.on_ice_dock.team_views["home"].table
+    assert on_ice.item(0, 0).text() == "#14"
+    assert window.statusBar().currentMessage() == (
+        "Undo history cleared: roster changed"
+    )
