@@ -14,19 +14,24 @@ or special-cased fields -- see CONTEXT.md's Game roster entry entry
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hockey_analyzer.domain.enums import Position, RinkType, Side, UnitType
+from hockey_analyzer.domain.enums import EventType, Position, RinkType, Side, UnitType
 from hockey_analyzer.domain.models import (
+    PLAYER_REFERENCE_FIELDS,
+    Event,
     Game,
     GameRosterEntry,
     GameUnitAssignment,
     Player,
     Team,
+    involved_players,
 )
+from hockey_analyzer.domain.tagging_session import roster_entry_label
+from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 
 
 class SameTeamBothSidesError(Exception):
@@ -73,6 +78,46 @@ class PlayerNotRosteredError(Exception):
         self.game_id = game_id
         self.team_id = team_id
         self.player_id = player_id
+
+
+def _event_list(events: Sequence[Event]) -> str:
+    """e.g. "1 event — change it first: shot attempt @ 0:12:34" -- the
+    tail of a roster-correction refusal, naming each event by type and
+    video timestamp so the tagger can find and fix it."""
+    count = f"{len(events)} event" if len(events) == 1 else f"{len(events)} events"
+    pronoun = "it" if len(events) == 1 else "them"
+    listed = ", ".join(
+        f"{EventType(event.event_type).value.replace('_', ' ')} "
+        f"@ {format_video_timestamp(event.video_timestamp)}"
+        for event in events
+    )
+    return f"{count} — change {pronoun} first: {listed}"
+
+
+class RosterEntryInUseError(Exception):
+    """Raised instead of removing a `GameRosterEntry` whose player an
+    event in that game still references -- removal never rewrites or
+    drops a tagged event (see CONTEXT.md's Game roster entry entry), so
+    `events` (in video order) have to be changed first."""
+
+    def __init__(self, entry_label: str, events: Sequence[Event]) -> None:
+        super().__init__(f"{entry_label} is used by {_event_list(events)}")
+        self.events = list(events)
+
+
+class SharedEventsError(Exception):
+    """Raised instead of merging two roster entries while an event
+    references both players (e.g. one shoots, the other assists):
+    repointing it would leave the merged player in two roles of one event,
+    so `events` (in video order) have to be changed first."""
+
+    def __init__(
+        self, source_label: str, target_label: str, events: Sequence[Event]
+    ) -> None:
+        super().__init__(
+            f"{source_label} and {target_label} are both on {_event_list(events)}"
+        )
+        self.events = list(events)
 
 
 class GameSetupService:
@@ -223,7 +268,7 @@ class GameSetupService:
                 "full_name/position only apply when creating a new player, not when player_id is given"
             )
 
-        if self._roster_entry(game_id, team_id, jersey_number) is not None:
+        if self.find_roster_entry(game_id, team_id, jersey_number) is not None:
             raise DuplicateJerseyNumberError(team_id, jersey_number)
 
         if player_id is None:
@@ -250,15 +295,140 @@ class GameSetupService:
         )
         return list(self._db.scalars(stmt))
 
-    def _roster_entry(
+    def find_roster_entry(
         self, game_id: int, team_id: int, jersey_number: int
     ) -> GameRosterEntry | None:
+        """Whoever wears `jersey_number` on `team_id`'s roster for
+        `game_id`, if anyone -- e.g. the entry a renumber onto a taken
+        number would merge into."""
         stmt = select(GameRosterEntry).where(
             GameRosterEntry.game_id == game_id,
             GameRosterEntry.team_id == team_id,
             GameRosterEntry.jersey_number == jersey_number,
         )
         return self._db.scalars(stmt).one_or_none()
+
+    # -- correcting a roster entry after the fact (#89) --------------------
+    #
+    # Chiefly to clean up an entry created on the fly from a mistyped
+    # jersey number (see CONTEXT.md's Game roster entry entry). Each one
+    # commits on its own, like every other save here.
+
+    def get_roster_entry(self, entry_id: int) -> GameRosterEntry:
+        entry = self._db.get(GameRosterEntry, entry_id)
+        if entry is None:
+            raise KeyError(f"no roster entry with id {entry_id}")
+        return entry
+
+    def referencing_events(self, game_id: int, player_id: int) -> list[Event]:
+        """Every event in `game_id` naming `player_id` in any role, in
+        video order."""
+        stmt = (
+            select(Event)
+            .where(Event.game_id == game_id)
+            .order_by(Event.video_timestamp, Event.id)
+        )
+        return [
+            event
+            for event in self._db.scalars(stmt)
+            if player_id in involved_players(event)
+        ]
+
+    def renumber_roster_entry(
+        self, entry_id: int, jersey_number: int
+    ) -> GameRosterEntry:
+        """Change an entry's jersey number. Events reference the `Player`,
+        not the number, so every one of them follows. A number already
+        taken on that team's roster for that game raises
+        `DuplicateJerseyNumberError` -- `merge_roster_entry` is the way to
+        fold the entry into whoever holds it."""
+        entry = self.get_roster_entry(entry_id)
+        if entry.jersey_number == jersey_number:
+            return entry
+        if self.find_roster_entry(entry.game_id, entry.team_id, jersey_number):
+            raise DuplicateJerseyNumberError(entry.team_id, jersey_number)
+        entry.jersey_number = jersey_number
+        self._commit_and_report("roster changed")
+        return entry
+
+    def remove_roster_entry(self, entry_id: int) -> None:
+        """Take an entry off its game's roster, along with that player's
+        unit assignments for the game, and the `Player` too if this was
+        their only roster entry in any game. Refused with
+        `RosterEntryInUseError` while any event in that game references
+        the player."""
+        self.check_removable(entry_id)
+        self._delete_roster_entry(self.get_roster_entry(entry_id))
+        self._commit_and_report("roster changed")
+
+    def check_removable(self, entry_id: int) -> None:
+        """Raises the `RosterEntryInUseError` `remove_roster_entry` would,
+        without writing anything -- so a refusal can be shown before
+        asking to confirm."""
+        entry = self.get_roster_entry(entry_id)
+        events = self.referencing_events(entry.game_id, entry.player_id)
+        if events:
+            raise RosterEntryInUseError(roster_entry_label(entry), events)
+
+    def merge_roster_entry(self, source_entry_id: int, target_entry_id: int) -> None:
+        """Fold the source entry into the target, both on the same team's
+        roster for the same game: every reference to the source's player
+        in that game's events is repointed to the target's player, then
+        the source is removed as `remove_roster_entry` would. The source's
+        unit assignments are dropped, never carried over. Refused with
+        `SharedEventsError` while any event names both players."""
+        events = self.merge_preview(source_entry_id, target_entry_id)
+        source = self.get_roster_entry(source_entry_id)
+        target = self.get_roster_entry(target_entry_id)
+        for event in events:
+            for name in PLAYER_REFERENCE_FIELDS[type(event)]:
+                if getattr(event, name) == source.player_id:
+                    setattr(event, name, target.player_id)
+        self._delete_roster_entry(source)
+        self._commit_and_report("roster changed")
+
+    def merge_preview(self, source_entry_id: int, target_entry_id: int) -> list[Event]:
+        """The events `merge_roster_entry` would repoint, in video order,
+        without writing anything -- or the `SharedEventsError` (or
+        `ValueError`) it would raise."""
+        source = self.get_roster_entry(source_entry_id)
+        target = self.get_roster_entry(target_entry_id)
+        if (source.game_id, source.team_id) != (target.game_id, target.team_id):
+            raise ValueError("can only merge entries on the same team in the same game")
+        if source.id == target.id:
+            raise ValueError("can't merge a roster entry into itself")
+
+        events = self.referencing_events(source.game_id, source.player_id)
+        shared = [
+            event for event in events if target.player_id in involved_players(event)
+        ]
+        if shared:
+            raise SharedEventsError(
+                roster_entry_label(source), roster_entry_label(target), shared
+            )
+        return events
+
+    def _delete_roster_entry(self, entry: GameRosterEntry) -> None:
+        """Deletes without committing, so a merge's repointing and its
+        removal land in one commit."""
+        assignments = select(GameUnitAssignment).where(
+            GameUnitAssignment.game_id == entry.game_id,
+            GameUnitAssignment.player_id == entry.player_id,
+        )
+        for assignment in self._db.scalars(assignments):
+            self._db.delete(assignment)
+        player_id = entry.player_id
+        self._db.delete(entry)
+        # Flushed first so the Player's (now empty) roster/unit collections
+        # don't try to null out the rows just deleted.
+        self._db.flush()
+        other_entries = select(GameRosterEntry.id).where(
+            GameRosterEntry.player_id == player_id
+        )
+        if self._db.scalars(other_entries).first() is None:
+            player = self._get_player(player_id)
+            self._db.expire(player, ["roster_entries", "unit_assignments"])
+            self._db.delete(player)
 
     # -- unit assignments -------------------------------------------------
 

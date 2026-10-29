@@ -23,12 +23,10 @@ from hockey_analyzer.domain.game_clock import GameClock, game_clocks
 from hockey_analyzer.domain.game_data import GameData
 from hockey_analyzer.domain.models import (
     Event,
-    Faceoff,
     Game,
-    Penalty,
-    ShiftChange,
     ShotAttempt,
     Team,
+    involved_players,
 )
 from hockey_analyzer.domain.video_timestamp import format_video_timestamp
 
@@ -76,26 +74,6 @@ class ClipFilter:
         ):
             return False
         return self.player_id is None or self.player_id in involved_players(event)
-
-
-def involved_players(event: Event) -> frozenset[int]:
-    """Every known player an event names, whatever the role: shooter and
-    assists, both faceoff participants, the penalized player, the shift
-    participant."""
-    if isinstance(event, ShotAttempt):
-        ids = (event.shooter_id, event.assist1_id, event.assist2_id)
-    elif isinstance(event, Faceoff):
-        ids = (
-            event.faceoff_home_participant_id,
-            event.faceoff_away_participant_id,
-        )
-    elif isinstance(event, Penalty):
-        ids = (event.penalty_player_id,)
-    elif isinstance(event, ShiftChange):
-        ids = (event.shift_player_id,)
-    else:
-        ids = ()
-    return frozenset(player_id for player_id in ids if player_id is not None)
 
 
 @dataclass(frozen=True)

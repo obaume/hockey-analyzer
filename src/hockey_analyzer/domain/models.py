@@ -508,3 +508,26 @@ _add_constraints(
         "shift_player_id", "shift_player_unknown", "ck_shift_player_ref"
     ),
 )
+
+
+# Every player-reference column, per subtype that has any -- the one list
+# both "who does this event name" (`involved_players`) and a roster merge's
+# repointing (GameSetupService.merge_roster_entry) read, so a new reference
+# field can't be covered by one and missed by the other. The `*_unknown`
+# companions are deliberately absent: an explicit "unknown" names nobody.
+PLAYER_REFERENCE_FIELDS: dict[type[Event], tuple[str, ...]] = {
+    ShotAttempt: ("shooter_id", "assist1_id", "assist2_id"),
+    Faceoff: ("faceoff_home_participant_id", "faceoff_away_participant_id"),
+    Penalty: ("penalty_player_id",),
+    ShiftChange: ("shift_player_id",),
+}
+
+
+def involved_players(event: Event) -> frozenset[int]:
+    """Every known player an event names, whatever the role: shooter and
+    assists, both faceoff participants, the penalized player, the shift
+    participant."""
+    ids = (
+        getattr(event, name) for name in PLAYER_REFERENCE_FIELDS.get(type(event), ())
+    )
+    return frozenset(player_id for player_id in ids if player_id is not None)
