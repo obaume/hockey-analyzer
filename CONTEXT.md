@@ -20,14 +20,15 @@ An event marking a whistle that halts play, logged **only** when the cause isn't
 
 ### Whistle
 
-A moment where a vision model heard/saw the referee blow play dead. Not the same as a **Stoppage**: a whistle is raw detection that says play stopped but not *why*, and every whistle (including one ending play on a goal or penalty) is detected, whereas a Stoppage is only logged when nothing else explains the whistle. A whistle is a candidate awaiting the user's review, never an **Event** itself and never counted toward any derived number. Reviewing it **resolves** it one of four ways:
+A moment where a vision model heard/saw an official blow a whistle. Usually that blows play dead, but not always: during the dead time before a faceoff the referee also whistles the end of the line change. Not the same as a **Stoppage**: a whistle is raw detection that says a whistle blew but not *why*, and every whistle (including one ending play on a goal or penalty) is detected, whereas a Stoppage is only logged when nothing else explains the whistle. A whistle is a candidate awaiting the user's review, never an **Event** itself and never counted toward any derived number. Reviewing it **resolves** it one of five ways:
 
 - **Stoppage** — creates a confirmed `stoppage` event at the whistle's timestamp.
-- **Explained** — an already-logged goal, penalty, or period end accounts for it; suggested automatically when one sits shortly before the whistle. Creates nothing.
+- **Explained** — an already-logged goal, penalty, or period end, or a whistle already resolved as a Stoppage (a second blast for the same stop), accounts for it; suggested automatically when one sits shortly before the whistle. Creates nothing.
+- **Line change** — a real whistle blast in dead time, signalling the end of the line change before the faceoff; it stops nothing. Suggested automatically when the whistle sits after a stop (a resolved whistle or a logged goal, penalty or stoppage) and before the next faceoff. Creates nothing.
 - **Goal / Penalty** — opens the ordinary tagging form at the whistle's timestamp, since a whistle can't supply a shooter, location, or infraction.
 - **Not a whistle** — a false detection (crowd noise, another rink). Creates nothing.
 
-A resolved whistle is kept, with its resolution, rather than deleted: resolutions are the labels that train the next model, false detections especially. Re-running detection on a game replaces only its *unresolved* whistles; resolved ones are never touched, and a new detection landing on one is dropped as a duplicate.
+A resolved whistle is kept, with its resolution, rather than deleted: resolutions are the labels that train the next model, false detections especially. Every resolution except **Not a whistle** means a real whistle blast occurred, a Line change included. Re-running detection on a game replaces only its *unresolved* whistles; resolved ones are never touched, and a new detection landing on one is dropped as a duplicate.
 _Avoid_: using "stoppage" for a detected whistle.
 
 ### Faceoff
