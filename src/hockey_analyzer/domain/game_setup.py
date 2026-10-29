@@ -102,6 +102,7 @@ class RosterEntryInUseError(Exception):
 
     def __init__(self, entry_label: str, events: Sequence[Event]) -> None:
         super().__init__(f"{entry_label} is used by {_event_list(events)}")
+        self.entry_label = entry_label
         self.events = list(events)
 
 
@@ -117,6 +118,8 @@ class SharedEventsError(Exception):
         super().__init__(
             f"{source_label} and {target_label} are both on {_event_list(events)}"
         )
+        self.source_label = source_label
+        self.target_label = target_label
         self.events = list(events)
 
 
@@ -345,7 +348,10 @@ class GameSetupService:
         entry = self.get_roster_entry(entry_id)
         if entry.jersey_number == jersey_number:
             return entry
-        if self.find_roster_entry(entry.game_id, entry.team_id, jersey_number):
+        if (
+            self.find_roster_entry(entry.game_id, entry.team_id, jersey_number)
+            is not None
+        ):
             raise DuplicateJerseyNumberError(entry.team_id, jersey_number)
         entry.jersey_number = jersey_number
         self._commit_and_report("roster changed")
