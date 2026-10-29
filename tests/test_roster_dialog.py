@@ -345,3 +345,26 @@ def test_a_new_players_position_shows_in_the_roster(qtbot, game_setup_service, g
     qtbot.mouseClick(panel.add_player_button, Qt.MouseButton.LeftButton)
 
     assert panel.roster_table.item(0, 2).text() == "G"
+
+
+def test_the_position_column_shows_the_entrys_lined_up_position(
+    qtbot, game_setup_service, session, game
+):
+    # A league import records where each player lined up *this game* on
+    # the entry, never on Player.position (see CONTEXT.md's Game roster
+    # entry) -- and a roster is a per-game view, so that's what it shows.
+    game_row, home, _away = game
+    for jersey_number, position in ((41, Position.LEFT_WING), (14, Position.DEFENSE)):
+        game_setup_service.find_roster_entry(
+            game_row.id, home.id, jersey_number
+        ).position = position
+    smith = game_setup_service.find_roster_entry(game_row.id, home.id, 14).player
+    game_setup_service.set_player_position(smith.id, Position.CENTER)
+    session.commit()
+
+    dialog = _make_dialog(qtbot, game_setup_service, game)
+
+    assert [dialog.home_panel.roster_table.item(row, 2).text() for row in range(2)] == [
+        "D",
+        "LW",
+    ]

@@ -349,10 +349,12 @@ class TeamRosterPanel(QWidget):
                 row, 0, QTableWidgetItem(str(entry.jersey_number))
             )
             self.roster_table.setItem(row, 1, QTableWidgetItem(player.full_name or ""))
+            # Where they lined up this game (league import only), else
+            # their fixed Player position (see CONTEXT.md's Game roster
+            # entry and Position entries).
+            position = entry.position or player.position
             self.roster_table.setItem(
-                row,
-                2,
-                QTableWidgetItem(player.position.value if player.position else ""),
+                row, 2, QTableWidgetItem(position.value if position else "")
             )
             self.roster_table.setItem(
                 row, 3, QTableWidgetItem(self._describe_units(entry.player_id))
