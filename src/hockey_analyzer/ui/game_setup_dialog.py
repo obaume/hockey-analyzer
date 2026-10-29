@@ -381,10 +381,11 @@ class TeamRosterPanel(QWidget):
         self.edit_error_label.setText("")
         self.edit_jersey_field.setText(str(entry.jersey_number))
         self.edit_full_name_field.setText(player.full_name or "")
+        # This game's position, as the table shows it (see
+        # `_refresh_roster_table`) -- saving writes it to the entry.
+        position = entry.position or player.position
         self.edit_position_combo.setCurrentIndex(
-            self.edit_position_combo.findData(player.position)
-            if player.position is not None
-            else 0
+            self.edit_position_combo.findData(position) if position is not None else 0
         )
         assignments = self._service.player_unit_assignments(self._game_id, player_id)
         for unit_type, field in self.edit_unit_fields.items():
@@ -398,8 +399,9 @@ class TeamRosterPanel(QWidget):
         self._service.set_player_full_name(
             player_id, self.edit_full_name_field.text().strip() or None
         )
-        self._service.set_player_position(
-            player_id, self.edit_position_combo.currentData()
+        self._service.set_roster_entry_position(
+            self._roster_entry_ids[rows[0].row()],
+            self.edit_position_combo.currentData(),
         )
         self._service.set_player_units(
             game_id=self._game_id,

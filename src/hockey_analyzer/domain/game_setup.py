@@ -376,6 +376,17 @@ class GameSetupService:
         self._delete_roster_entry(self.get_roster_entry(entry_id))
         self._commit_and_report("roster changed")
 
+    def set_roster_entry_position(
+        self, entry_id: int, position: Position | str | None
+    ) -> GameRosterEntry:
+        """Where the player lines up in this one game -- the same field a
+        league import fills, never `Player.position` (see CONTEXT.md's Game
+        roster entry entry)."""
+        entry = self.get_roster_entry(entry_id)
+        entry.position = _as_position(position)
+        self._commit_and_report("roster changed")
+        return entry
+
     def check_removable(self, entry_id: int) -> None:
         """Raises the `RosterEntryInUseError` `remove_roster_entry` would,
         without writing anything -- so a refusal can be shown before

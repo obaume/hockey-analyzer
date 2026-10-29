@@ -931,6 +931,20 @@ def test_find_roster_entry_looks_up_a_jersey_number(game_setup_service):
     assert game_setup_service.find_roster_entry(game.id, team.id, 99) is None
 
 
+def test_set_roster_entry_position_is_per_game_not_on_the_player(session):
+    reasons: list[str] = []
+    service = GameSetupService(session, on_save=reasons.append)
+    _game, _team, _stray, smith = _roster_of_two(service)
+    service.set_player_position(smith.player_id, Position.CENTER)
+    reasons.clear()
+
+    service.set_roster_entry_position(smith.id, "D")
+
+    assert smith.position is Position.DEFENSE
+    assert smith.player.position is Position.CENTER
+    assert reasons == ["roster changed"]
+
+
 def test_referencing_events_lists_every_role_in_video_order(
     game_setup_service, session
 ):
