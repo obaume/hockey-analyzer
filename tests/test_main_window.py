@@ -770,6 +770,111 @@ def test_units_action_is_disabled_again_when_no_game_ends_up_active(
     assert window.units_action.isEnabled() is False
 
 
+# -- Game > Roster: correct the active game's rosters (#89) -----------------
+
+
+class _RenumberingRosterDialog(_FakeUnitsDialog):
+    """Stands in for RosterDialog.exec() -- renumbers the home team's #41
+    to #14, as a tagger fixing a mistyped jersey number would."""
+
+    def __init__(self, service, **kwargs) -> None:
+        super().__init__(service, **kwargs)
+        self._service = service
+
+    def exec(self) -> QDialog.DialogCode:
+        entry = self._service.find_roster_entry(
+            self.opened_for["game_id"], self.opened_for["home_team_id"], 41
+        )
+        self._service.renumber_roster_entry(entry.id, 14)
+        return super().exec()
+
+
+def _roster_window(qtbot, session, game_setup_service, opened, **kwargs):
+    def factory(service, **dialog_kwargs):
+        dialog = _RenumberingRosterDialog(service, **dialog_kwargs)
+        opened.append(dialog)
+        return dialog
+
+    return _tagging_window(
+        qtbot, session, game_setup_service, roster_dialog_factory=factory, **kwargs
+    )
+
+
+def test_roster_action_is_disabled_with_no_active_game(qtbot, session):
+    window = _window_with_units_dialog(qtbot, session, [])
+
+    assert window.roster_action.isEnabled() is False
+
+
+def test_roster_action_stays_disabled_until_both_sides_are_set(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service, both_sides=False)
+    window = _window_with_units_dialog(
+        qtbot, session, [], setup_dialog=_FakeGameSetupDialog(game_id=game.id)
+    )
+
+    window.new_game_action.trigger()
+
+    assert window.roster_action.isEnabled() is False
+
+
+def test_roster_action_opens_the_roster_dialog_for_the_active_game(
+    qtbot, session, game_setup_service
+):
+    opened = []
+    window, game, _picker = _roster_window(qtbot, session, game_setup_service, opened)
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=game.home_team_id, jersey_number=41
+    )
+    assert window.roster_action.isEnabled() is True
+
+    window.roster_action.trigger()
+
+    assert opened[0].executed is True
+    assert opened[0].parent is window
+    assert opened[0].opened_for == {
+        "game_id": game.id,
+        "home_team_id": game.home_team_id,
+        "away_team_id": game.away_team_id,
+    }
+
+
+def test_closing_the_roster_dialog_shows_the_new_jersey_numbers(
+    qtbot, session, game_setup_service
+):
+    window, game, _picker = _roster_window(qtbot, session, game_setup_service, [])
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=game.home_team_id, jersey_number=41
+    )
+    window.tagging_panel.session.log_ad_hoc_line_change(Side.HOME, [41], 0, on_ice=True)
+    window.tagging_panel.refresh()
+    window.on_ice_dock.reload()
+
+    window.roster_action.trigger()
+
+    assert "#14" in window.tagging_panel.event_table.item(0, 2).text()
+    home_view = window.on_ice_dock.team_views["home"]
+    assert home_view.table.item(0, 0).text() == "#14"
+
+
+def test_a_roster_save_clears_the_undo_history_and_says_why(
+    qtbot, session, game_setup_service
+):
+    window, game, _picker = _roster_window(qtbot, session, game_setup_service, [])
+    game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=game.home_team_id, jersey_number=41
+    )
+    _log_stoppage(qtbot, window)
+
+    window.roster_action.trigger()
+
+    assert window.undo_action.isEnabled() is False
+    assert window.statusBar().currentMessage() == (
+        "Undo history cleared: roster changed"
+    )
+
+
 class _FakeStatsDialog:
     """Stands in for StatsDialog.exec() -- records the GameData list it
     was opened with."""

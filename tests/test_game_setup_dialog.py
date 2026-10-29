@@ -339,7 +339,7 @@ def test_picking_the_same_team_on_both_sides_shows_an_error(qtbot, game_setup_se
     assert game_setup_service.get_game(dialog.game_id).away_team_id is None
 
 
-def test_position_can_be_set_after_creation(qtbot, game_setup_service):
+def test_the_selected_players_position_is_set_for_this_game(qtbot, game_setup_service):
     dialog = _make_dialog(qtbot, game_setup_service)
     _create_game(qtbot, dialog)
     _create_team(qtbot, dialog.home_panel, "Icebreakers")
@@ -352,8 +352,11 @@ def test_position_can_be_set_after_creation(qtbot, game_setup_service):
     )
     qtbot.mouseClick(panel.edit_save_button, Qt.MouseButton.LeftButton)
 
+    # The game-of-the-day position on the roster entry (#89 follow-up),
+    # not the Player's fixed one.
     roster = game_setup_service.list_roster(dialog.game_id, panel.team_id)
-    assert roster[0].player.position is Position.DEFENSE
+    assert roster[0].position is Position.DEFENSE
+    assert roster[0].player.position is None
 
 
 # -- unit assignments (ticket 17) -------------------------------------------

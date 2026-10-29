@@ -11,10 +11,13 @@ values, matching the split `tagging_panel.py` already sets.
 
 `TeamRosterPanel` is used for both sides of the game unchanged -- there is
 no separate "opponent" widget or code path (see CONTEXT.md's Game roster
-entry entry).
+entry entry). It also backs Game -> Roster… (`roster_dialog.py`) on an
+existing game, where its team row is read-only (`show_team`).
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -37,13 +41,44 @@ from hockey_analyzer.domain.enums import Handedness, Position, RinkType, Side, U
 from hockey_analyzer.domain.game_setup import (
     DuplicateJerseyNumberError,
     GameSetupService,
+    RosterEntryInUseError,
     SameTeamBothSidesError,
+    SharedEventsError,
 )
-from hockey_analyzer.domain.tagging_session import UNIT_TYPE_LABELS, unit_label
+from hockey_analyzer.domain.models import GameRosterEntry
+from hockey_analyzer.domain.tagging_session import (
+    UNIT_TYPE_LABELS,
+    roster_entry_label,
+    unit_label,
+)
 
 # Sentinel `player_combo` item data meaning "create a brand-new Player from
 # the full_name/position fields" rather than rostering an existing one.
 _NEW_PLAYER = -1
+
+# Asks a yes/no question, True meaning yes -- injectable so tests needn't
+# drive a modal box.
+Confirm = Callable[[str], bool]
+
+
+def merge_question(
+    source: GameRosterEntry, target: GameRosterEntry, event_count: int
+) -> str:
+    """e.g. "#14 is already Smith. Move #41's 3 events to Smith and remove
+    #41? This can't be undone." -- a nameless target is named by number."""
+    target_name = target.player.full_name
+    taken = (
+        f"#{target.jersey_number} is already {target_name}."
+        if target_name
+        else f"#{target.jersey_number} is already on the roster."
+    )
+    source_label = roster_entry_label(source)
+    events = f"{event_count} event" if event_count == 1 else f"{event_count} events"
+    return (
+        f"{taken} Move {source_label}'s {events} to "
+        f"{target_name or f'#{target.jersey_number}'} and remove {source_label}? "
+        "This can't be undone."
+    )
 
 
 class TeamRosterPanel(QWidget):
@@ -58,11 +93,13 @@ class TeamRosterPanel(QWidget):
         side_label: str,
         side: Side,
         *,
+        confirm: Confirm | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._side = side
+        self._confirm = confirm or self._ask
         self._game_id: int | None = None
         self.team_id: int | None = None
 
@@ -121,7 +158,26 @@ class TeamRosterPanel(QWidget):
         self.edit_save_button = QPushButton("Save")
         self.edit_save_button.clicked.connect(self._save_selected_player)
 
+        # #89: renumber and remove each apply at once, on their own
+        # confirmation, separately from Save -- a merge or removal can't
+        # be undone, so it shouldn't ride along with a name edit.
+        self.edit_jersey_field = QLineEdit()
+        self.edit_jersey_field.setPlaceholderText("Jersey #")
+        self.renumber_button = QPushButton("Renumber")
+        self.renumber_button.clicked.connect(self._renumber_selected)
+        self.remove_button = QPushButton("Remove from roster")
+        self.remove_button.clicked.connect(self._remove_selected)
+        self.edit_error_label = QLabel("")
+        self.edit_error_label.setWordWrap(True)
+
+        jersey_row = QHBoxLayout()
+        jersey_row.addWidget(self.edit_jersey_field)
+        jersey_row.addWidget(self.renumber_button)
+        jersey_row.addWidget(self.remove_button)
+
         edit_form = QFormLayout()
+        edit_form.addRow("Jersey #", jersey_row)
+        edit_form.addRow("", self.edit_error_label)
         edit_form.addRow("Full name", self.edit_full_name_field)
         edit_form.addRow("Position", self.edit_position_combo)
         edit_form.addRow("Handedness", self.edit_handedness_combo)
@@ -157,6 +213,23 @@ class TeamRosterPanel(QWidget):
     def set_game_id(self, game_id: int) -> None:
         self._game_id = game_id
         self._refresh_roster_table()
+
+    def show_team(self, game_id: int, team_id: int) -> None:
+        """Open on a game whose side already has `team_id`, with the team
+        row read-only -- changing an entry's team isn't a correction this
+        panel offers, since it changes what that player's events mean."""
+        self.team_combo.blockSignals(True)
+        self.team_combo.setCurrentIndex(self.team_combo.findData(team_id))
+        self.team_combo.blockSignals(False)
+        for widget in (
+            self.team_combo,
+            self.new_team_name_field,
+            self.is_user_team_checkbox,
+            self.create_team_button,
+        ):
+            widget.setEnabled(False)
+        self.team_id = team_id
+        self.set_game_id(game_id)
 
     # -- team selection/creation ------------------------------------------
 
@@ -261,6 +334,7 @@ class TeamRosterPanel(QWidget):
 
     def _refresh_roster_table(self) -> None:
         self._roster_player_ids: list[int] = []
+        self._roster_entry_ids: list[int] = []
         if self._game_id is None or self.team_id is None:
             self.roster_table.setRowCount(0)
             return
@@ -269,15 +343,18 @@ class TeamRosterPanel(QWidget):
         self.roster_table.setRowCount(len(entries))
         for row, entry in enumerate(entries):
             self._roster_player_ids.append(entry.player_id)
+            self._roster_entry_ids.append(entry.id)
             player = entry.player
             self.roster_table.setItem(
                 row, 0, QTableWidgetItem(str(entry.jersey_number))
             )
             self.roster_table.setItem(row, 1, QTableWidgetItem(player.full_name or ""))
+            # Where they lined up this game (league import only), else
+            # their fixed Player position (see CONTEXT.md's Game roster
+            # entry and Position entries).
+            position = entry.position or player.position
             self.roster_table.setItem(
-                row,
-                2,
-                QTableWidgetItem(player.position.value if player.position else ""),
+                row, 2, QTableWidgetItem(position.value if position else "")
             )
             self.roster_table.setItem(
                 row, 3, QTableWidgetItem(self._describe_units(entry.player_id))
@@ -299,12 +376,16 @@ class TeamRosterPanel(QWidget):
 
         player_id = self._roster_player_ids[rows[0].row()]
         player = self._service.get_player(player_id)
+        entry = self._service.get_roster_entry(self._roster_entry_ids[rows[0].row()])
         self.edit_group.setVisible(True)
+        self.edit_error_label.setText("")
+        self.edit_jersey_field.setText(str(entry.jersey_number))
         self.edit_full_name_field.setText(player.full_name or "")
+        # This game's position, as the table shows it (see
+        # `_refresh_roster_table`) -- saving writes it to the entry.
+        position = entry.position or player.position
         self.edit_position_combo.setCurrentIndex(
-            self.edit_position_combo.findData(player.position)
-            if player.position is not None
-            else 0
+            self.edit_position_combo.findData(position) if position is not None else 0
         )
         assignments = self._service.player_unit_assignments(self._game_id, player_id)
         for unit_type, field in self.edit_unit_fields.items():
@@ -318,8 +399,9 @@ class TeamRosterPanel(QWidget):
         self._service.set_player_full_name(
             player_id, self.edit_full_name_field.text().strip() or None
         )
-        self._service.set_player_position(
-            player_id, self.edit_position_combo.currentData()
+        self._service.set_roster_entry_position(
+            self._roster_entry_ids[rows[0].row()],
+            self.edit_position_combo.currentData(),
         )
         self._service.set_player_units(
             game_id=self._game_id,
@@ -332,6 +414,75 @@ class TeamRosterPanel(QWidget):
         )
         self._refresh_roster_table()
         self._refresh_player_combo()
+
+    # -- correcting an entry (#89) -----------------------------------------
+
+    def _selected_entry(self) -> GameRosterEntry | None:
+        rows = self.roster_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        return self._service.get_roster_entry(self._roster_entry_ids[rows[0].row()])
+
+    def _renumber_selected(self) -> None:
+        """Onto a free number this applies at once; onto one already on
+        this roster it offers to merge into whoever holds it -- unless an
+        event names both, which is refused before asking."""
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self.edit_error_label.setText("")
+        jersey_text = self.edit_jersey_field.text().strip()
+        if not jersey_text.isdigit():
+            self.edit_error_label.setText("Enter a jersey number.")
+            return
+        jersey_number = int(jersey_text)
+
+        target = self._service.find_roster_entry(
+            entry.game_id, entry.team_id, jersey_number
+        )
+        if target is None or target.id == entry.id:
+            self._service.renumber_roster_entry(entry.id, jersey_number)
+        else:
+            try:
+                events = self._service.merge_preview(entry.id, target.id)
+            except SharedEventsError as error:
+                self.edit_error_label.setText(str(error))
+                return
+            if not self._confirm(merge_question(entry, target, len(events))):
+                return
+            self._service.merge_roster_entry(entry.id, target.id)
+        self._after_correction()
+
+    def _remove_selected(self) -> None:
+        """Refused, before asking, while any event in this game names the
+        entry's player."""
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self.edit_error_label.setText("")
+        try:
+            self._service.check_removable(entry.id)
+        except RosterEntryInUseError as error:
+            self.edit_error_label.setText(str(error))
+            return
+        if not self._confirm(
+            f"Remove {roster_entry_label(entry)} from this game's roster?"
+        ):
+            return
+        self._service.remove_roster_entry(entry.id)
+        self._after_correction()
+
+    def _after_correction(self) -> None:
+        """Rows may have moved or gone, and a merged/removed Player may no
+        longer exist -- so drop the selection and re-read both lists."""
+        self.roster_table.clearSelection()
+        self.edit_group.setVisible(False)
+        self._refresh_roster_table()
+        self._refresh_player_combo()
+
+    def _ask(self, question: str) -> bool:
+        answer = QMessageBox.question(self, "Roster", question)
+        return answer == QMessageBox.StandardButton.Yes
 
 
 def _build_position_combo() -> QComboBox:
