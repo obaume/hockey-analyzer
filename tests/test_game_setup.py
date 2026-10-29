@@ -151,6 +151,19 @@ def test_set_player_position_is_a_player_level_attribute_not_per_game(
     assert session.get(Player, player.id).position is Position.DEFENSE
 
 
+def test_a_position_given_as_its_plain_value_is_stored_as_the_enum(
+    game_setup_service,
+):
+    # What a QComboBox hands back for a Position item: the bare "D".
+    # Kept as-is it would outlive the commit (expire_on_commit=False) and
+    # break anything reading `.value` off it.
+    player = game_setup_service.create_player(position="G")
+    assert player.position is Position.GOALIE
+
+    game_setup_service.set_player_position(player.id, "D")
+    assert player.position is Position.DEFENSE
+
+
 def test_set_player_position_raises_for_a_missing_player(game_setup_service):
     with pytest.raises(KeyError):
         game_setup_service.set_player_position(999999, Position.GOALIE)

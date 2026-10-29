@@ -123,6 +123,15 @@ class SharedEventsError(Exception):
         self.events = list(events)
 
 
+def _as_position(position: Position | str | None) -> Position | None:
+    """The `Position` itself, even when handed its plain value -- a
+    `QComboBox` gives a `Position` item's data back as a bare `str` (see
+    rink_view.ShotAttemptCaptureDialog), and the session keeps whatever
+    was assigned past the commit (`expire_on_commit=False`), so a bare
+    "D" would otherwise reach everything reading `.value` off it."""
+    return None if position is None else Position(position)
+
+
 class GameSetupService:
     """Takes an already-open SQLAlchemy `Session`; every method here
     commits before returning, matching `TaggingSession`'s autosave
@@ -224,7 +233,7 @@ class GameSetupService:
         """`full_name` is promptable but skippable at creation (see
         CONTEXT.md's Player entry) -- omit it and backfill later with
         `set_player_full_name`."""
-        player = Player(full_name=full_name, position=position)
+        player = Player(full_name=full_name, position=_as_position(position))
         self._db.add(player)
         self._commit_and_report("player created")
         return player
@@ -239,7 +248,7 @@ class GameSetupService:
         """A fixed attribute of the `Player` record, set once, manually --
         not per game (see CONTEXT.md's Position entry)."""
         player = self._get_player(player_id)
-        player.position = position
+        player.position = _as_position(position)
         self._commit_and_report("player changed")
         return player
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import Qt
 
-from hockey_analyzer.domain.enums import ShotOutcome, ShotType, UnitType
+from hockey_analyzer.domain.enums import Position, ShotOutcome, ShotType, UnitType
 from hockey_analyzer.domain.models import ShotAttempt
 from hockey_analyzer.ui.roster_dialog import RosterDialog
 
@@ -315,3 +315,33 @@ def test_unit_edits_still_save_from_the_selected_entry(qtbot, game_setup_service
     assert game_setup_service.player_unit_assignments(game_row.id, smith_id) == {
         UnitType.FORWARD_LINE: 2
     }
+
+
+def test_a_saved_position_still_shows_when_the_dialog_reopens(
+    qtbot, game_setup_service, game
+):
+    # Qt hands a combo's StrEnum item data back as a plain str; stored
+    # as-is, it outlived the commit (expire_on_commit=False) and broke
+    # the next roster refresh.
+    dialog = _make_dialog(qtbot, game_setup_service, game)
+    panel = dialog.home_panel
+    _select(panel, 41)
+    panel.edit_position_combo.setCurrentIndex(
+        panel.edit_position_combo.findData(Position.DEFENSE)
+    )
+    qtbot.mouseClick(panel.edit_save_button, Qt.MouseButton.LeftButton)
+
+    reopened = _make_dialog(qtbot, game_setup_service, game)
+
+    assert reopened.home_panel.roster_table.item(1, 2).text() == "D"
+
+
+def test_a_new_players_position_shows_in_the_roster(qtbot, game_setup_service, game):
+    dialog = _make_dialog(qtbot, game_setup_service, game)
+    panel = dialog.away_panel
+
+    panel.jersey_field.setText("7")
+    panel.position_combo.setCurrentIndex(panel.position_combo.findData(Position.GOALIE))
+    qtbot.mouseClick(panel.add_player_button, Qt.MouseButton.LeftButton)
+
+    assert panel.roster_table.item(0, 2).text() == "G"
