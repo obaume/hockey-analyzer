@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from hockey_analyzer.domain.enums import OfficialEventKind, Side
 from hockey_analyzer.domain.game_data import GameData
-from hockey_analyzer.domain.models import Event, OfficialEvent, OfficialPlayer
+from hockey_analyzer.domain.models import Event, OfficialEvent, OfficialPlayer, Penalty
 from hockey_analyzer.domain.sync_check import Finding, FindingKind, sync_check
 from hockey_analyzer.domain.tagging_session import (
     REFERENCE_NAMES,
@@ -192,8 +192,12 @@ def _clock(period: int | None, elapsed_ms: int | None) -> str:
     counts it."""
     if period is None or elapsed_ms is None:
         return "Before the first period"
+    return f"P{period} {_minutes(elapsed_ms)}"
+
+
+def _minutes(elapsed_ms: int) -> str:
     seconds = elapsed_ms // 1000
-    return f"P{period} {seconds // 60}:{seconds % 60:02d}"
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def _official_label(player: OfficialPlayer | None) -> str:
@@ -248,13 +252,13 @@ def _finding_text(data: GameData, finding: Finding) -> str:
         return (
             f"P{finding.period}  the tagged clock drifts {abs(seconds)} s "
             f"{direction} the league's across the period -- a missed "
-            f"stoppage? Look before {when.split(' ', 1)[1]}"
+            f"stoppage? Look before {_minutes(finding.tagged_elapsed_ms)}"
         )
     event = _event(data, finding.tagged_event_id)
     if finding.kind is FindingKind.EXTRA:
         kind = (
             OfficialEventKind.PENALTY
-            if event is not None and event.event_type == "penalty"
+            if isinstance(event, Penalty)
             else OfficialEventKind.GOAL
         )
         side = _event_side(data, event)
