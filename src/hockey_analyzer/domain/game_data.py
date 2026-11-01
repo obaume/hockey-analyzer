@@ -17,6 +17,7 @@ from hockey_analyzer.domain.models import (
     Game,
     GameRosterEntry,
     GameUnitAssignment,
+    OfficialEvent,
 )
 
 
@@ -24,13 +25,22 @@ from hockey_analyzer.domain.models import (
 class GameData:
     """One game's snapshot: the `Game` row (sides, rink type,
     `opponent_shifts_complete`), its events in video order, and its roster
-    entries with each entry's `Player` attached (for `Position`), and its
-    line/unit assignments (for ticket 19's unit stats)."""
+    entries with each entry's `Player` attached (for `Position`), its
+    line/unit assignments (for ticket 19's unit stats), and its Official
+    events in timeline order (for the sync check only: no stat reads
+    them)."""
 
     game: Game
     events: Sequence[Event]
     roster: Sequence[GameRosterEntry]
     unit_assignments: Sequence[GameUnitAssignment] = ()
+    official_events: Sequence[OfficialEvent] = ()
+
+    def roster_entry(self, player_id: int) -> GameRosterEntry | None:
+        """The roster entry holding `player_id` in this game, if any."""
+        return next(
+            (entry for entry in self.roster if entry.player_id == player_id), None
+        )
 
 
 def load_game_data(db_session: Session, game_id: int) -> GameData:
@@ -58,9 +68,19 @@ def load_game_data(db_session: Session, game_id: int) -> GameData:
             GameUnitAssignment.player_id,
         )
     )
+    official_events = db_session.scalars(
+        select(OfficialEvent)
+        .where(OfficialEvent.game_id == game_id)
+        .order_by(
+            OfficialEvent.period_number,
+            OfficialEvent.elapsed_seconds,
+            OfficialEvent.id,
+        )
+    )
     return GameData(
         game=game,
         events=list(events),
         roster=list(roster),
         unit_assignments=list(unit_assignments),
+        official_events=list(official_events),
     )

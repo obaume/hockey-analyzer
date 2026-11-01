@@ -17,7 +17,7 @@ restart with no data loss.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import NamedTuple
 
@@ -39,6 +39,8 @@ from hockey_analyzer.domain.models import (
     Game,
     GameRosterEntry,
     GameUnitAssignment,
+    OfficialEvent,
+    OfficialPlayer,
     Penalty,
     PeriodEnd,
     PeriodStart,
@@ -64,7 +66,7 @@ _MODEL_BY_TYPE: dict[EventType, type[Event]] = {
 }
 
 
-class _ReferenceSpec(NamedTuple):
+class ReferenceSpec(NamedTuple):
     """One player reference on an event subtype: its id/unknown column
     pair, plus the team column it resolves onto -- `None` for a reference
     with no team column of its own (assist1/assist2, which record a
@@ -73,12 +75,22 @@ class _ReferenceSpec(NamedTuple):
     `side` is set for a reference bound to one side of the game (a
     faceoff's home/away participant): its team is that side's by
     definition, and it's picked by the `team_side` it's set from rather
-    than by name."""
+    than by name.
+
+    `official` reads the Official event slot the sync check compares the
+    reference with, for a reference that has one."""
 
     id_column: str
     unknown_column: str
     team_column: str | None
     side: Side | None = None
+    official: Callable[[OfficialEvent], OfficialPlayer | None] | None = None
+
+    def player_id(self, event: Event) -> int | None:
+        return getattr(event, self.id_column)
+
+    def is_unknown(self, event: Event) -> bool:
+        return bool(getattr(event, self.unknown_column))
 
 
 # Every player reference an in-scope subtype carries, keyed by a
@@ -86,25 +98,28 @@ class _ReferenceSpec(NamedTuple):
 # with exactly one reference (penalty/shift_change) lets that name default
 # implicitly, as does faceoff, whose side-bound references are picked by
 # `team_side`; shot_attempt, which carries several, requires it.
-_REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
+_REFERENCE_SPECS: dict[EventType, dict[str, ReferenceSpec]] = {
     EventType.PENALTY: {
-        "player": _ReferenceSpec(
-            "penalty_player_id", "penalty_player_unknown", "penalty_team_id"
+        "player": ReferenceSpec(
+            "penalty_player_id",
+            "penalty_player_unknown",
+            "penalty_team_id",
+            official=lambda entry: entry.player,
         ),
     },
     EventType.SHIFT_CHANGE: {
-        "player": _ReferenceSpec(
+        "player": ReferenceSpec(
             "shift_player_id", "shift_player_unknown", "shift_team_id"
         ),
     },
     EventType.FACEOFF: {
-        "home_participant": _ReferenceSpec(
+        "home_participant": ReferenceSpec(
             "faceoff_home_participant_id",
             "faceoff_home_participant_unknown",
             None,
             Side.HOME,
         ),
-        "away_participant": _ReferenceSpec(
+        "away_participant": ReferenceSpec(
             "faceoff_away_participant_id",
             "faceoff_away_participant_unknown",
             None,
@@ -112,10 +127,38 @@ _REFERENCE_SPECS: dict[EventType, dict[str, _ReferenceSpec]] = {
         ),
     },
     EventType.SHOT_ATTEMPT: {
-        "shooter": _ReferenceSpec("shooter_id", "shooter_unknown", "shot_team_id"),
-        "assist1": _ReferenceSpec("assist1_id", "assist1_unknown", None),
-        "assist2": _ReferenceSpec("assist2_id", "assist2_unknown", None),
+        "shooter": ReferenceSpec(
+            "shooter_id",
+            "shooter_unknown",
+            "shot_team_id",
+            official=lambda entry: entry.player,
+        ),
+        "assist1": ReferenceSpec(
+            "assist1_id",
+            "assist1_unknown",
+            None,
+            official=lambda entry: entry.assist1,
+        ),
+        "assist2": ReferenceSpec(
+            "assist2_id",
+            "assist2_unknown",
+            None,
+            official=lambda entry: entry.assist2,
+        ),
     },
+}
+
+# Public: the sync check compares these references against an Official
+# event's players, and its dialog labels and fills them. Keyed like
+# `_REFERENCE_SPECS`, holding only the references with an official slot.
+OFFICIAL_REFERENCES: dict[EventType, dict[str, ReferenceSpec]] = {
+    event_type: official
+    for event_type, specs in _REFERENCE_SPECS.items()
+    if (
+        official := {
+            name: spec for name, spec in specs.items() if spec.official is not None
+        }
+    )
 }
 
 # References that must be defaulted to explicit "unknown" the instant a
@@ -263,6 +306,19 @@ class Unit(NamedTuple):
     unit_type: UnitType
     unit_number: int
     player_ids: tuple[int, ...]
+
+
+class NamedPlayerNotOverwrittenError(ValueError):
+    """Fill from official was asked for a field that isn't an Unknown
+    player reference: a named player (or an empty assist) is only ever
+    reported against the official record, never overwritten (CONTEXT.md's
+    Sync check)."""
+
+
+class OfficialPlayerNotRosteredError(LookupError):
+    """Fill from official found no Player on the event's team in this
+    game holding the official licence number -- the roster is the
+    tagger's to control, so nobody is rostered on the fly."""
 
 
 class TaggingSession:
@@ -675,10 +731,62 @@ class TaggingSession:
                 setattr(event, spec.unknown_column, False)
 
             self._db.commit()
-            who = self._describe_player(
-                getattr(event, spec.id_column), getattr(event, spec.unknown_column)
-            )
+            who = self._describe_player(spec.player_id(event), spec.is_unknown(event))
             step.description = f"Set {REFERENCE_NAMES[reference]}: {who}"
+            step.event_id = event.id
+        return event
+
+    def fill_from_official(
+        self, event_id: int, reference: str, league_id: str
+    ) -> Event:
+        """Fill from official (see `sync_check`): set one Unknown player
+        reference on one event to the Player on this game's roster, on the
+        event's team, holding the official `league_id` -- one undoable
+        step, asked for only after the tagger confirms it. Refuses a field
+        that isn't unknown (`NamedPlayerNotOverwrittenError`) and an
+        official player nobody on the roster is
+        (`OfficialPlayerNotRosteredError`)."""
+        event = self._get(event_id)
+        specs = _REFERENCE_SPECS.get(EventType(event.event_type), {})
+        spec = specs.get(reference)
+        if spec is None:
+            raise ValueError(
+                f"{event.event_type.value} events have no {reference!r} reference"
+            )
+        if not spec.is_unknown(event):
+            raise NamedPlayerNotOverwrittenError(
+                f"the {REFERENCE_NAMES[reference]} isn't an unknown player"
+            )
+        # An assist has no team column of its own: it's the shooter's team.
+        team_column = next(
+            (s.team_column for s in specs.values() if s.team_column is not None),
+            None,
+        )
+        team_id = getattr(event, team_column) if team_column is not None else None
+        stmt = (
+            select(GameRosterEntry)
+            .join(Player)
+            .where(
+                GameRosterEntry.game_id == self.game_id,
+                Player.league_id == league_id,
+            )
+        )
+        if team_id is not None:
+            stmt = stmt.where(GameRosterEntry.team_id == team_id)
+        entry = self._db.scalars(stmt).one_or_none()
+        if entry is None:
+            raise OfficialPlayerNotRosteredError(
+                f"no player with licence number {league_id} is on this "
+                "game's roster for that team"
+            )
+        with self._history.record() as step:
+            setattr(event, spec.id_column, entry.player_id)
+            setattr(event, spec.unknown_column, False)
+            self._db.commit()
+            step.description = (
+                f"Filled {REFERENCE_NAMES[reference]} from official: "
+                f"{roster_entry_label(entry)}"
+            )
             step.event_id = event.id
         return event
 

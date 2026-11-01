@@ -5,6 +5,8 @@ states exactly the events its expected numbers come from."""
 from __future__ import annotations
 
 from hockey_analyzer.domain.enums import (
+    EventSource,
+    OfficialEventKind,
     Position,
     RinkType,
     ShotOutcome,
@@ -18,6 +20,8 @@ from hockey_analyzer.domain.models import (
     Game,
     GameRosterEntry,
     GameUnitAssignment,
+    OfficialEvent,
+    Penalty,
     PeriodEnd,
     PeriodStart,
     Player,
@@ -35,6 +39,9 @@ AWAY = 2
 # the relevant offensive zone unless a test says otherwise.
 HOME_NET_X = 80.0
 AWAY_NET_X = -80.0
+
+# A player reference left as an explicit Unknown player reference.
+UNKNOWN = "unknown"
 
 
 class GameBuilder:
@@ -61,6 +68,7 @@ class GameBuilder:
         self.events = []
         self.roster = []
         self.units = []
+        self.official_events = []
         self._next_id = 1
         self._clock = 0
 
@@ -78,13 +86,23 @@ class GameBuilder:
         return event
 
     def player(
-        self, team_id, jersey, *, position=Position.CENTER, name=None, player_id=None
+        self,
+        team_id,
+        jersey,
+        *,
+        position=Position.CENTER,
+        name=None,
+        player_id=None,
+        league_id=None,
     ):
         """`player_id` defaults to a fresh id; pass one explicitly to have
-        the same player appear across several games."""
+        the same player appear across several games. `league_id` is the
+        player's licence number."""
         if player_id is None:
             player_id = len(self.roster) + 100
-        player = Player(id=player_id, full_name=name, position=position)
+        player = Player(
+            id=player_id, full_name=name, position=position, league_id=league_id
+        )
         self.roster.append(
             GameRosterEntry(
                 game_id=self.game.id,
@@ -123,6 +141,91 @@ class GameBuilder:
             ),
             at,
         )
+
+    def goal(
+        self,
+        team_id,
+        *,
+        shooter=UNKNOWN,
+        assist1=None,
+        assist2=None,
+        strength="5v5",
+        at=None,
+        source=EventSource.MANUAL,
+        confirmed=False,
+    ):
+        """A goal; each player is a player id, `UNKNOWN`, or (assists
+        only) None for no assist."""
+        return self._add(
+            ShotAttempt(
+                shot_team_id=team_id,
+                shot_outcome=ShotOutcome.GOAL,
+                shot_type=ShotType.WRIST,
+                strength_state=strength,
+                source=source,
+                confirmed=confirmed,
+                **_reference("shooter", shooter),
+                **_reference("assist1", assist1),
+                **_reference("assist2", assist2),
+            ),
+            at,
+        )
+
+    def penalty(
+        self,
+        team_id,
+        *,
+        player=UNKNOWN,
+        at=None,
+        source=EventSource.MANUAL,
+        confirmed=False,
+    ):
+        return self._add(
+            Penalty(
+                penalty_team_id=team_id,
+                penalty_duration_minutes=2,
+                source=source,
+                confirmed=confirmed,
+                **_reference("penalty_player", player),
+            ),
+            at,
+        )
+
+    def official(
+        self,
+        kind,
+        period,
+        elapsed_seconds,
+        side,
+        *,
+        player=None,
+        assist1=None,
+        assist2=None,
+        strength_tag=None,
+    ):
+        """An Official event; each player is a `(licence number, jersey)`
+        pair, or None for nobody."""
+        entry = OfficialEvent(
+            id=len(self.official_events) + 1,
+            game_id=self.game.id,
+            kind=kind,
+            period_number=period,
+            elapsed_seconds=elapsed_seconds,
+            side=side,
+            strength_tag=strength_tag,
+            penalty_minutes=2 if kind is OfficialEventKind.PENALTY else None,
+        )
+        for slot, who in (
+            ("player", player),
+            ("assist1", assist1),
+            ("assist2", assist2),
+        ):
+            if who is not None:
+                league_id, jersey = who
+                setattr(entry, f"{slot}_league_id", league_id)
+                setattr(entry, f"{slot}_jersey", jersey)
+        self.official_events.append(entry)
+        return entry
 
     def shift(self, team_id, player_id, on, *, at=None, unknown=False):
         return self._add(
@@ -179,7 +282,19 @@ class GameBuilder:
             events=list(self.events),
             roster=self.roster,
             unit_assignments=self.units,
+            official_events=sorted(
+                self.official_events,
+                key=lambda entry: (entry.period_number, entry.elapsed_seconds),
+            ),
         )
+
+
+def _reference(prefix, player):
+    if player is None:
+        return {}
+    if player == UNKNOWN:
+        return {f"{prefix}_id": None, f"{prefix}_unknown": True}
+    return {f"{prefix}_id": player, f"{prefix}_unknown": False}
 
 
 def named_game(**kwargs):

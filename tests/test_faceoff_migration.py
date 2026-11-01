@@ -8,13 +8,14 @@ import pytest
 from sqlalchemy import inspect
 
 from hockey_analyzer.db import (
-    LATEST_VERSION,
+    MIGRATIONS,
     create_sqlite_engine,
     init_db,
     make_session_factory,
 )
 from hockey_analyzer.domain.enums import Side
 from hockey_analyzer.domain.models import Base, Faceoff, ShotAttempt
+from hockey_analyzer.schema_migrations import faceoff_home_away
 
 # The `events` table as schema version 0 left it.
 _V0_EVENTS = """
@@ -154,7 +155,9 @@ def _insert_v0_faceoff(
 
 
 def _migrate(engine) -> list[str]:
-    return init_db(engine)
+    # Up to version 1 only: the fixture's other tables are already in
+    # today's shape, so a later migration's change would be in them twice.
+    return init_db(engine, migrations=MIGRATIONS[:1])
 
 
 def _faceoff(engine, event_id) -> Faceoff:
@@ -180,7 +183,7 @@ def _participants(faceoff):
 
 
 def test_it_is_the_first_shipped_migration():
-    assert LATEST_VERSION == 1
+    assert MIGRATIONS[0] is faceoff_home_away
 
 
 def test_a_home_and_b_away_keep_their_sides(v0_engine):

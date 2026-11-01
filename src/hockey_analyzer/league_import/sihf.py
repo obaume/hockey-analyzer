@@ -21,12 +21,15 @@ import importlib.util
 import re
 import sys
 import types
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date as date_
-from typing import Any
+from typing import Any, NamedTuple
 
-from hockey_analyzer.domain.enums import Position, Side
+from hockey_analyzer.domain.enums import OfficialEventKind, Position, Side, UnitType
+from hockey_analyzer.domain.game_clock import PERIOD_LENGTH_MS
+from hockey_analyzer.domain.models import OfficialPlayer
 
 
 class LeagueSourceError(Exception):
@@ -58,6 +61,14 @@ def parse_game_link(link: str) -> str:
     return match.group(1)
 
 
+class LineupUnit(NamedTuple):
+    """A unit the lineup puts a player on, e.g. Forward line 2 -- to
+    become a `GameUnitAssignment`."""
+
+    unit_type: UnitType
+    unit_number: int
+
+
 @dataclass(frozen=True)
 class LeaguePlayer:
     jersey_number: int
@@ -66,6 +77,11 @@ class LeaguePlayer:
     # The position group the player lined up in for this game; None for a
     # player listed outside the six groups.
     position: Position | None
+    # The forward line or defense pair the lineup's order puts them on;
+    # None for goalies, extras, and anyone past the shortest side's list.
+    unit: LineupUnit | None = None
+    # The SIHF licence number, as a string -- Player.league_id (ADR-0014).
+    league_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +91,25 @@ class LeagueTeam:
     league_id: str | None
     # Dressed players only, in the API's listing order.
     lineup: tuple[LeaguePlayer, ...]
+
+
+@dataclass(frozen=True)
+class LeagueOfficialEvent:
+    """One play-by-play entry, to become an `OfficialEvent`."""
+
+    kind: OfficialEventKind
+    period_number: int
+    elapsed_seconds: int
+    side: Side | None
+    # The scorer, the penalised player, or the goalie going in or out.
+    player: OfficialPlayer | None
+    assist1: OfficialPlayer | None = None
+    assist2: OfficialPlayer | None = None
+    # Every tag, strength first: "EQ", "PP1,GWG", "EQ,EN"...
+    strength_tag: str | None = None
+    penalty_name: str | None = None
+    penalty_minutes: int | None = None
+    goalie_in: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +125,9 @@ class LeagueGame:
     period_scores: list[dict[str, int]]
     home: LeagueTeam
     away: LeagueTeam
+    # Goals, penalties and goalie changes in timeline order; never the
+    # shootout.
+    official_events: tuple[LeagueOfficialEvent, ...] = ()
 
     def team(self, side: Side) -> LeagueTeam:
         return self.home if side == Side.HOME else self.away
@@ -105,6 +143,14 @@ _UNIT_POSITIONS: dict[str, Position | None] = {
     "forward_center": Position.CENTER,
     "forward_right": Position.RIGHT_WING,
     "other": None,
+}
+
+
+# The lineup units whose Nth players make up a unit N together (CONTEXT.md's
+# Game unit assignment). Goalies and `other` make up none.
+_UNIT_SIDES: dict[UnitType, tuple[str, ...]] = {
+    UnitType.FORWARD_LINE: ("forward_left", "forward_center", "forward_right"),
+    UnitType.DEFENSE_PAIR: ("defense_left", "defense_right"),
 }
 
 
@@ -132,6 +178,7 @@ def parse_game_overview(body: Mapping[str, Any]) -> LeagueGame:
         period_scores=_period_scores(info),
         home=home,
         away=away,
+        official_events=_official_events(sihf.parse_sihf_pbp(body).to_dicts(), lineups),
     )
 
 
@@ -140,11 +187,18 @@ def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> Leagu
     if not name:
         raise LeagueSourceError(f"no {side.value} team name")
     team_id = info[f"{side.value}_team_id"]
+    # A null unit is an absentee: never dressed, so not a roster row.
+    dressed = [row for row in rows if row["unit"] is not None]
+    units = _lineup_units(dressed)
     lineup = tuple(
-        LeaguePlayer(row["player_jersey"], row["player_name"], _UNIT_POSITIONS[unit])
-        for row in rows
-        # A null unit is an absentee: never dressed, so not a roster row.
-        if (unit := row["unit"]) is not None
+        LeaguePlayer(
+            row["player_jersey"],
+            row["player_name"],
+            _UNIT_POSITIONS[row["unit"]],
+            unit=units.get((row["unit"], row["slot"])),
+            league_id=None if row["player_id"] is None else str(row["player_id"]),
+        )
+        for row in dressed
     )
     if not lineup:
         # Also a game whose lineups aren't out yet.
@@ -152,6 +206,84 @@ def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> Leagu
     if any(p.jersey_number is None or not p.full_name for p in lineup):
         raise LeagueSourceError(f"a {side.value} lineup player has no name or jersey")
     return LeagueTeam(name, None if team_id is None else str(team_id), lineup)
+
+
+def _lineup_units(rows: list[dict[str, Any]]) -> dict[tuple[str, int], LineupUnit]:
+    """The unit each `(lineup unit, slot)` goes to: the Nth player of each
+    side makes up unit N, for N up to the shortest side's list -- so a 13th
+    forward or a 7th defenseman is rostered without a unit, never as a
+    one-player "line 5"."""
+    listed = Counter(row["unit"] for row in rows)
+    units = {}
+    for unit_type, sides in _UNIT_SIDES.items():
+        for number in range(1, min(listed[side] for side in sides) + 1):
+            for side in sides:
+                units[side, number] = LineupUnit(unit_type, number)
+    return units
+
+
+# The play-by-play's event types worth keeping. Shootout attempts aren't
+# (CONTEXT.md's Sync check), nor are revoked goals, which aren't goals.
+_PBP_KINDS = {
+    "goal": OfficialEventKind.GOAL,
+    "penalty": OfficialEventKind.PENALTY,
+    "goalie": OfficialEventKind.GOALIE_CHANGE,
+}
+# The league's clock counts across periods ("65:56" is 5:56 into
+# overtime), each regulation period a full period long.
+_PERIOD_SECONDS = PERIOD_LENGTH_MS // 1000
+
+
+def _official_events(
+    rows: list[dict[str, Any]], lineups: list[dict[str, Any]]
+) -> tuple[LeagueOfficialEvent, ...]:
+    # The play-by-play gives the scorer's jersey but not the assists'.
+    jerseys = {
+        row["player_id"]: row["player_jersey"]
+        for row in lineups
+        if row["player_id"] is not None
+    }
+
+    def player(prefix: str, row: dict[str, Any]) -> OfficialPlayer | None:
+        licence = row[f"{prefix}_id"]
+        if licence is None:
+            return None
+        return OfficialPlayer(str(licence), row[f"{prefix}_name"], jerseys.get(licence))
+
+    events = []
+    for row in rows:
+        kind = _PBP_KINDS.get(row["event_type"])
+        if kind is None:
+            continue
+        period, seconds = row["period_number"], row["game_seconds"]
+        if period is None or seconds is None:
+            raise LeagueSourceError(
+                f"a play-by-play entry has no time: {row['text']!r}"
+            )
+        elapsed = seconds - (period - 1) * _PERIOD_SECONDS
+        if elapsed < 0:
+            raise LeagueSourceError(
+                f"play-by-play time {row['time']} isn't in period {period}"
+            )
+        goalie_change = row["goalie_change"]
+        events.append(
+            LeagueOfficialEvent(
+                kind=kind,
+                period_number=period,
+                elapsed_seconds=elapsed,
+                side=None if row["team_side"] is None else Side(row["team_side"]),
+                player=player("player", row),
+                assist1=player("assist1_player", row),
+                assist2=player("assist2_player", row),
+                # All of them, not sportsdataverse's `strength` (the first
+                # only): an empty-net tag comes after the strength one.
+                strength_tag=row["goal_tags"],
+                penalty_name=row["penalty_name"],
+                penalty_minutes=row["penalty_minutes"],
+                goalie_in=None if goalie_change is None else goalie_change == "in",
+            )
+        )
+    return tuple(events)
 
 
 def _start_date(start: str | None) -> date_ | None:

@@ -33,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date as date_
 from datetime import datetime
+from typing import NamedTuple
 
 from sqlalchemy import (
     JSON,
@@ -61,6 +62,7 @@ from hockey_analyzer.domain.enums import (
     EventSource,
     EventType,
     Handedness,
+    OfficialEventKind,
     Position,
     RinkType,
     ShotOutcome,
@@ -181,6 +183,12 @@ class Player(Base):
     position: Mapped[Position | None] = mapped_column(
         _enum_column(Position), nullable=True
     )
+    # The SIHF licence number (ADR-0014). Last, and a unique index rather
+    # than an inline UNIQUE, so the table schema migration 2 adds it to
+    # matches a freshly created one.
+    league_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, index=True
+    )
 
     roster_entries: Mapped[list[GameRosterEntry]] = relationship(
         back_populates="player"
@@ -260,6 +268,18 @@ class Game(Base):
     )
     events: Mapped[list[Event]] = relationship(back_populates="game")
 
+    def team_id(self, side: Side) -> int | None:
+        return self.home_team_id if side == Side.HOME else self.away_team_id
+
+    def side_of(self, team_id: int | None) -> Side | None:
+        """The side `team_id` plays on in this game, or None for a team
+        that isn't in it."""
+        if team_id is None:
+            return None
+        if team_id == self.home_team_id:
+            return Side.HOME
+        return Side.AWAY if team_id == self.away_team_id else None
+
 
 class GameRosterEntry(Base):
     __tablename__ = "game_roster_entries"
@@ -303,6 +323,109 @@ class GameUnitAssignment(Base):
     game: Mapped[Game] = relationship(back_populates="unit_assignments")
     player: Mapped[Player] = relationship(back_populates="unit_assignments")
     team: Mapped[Team] = relationship(back_populates="unit_assignments")
+
+
+class OfficialEvent(Base):
+    """An entry from the league's own play-by-play: a goal, a penalty or a
+    goalie change (see CONTEXT.md's Official event). Placed by game clock
+    -- period and elapsed time in it -- never by video timestamp, and
+    never an `Event`: it's reference data for the sync check, invisible to
+    stats, tagging and clip export.
+
+    Players are referenced the way the league names them -- licence
+    number, name and jersey -- not as `Player` rows: an official player
+    may be on no roster here. `player_*` is the entry's own player (the
+    scorer, the penalised player, or the goalie going in or out); assists
+    are only set on a goal."""
+
+    __tablename__ = "official_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    game_id: Mapped[int] = mapped_column(
+        ForeignKey("games.id"), nullable=False, index=True
+    )
+    kind: Mapped[OfficialEventKind] = mapped_column(
+        _enum_column(OfficialEventKind), nullable=False
+    )
+    period_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    elapsed_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    # None for an entry the league ties to no team of this game.
+    side: Mapped[Side | None] = mapped_column(_enum_column(Side), nullable=True)
+    player_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    player_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    player_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assist1_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist1_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist1_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assist2_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist2_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist2_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A goal's tags as the league prints them, strength first: "EQ",
+    # "PP1,GWG", "EQ,EN"...
+    strength_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    penalty_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    penalty_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A goalie change's direction: True going in, False coming out.
+    goalie_in: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # One-way: nothing on `Game` lists these, so no tagging path reaches
+    # them. Lets an import attach them to a Game not yet flushed.
+    game: Mapped[Game] = relationship()
+
+    # Each player slot over its three columns, None when the league names
+    # nobody there; settable, constructor keyword included.
+    @property
+    def player(self) -> OfficialPlayer | None:
+        return OfficialPlayer.named(
+            self.player_league_id, self.player_name, self.player_jersey
+        )
+
+    @player.setter
+    def player(self, who: OfficialPlayer | None) -> None:
+        self.player_league_id, self.player_name, self.player_jersey = who or _NOBODY
+
+    @property
+    def assist1(self) -> OfficialPlayer | None:
+        return OfficialPlayer.named(
+            self.assist1_league_id, self.assist1_name, self.assist1_jersey
+        )
+
+    @assist1.setter
+    def assist1(self, who: OfficialPlayer | None) -> None:
+        self.assist1_league_id, self.assist1_name, self.assist1_jersey = who or _NOBODY
+
+    @property
+    def assist2(self) -> OfficialPlayer | None:
+        return OfficialPlayer.named(
+            self.assist2_league_id, self.assist2_name, self.assist2_jersey
+        )
+
+    @assist2.setter
+    def assist2(self, who: OfficialPlayer | None) -> None:
+        self.assist2_league_id, self.assist2_name, self.assist2_jersey = who or _NOBODY
+
+
+class OfficialPlayer(NamedTuple):
+    """A player as the league's play-by-play names them: on an
+    `OfficialEvent`, and parsed from the league before import."""
+
+    # The SIHF licence number, as a string -- Player.league_id.
+    league_id: str | None
+    name: str | None
+    jersey: int | None
+
+    @classmethod
+    def named(
+        cls, league_id: str | None, name: str | None, jersey: int | None
+    ) -> OfficialPlayer | None:
+        """The player, or None when nothing names one."""
+        if league_id is None and name is None and jersey is None:
+            return None
+        return cls(league_id, name, jersey)
+
+
+# An empty player slot's three columns.
+_NOBODY = (None, None, None)
 
 
 class Event(Base):

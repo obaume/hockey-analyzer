@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from hockey_analyzer.domain.enums import RinkType, Side
 from hockey_analyzer.domain.game_setup import SameTeamBothSidesError
+from hockey_analyzer.domain.tagging_session import unit_label
 from hockey_analyzer.league_import import (
     AlreadyImportedError,
     ImportProposal,
@@ -62,8 +63,8 @@ _SIDE_LABELS = {Side.HOME: "Home", Side.AWAY: "Away"}
 _NEW = -1
 _UNANSWERED = -2
 
-_ROSTER_COLUMNS = ["#", "Name", "Position", "Match", "Player"]
-_PLAYER_COLUMN = 4
+_ROSTER_COLUMNS = ["#", "Name", "Position", "Unit", "Match", "Player"]
+_PLAYER_COLUMN = 5
 
 
 class _Unanswered:
@@ -331,7 +332,8 @@ class LeagueImportDialog(QDialog):
         for index, row in enumerate(rows):
             status = _row_status(row)
             position = "" if row.position is None else row.position.value
-            cells = [str(row.jersey_number), row.full_name, position, status]
+            unit = "" if row.unit is None else unit_label(*row.unit)
+            cells = [str(row.jersey_number), row.full_name, position, unit, status]
             for column, text in enumerate(cells):
                 table.setItem(index, column, QTableWidgetItem(text))
             table.setCellWidget(

@@ -52,6 +52,8 @@ Migration = Callable[[Connection], Sequence[str] | None]
 # shape directly, so every migration must leave the schema matching the models.
 MIGRATIONS: list[Migration] = [
     schema_migrations.faceoff_home_away,
+    schema_migrations.player_licence_numbers,
+    schema_migrations.official_events,
 ]
 LATEST_VERSION = len(MIGRATIONS)
 
