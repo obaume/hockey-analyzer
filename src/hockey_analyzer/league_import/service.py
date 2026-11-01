@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date as date_
 from difflib import SequenceMatcher
 from functools import partial
-from typing import Protocol
+from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,27 +27,26 @@ from hockey_analyzer.domain.enums import Position, RinkType, Side
 from hockey_analyzer.domain.game_setup import SameTeamBothSidesError
 from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
 from hockey_analyzer.league_import.sihf import (
+    LeaguePlayer,
     LeagueSourceError,
-    ScrapedPlayer,
+    LeagueTeam,
     parse_game_link,
-    parse_game_pdf,
-    parse_team_league_ids,
+    parse_game_overview,
 )
 
 
 class LeagueSource(Protocol):
-    """Fetches the two league-site documents for a game ID. Raises
-    `LeagueSourceError` on any failure."""
+    """Fetches a game's raw `gameoverview` JSON body from the SIHF
+    statistics API (ADR-0013). Raises `LeagueSourceError` on any
+    failure."""
 
-    def fetch_game_pdf(self, game_id: str) -> bytes: ...
-
-    def fetch_game_page(self, game_id: str) -> str: ...
+    def fetch_game_overview(self, game_id: str) -> dict[str, Any]: ...
 
 
 class ManualEntryFallbackError(Exception):
-    """Raised instead of returning a proposal when the game's PDF export
-    couldn't be fetched or parsed. Nearly all of an
-    import comes from it (ADR-0005), so there's nothing worth proposing:
+    """Raised instead of returning a proposal when the game's league data
+    couldn't be fetched or parsed, or is for another game. All of an
+    import comes from it (ADR-0013), so there's nothing worth proposing:
     the caller should fall back to blank manual game/roster entry
     (ticket 14's `GameSetupService` path) rather than block game
     creation."""
@@ -81,7 +80,7 @@ class TeamMatchStatus(enum.StrEnum):
     # Same name, no league_id match: a candidate the user must confirm
     # before it's linked (never silently merged -- ticket 11).
     NEEDS_CONFIRMATION = "needs_confirmation"
-    # No match: create a new Team from the scraped name + league_id.
+    # No match: create a new Team from the league name + league_id.
     NEW = "new"
 
 
@@ -133,16 +132,17 @@ class PlayerCandidate:
 
 @dataclass(frozen=True)
 class RosterRowProposal:
-    """One scraped lineup row, to become a `GameRosterEntry`. `position` is
+    """One league lineup row, to become a `GameRosterEntry`. `position` is
     the game-of-the-day position for that entry only -- never a proposed
-    write to `Player.position` (see CONTEXT.md's Game roster entry)."""
+    write to `Player.position` (see CONTEXT.md's Game roster entry) --
+    and None for a player listed outside the lineup's position groups."""
 
     side: Side
     jersey_number: int
-    # As the export prints it -- "Last First" -- and as a new Player would
+    # As the league prints it -- "Last First" -- and as a new Player would
     # be created; matching is word-order tolerant only for candidates.
     full_name: str
-    position: Position
+    position: Position | None
     status: PlayerMatchStatus
     player_id: int | None = None
     candidates: tuple[PlayerCandidate, ...] = field(default_factory=tuple)
@@ -153,7 +153,7 @@ class ImportProposal:
     """Everything a confirmed import would write, as plain data: the
     `Game` fields, both sides' teams, and every roster row."""
 
-    # The league site's game ID -- Game.league_id.
+    # The league's game ID -- Game.league_id.
     league_id: str
     date: date_ | None
     venue: str | None
@@ -165,11 +165,7 @@ class ImportProposal:
     existing_game_id: int | None
     home: TeamProposal
     away: TeamProposal
-    # False when the game page (the only source of team league_ids) was
-    # lost: teams were then matched by name only, and a new Team would be
-    # created without a league_id.
-    team_league_ids_found: bool
-    # Both teams' rows, home first, each in the export's listing order.
+    # Both teams' rows, home first, each in the league's listing order.
     roster: tuple[RosterRowProposal, ...]
 
     def team(self, side: Side) -> TeamProposal:
@@ -202,7 +198,7 @@ class ImportResolution:
     review screen submits them to `LeagueImportService.confirm`."""
 
     # Per side: the existing `Team` to link, or None to create a new one
-    # from the proposal's scraped name/league_id.
+    # from the proposal's league name/league_id.
     home_team_id: int | None
     away_team_id: int | None
     # Which side's team is the user's own -- always an explicit answer,
@@ -247,16 +243,15 @@ class LeagueImportService:
     def propose(self, game_link: str) -> ImportProposal:
         game_id = parse_game_link(game_link)
         try:
-            scraped = parse_game_pdf(self._source.fetch_game_pdf(game_id))
+            league_game = parse_game_overview(self._source.fetch_game_overview(game_id))
         except LeagueSourceError as error:
             raise ManualEntryFallbackError(str(error)) from error
-        if scraped.league_id != game_id:
+        if league_game.league_id != game_id:
             raise ManualEntryFallbackError(
-                f"export is for game {scraped.league_id}, not {game_id}"
+                f"league data is for game {league_game.league_id}, not {game_id}"
             )
-        league_ids = self._fetch_team_league_ids(game_id)
         home, away = (
-            self._resolve_team(side, scraped.team(side).name, league_ids.get(side))
+            self._resolve_team(side, league_game.team(side))
             for side in (Side.HOME, Side.AWAY)
         )
         known_players = [
@@ -265,28 +260,27 @@ class LeagueImportService:
             if player.full_name
         ]
         roster = tuple(
-            _resolve_player(side, scraped_player, known_players)
+            _resolve_player(side, league_player, known_players)
             for side in (Side.HOME, Side.AWAY)
-            for scraped_player in scraped.team(side).lineup
+            for league_player in league_game.team(side).lineup
         )
         return ImportProposal(
-            league_id=scraped.league_id,
-            date=scraped.date,
-            venue=scraped.venue,
-            home_score=scraped.home_score,
-            away_score=scraped.away_score,
-            period_scores=scraped.period_scores,
+            league_id=league_game.league_id,
+            date=league_game.date,
+            venue=league_game.venue,
+            home_score=league_game.home_score,
+            away_score=league_game.away_score,
+            period_scores=league_game.period_scores,
             existing_game_id=self._db.scalar(
-                select(Game.id).where(Game.league_id == scraped.league_id)
+                select(Game.id).where(Game.league_id == league_game.league_id)
             ),
             home=home,
             away=away,
-            team_league_ids_found=bool(league_ids),
             roster=roster,
         )
 
     def linkable_teams(self, league_id: str | None) -> tuple[TeamCandidate, ...]:
-        """Every existing `Team` a side scraped with `league_id` could be
+        """Every existing `Team` a side imported with `league_id` could be
         linked to instead -- the review screen's override beyond the
         proposal's own candidates. A team already carrying a different
         league_id is provably another league team, so it's left out."""
@@ -416,18 +410,8 @@ class LeagueImportService:
             raise KeyError(f"no {model.__name__} with id {id_}")
         return row
 
-    def _fetch_team_league_ids(self, game_id: str) -> dict[Side, str]:
-        """Empty if the game page is lost -- it only ever contributes team
-        league_ids, so losing it degrades team matching to name-only
-        instead of failing the import (ADR-0005)."""
-        try:
-            return parse_team_league_ids(self._source.fetch_game_page(game_id))
-        except LeagueSourceError:
-            return {}
-
-    def _resolve_team(
-        self, side: Side, name: str, league_id: str | None
-    ) -> TeamProposal:
+    def _resolve_team(self, side: Side, league_team: LeagueTeam) -> TeamProposal:
+        name, league_id = league_team.name, league_team.league_id
         if league_id is not None:
             team = self._db.scalar(select(Team).where(Team.league_id == league_id))
             if team is not None:
@@ -444,7 +428,7 @@ class LeagueImportService:
             TeamCandidate(team.id, team.name, team.is_user_team)
             for team in self._db.scalars(select(Team).order_by(Team.id))
             if _normalize_name(team.name) == key
-            # With the scraped league_id known, a team already carrying a
+            # With the league_id known, a team already carrying a
             # different one is provably a different league team, whatever
             # its name.
             and (league_id is None or team.league_id is None)
@@ -461,27 +445,26 @@ _MAX_PLAYER_CANDIDATES = 5
 # difflib ratio above which two normalized names count as a near miss
 # (a typo or a dropped/doubled letter, e.g. "Mathias"/"Matthias").
 _NEAR_MISS_RATIO = 0.85
-# A reordering of the same words ("First Last" vs the export's "Last First")
+# A reordering of the same words ("First Last" vs the league's "Last First")
 # ranks just below an exact match.
 _REORDERED_NAME_SIMILARITY = 0.99
 
 
 def _resolve_player(
-    side: Side, scraped: ScrapedPlayer, known_players: list[tuple[str, Player]]
+    side: Side, league_player: LeaguePlayer, known_players: list[tuple[str, Player]]
 ) -> RosterRowProposal:
     """Only a single exact (case/accent-insensitive) `full_name` match
     links silently; anything else defaults to a new `Player`, offering the
-    closest existing ones as alternates -- matching players is a manual
-    judgment call, never automated identity resolution (CONTEXT.md's
-    Player entry)."""
-    key = _normalize_name(scraped.full_name)
+    closest existing ones as alternates -- a name match is a manual
+    judgment call, never automated identity resolution."""
+    key = _normalize_name(league_player.full_name)
     exact = [player for known_key, player in known_players if known_key == key]
     proposed_row = partial(
         RosterRowProposal,
         side,
-        scraped.jersey_number,
-        scraped.full_name,
-        scraped.position,
+        league_player.jersey_number,
+        league_player.full_name,
+        league_player.position,
     )
     if len(exact) == 1:
         return proposed_row(PlayerMatchStatus.LINKED, player_id=exact[0].id)

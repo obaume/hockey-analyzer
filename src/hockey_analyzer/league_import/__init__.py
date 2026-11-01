@@ -20,7 +20,7 @@ from hockey_analyzer.league_import.service import (
 from hockey_analyzer.league_import.sihf import (
     InvalidGameLinkError,
     LeagueSourceError,
-    SihfHttpSource,
+    SihfApiSource,
 )
 
 __all__ = [
@@ -36,7 +36,7 @@ __all__ = [
     "PlayerMatchStatus",
     "PlayerRosteredTwiceError",
     "RosterRowProposal",
-    "SihfHttpSource",
+    "SihfApiSource",
     "TeamCandidate",
     "TeamMatchStatus",
     "TeamProposal",

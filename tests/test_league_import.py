@@ -8,8 +8,7 @@ from sihf_fixtures import (
     GAME_LINK,
     FakeLeagueSource,
     Lineup,
-    pdf_document,
-    sihf_game_pdf,
+    sihf_game_overview,
 )
 from sqlalchemy import func, select
 
@@ -80,7 +79,7 @@ def test_link_that_isnt_a_league_game_is_rejected_without_fetching(
 # -- game metadata ----------------------------------------------------------
 
 
-def test_game_metadata_and_score_come_from_the_pdf(service):
+def test_game_metadata_and_score_come_from_the_league_api(service):
     proposal = service.propose(GAME_LINK)
 
     assert proposal.league_id == "20270009263101"
@@ -115,7 +114,7 @@ def test_game_not_yet_imported_has_no_existing_game(service, session):
 
 def test_team_with_matching_league_id_is_linked_silently(service, session):
     # A local rename since the last import doesn't matter: league_id wins.
-    existing = Team(name="Château", league_id="10-4-103010")
+    existing = Team(name="Château", league_id="103010")
     session.add(existing)
     session.flush()
 
@@ -124,7 +123,7 @@ def test_team_with_matching_league_id_is_linked_silently(service, session):
     home = proposal.team(Side.HOME)
     assert home.status == TeamMatchStatus.LINKED
     assert home.team_id == existing.id
-    assert home.league_id == "10-4-103010"
+    assert home.league_id == "103010"
     assert home.name == "HC Château-d'Oex"
 
 
@@ -153,14 +152,14 @@ def test_unmatched_team_is_proposed_as_new_from_scraped_name_and_league_id(
     assert away.team_id is None
     assert away.candidates == ()
     assert away.name == "HC Monthey"
-    assert away.league_id == "10-4-104254"
+    assert away.league_id == "104254"
 
 
 def test_same_named_team_with_a_different_league_id_is_not_a_candidate(
     service, session
 ):
     # Provably a different league team (e.g. another division's side).
-    session.add(Team(name="HC Monthey", league_id="10-9-999999"))
+    session.add(Team(name="HC Monthey", league_id="999999"))
     session.flush()
 
     away = service.propose(GAME_LINK).team(Side.AWAY)
@@ -172,7 +171,7 @@ def test_same_named_team_with_a_different_league_id_is_not_a_candidate(
 def test_user_team_flag_is_carried_for_prefilling_never_set_on_new_teams(
     service, session
 ):
-    mine = Team(name="Château", league_id="10-4-103010", is_user_team=True)
+    mine = Team(name="Château", league_id="103010", is_user_team=True)
     also_mine = Team(name="HC Monthey", is_user_team=True)
     session.add_all([mine, also_mine])
     session.flush()
@@ -193,35 +192,11 @@ def test_new_team_is_never_proposed_as_the_user_team(service):
     assert proposal.team(Side.AWAY).is_user_team is False
 
 
-@pytest.mark.parametrize(
-    "page",
-    [
-        LeagueSourceError("connection reset"),
-        "<html><body>redesigned page, no header links</body></html>",
-    ],
-    ids=["fetch fails", "page doesn't parse"],
-)
-def test_lost_league_id_source_degrades_team_matching_to_name_only(session, page):
-    # Would be a silent league_id link if the game page were readable.
-    existing = Team(name="HC Monthey", league_id="10-4-104254")
-    session.add(existing)
-    session.flush()
-    service = LeagueImportService(session, FakeLeagueSource(page=page))
-
+def test_team_league_id_is_the_sihf_team_id_as_a_string(service):
     proposal = service.propose(GAME_LINK)
 
-    assert proposal.team_league_ids_found is False
-    away = proposal.team(Side.AWAY)
-    assert away.league_id is None
-    assert away.status == TeamMatchStatus.NEEDS_CONFIRMATION
-    assert [c.team_id for c in away.candidates] == [existing.id]
-    # The PDF parse survives: the other side is still proposed from it.
-    home = proposal.team(Side.HOME)
-    assert (home.name, home.status) == ("HC Château-d'Oex", TeamMatchStatus.NEW)
-
-
-def test_proposal_reports_when_team_league_ids_were_found(service):
-    assert service.propose(GAME_LINK).team_league_ids_found is True
+    assert proposal.team(Side.HOME).league_id == "103010"
+    assert proposal.team(Side.AWAY).league_id == "104254"
 
 
 # -- roster rows ---------------------------------------------------------------
@@ -234,15 +209,28 @@ def test_roster_rows_carry_jersey_name_and_game_of_the_day_position(service):
         (row.jersey_number, row.full_name, row.position)
         for row in proposal.roster_for(Side.AWAY)
     ]
-    # Captain/"(1st)"/"(E)" markers are stripped from the name; the six
-    # league position-group headers map onto the full Position enum.
+    # The lineup's six position groups map onto the full Position enum,
+    # listed in the API's order.
     assert away == [
         (30, "Schmid Björn", Position.GOALIE),
         (5, "Roth Arnaud", Position.DEFENSE),
         (26, "Eriksson Nilsson Karl Ludvig", Position.DEFENSE),
-        (21, "Galley Noham", Position.CENTER),
         (15, "Brogli Gaël", Position.LEFT_WING),
+        (21, "Galley Noham", Position.CENTER),
         (18, "Putallaz Romain", Position.RIGHT_WING),
+    ]
+
+
+def test_players_listed_outside_a_position_group_have_no_game_position(session):
+    lineup = Lineup(goalies=[(1, "Tor Hüter")], others=[(99, "Extra Erich")])
+    body = sihf_game_overview(home_lineup=lineup)
+    service = LeagueImportService(session, FakeLeagueSource(body))
+
+    rows = service.propose(GAME_LINK).roster_for(Side.HOME)
+
+    assert [(row.jersey_number, row.position) for row in rows] == [
+        (1, Position.GOALIE),
+        (99, None),
     ]
 
 
@@ -261,8 +249,8 @@ def test_head_coach_and_absent_players_are_not_roster_rows(session):
         head_coach="Trainer Tom",
         absences=[(17, "Verletzt Victor")],
     )
-    pdf = sihf_game_pdf(home_lineup=lineup)
-    service = LeagueImportService(session, FakeLeagueSource(pdf=pdf))
+    body = sihf_game_overview(home_lineup=lineup)
+    service = LeagueImportService(session, FakeLeagueSource(body))
 
     rows = service.propose(GAME_LINK).roster_for(Side.HOME)
 
@@ -347,7 +335,7 @@ def test_proposing_writes_nothing(service, session):
     session.add_all(
         [
             Team(name="HC Monthey"),
-            Team(name="Château", league_id="10-4-103010"),
+            Team(name="Château", league_id="103010"),
             Player(full_name="Galley Noham"),
             Player(full_name="Memeteau Mathias"),
         ]
@@ -368,34 +356,34 @@ def _row_counts(session):
     }
 
 
-# -- PDF failure: fall back to manual entry ------------------------------------
+# -- unusable league data: fall back to manual entry ---------------------------
 
 
 @pytest.mark.parametrize(
-    "pdf",
+    "body",
     [
-        LeagueSourceError("HTTP 400"),
-        b"<html>not a pdf at all</html>",
-        pdf_document([[(20.0, 800.0, "Some other document")]]),
-        # The pre-game export: a structurally empty template.
-        sihf_game_pdf(
+        LeagueSourceError("HTTP 500"),
+        {"error": "GameNotFound"},
+        # A game not played yet: no result, lineups not out.
+        sihf_game_overview(
             home_score=None,
             away_score=None,
             home_lineup=Lineup(),
             away_lineup=Lineup(),
         ),
-        sihf_game_pdf(game_id="20270009999999"),
+        sihf_game_overview(home_lineup=Lineup(), away_lineup=Lineup()),
+        sihf_game_overview(game_id="20270009999999"),
     ],
     ids=[
         "fetch fails",
-        "not a PDF",
-        "not the game export",
+        "not a game body",
         "game not played yet",
-        "export of a different game",
+        "no lineups",
+        "body of a different game",
     ],
 )
-def test_pdf_failure_signals_fallback_to_manual_entry(session, pdf):
-    service = LeagueImportService(session, FakeLeagueSource(pdf=pdf))
+def test_unusable_league_data_signals_fallback_to_manual_entry(session, body):
+    service = LeagueImportService(session, FakeLeagueSource(body))
 
     with pytest.raises(ManualEntryFallbackError):
         service.propose(GAME_LINK)
@@ -434,8 +422,8 @@ def test_confirming_creates_new_teams_from_the_scraped_names_and_league_ids(
     game = service.confirm(proposal, _as_proposed(proposal, user_team=Side.AWAY))
 
     home, away = game.home_team, game.away_team
-    assert (home.name, home.league_id) == ("HC Château-d'Oex", "10-4-103010")
-    assert (away.name, away.league_id) == ("HC Monthey", "10-4-104254")
+    assert (home.name, home.league_id) == ("HC Château-d'Oex", "103010")
+    assert (away.name, away.league_id) == ("HC Monthey", "104254")
     assert (home.is_user_team, away.is_user_team) == (False, True)
 
 
@@ -464,7 +452,7 @@ def test_confirming_writes_every_roster_row_as_shown(service, session):
 def test_confirming_links_a_league_id_matched_team_instead_of_creating_one(
     service, session
 ):
-    existing = Team(name="Château", league_id="10-4-103010")
+    existing = Team(name="Château", league_id="103010")
     session.add(existing)
     session.commit()
     proposal = service.propose(GAME_LINK)
@@ -486,7 +474,7 @@ def test_a_confirmed_name_match_learns_the_teams_league_id(service, session):
 
     assert game.away_team_id == existing.id
     # So the next import of this team links silently.
-    assert session.get(Team, existing.id).league_id == "10-4-104254"
+    assert session.get(Team, existing.id).league_id == "104254"
     assert service.propose(GAME_LINK).away.status == TeamMatchStatus.LINKED
 
 
@@ -503,7 +491,7 @@ def test_an_unconfirmed_name_match_creates_a_new_team(service, session):
 
 
 def test_user_team_prefill_comes_only_from_a_linked_flagged_team(service, session):
-    session.add(Team(name="Château", league_id="10-4-103010", is_user_team=True))
+    session.add(Team(name="Château", league_id="103010", is_user_team=True))
     session.commit()
 
     resolution = ImportResolution.as_proposed(service.propose(GAME_LINK))
@@ -522,8 +510,8 @@ def test_user_team_is_not_prefilled_when_both_linked_teams_are_flagged(
 ):
     session.add_all(
         [
-            Team(name="A", league_id="10-4-103010", is_user_team=True),
-            Team(name="B", league_id="10-4-104254", is_user_team=True),
+            Team(name="A", league_id="103010", is_user_team=True),
+            Team(name="B", league_id="104254", is_user_team=True),
         ]
     )
     session.commit()
@@ -545,7 +533,7 @@ def test_the_user_team_answer_flags_the_chosen_team(service, session):
 def test_the_user_team_answer_never_unflags_a_team(service, session, answer):
     # Several teams may be the user's (CONTEXT.md's Team): a per-game
     # answer isn't a reason to take the flag off one.
-    mine = Team(name="Château", league_id="10-4-103010", is_user_team=True)
+    mine = Team(name="Château", league_id="103010", is_user_team=True)
     session.add(mine)
     session.commit()
     proposal = service.propose(GAME_LINK)
@@ -663,7 +651,7 @@ def test_a_failure_partway_through_writes_nothing(service, session):
 
 
 def test_creating_a_second_team_with_a_known_league_id_is_refused(service, session):
-    session.add(Team(name="Château", league_id="10-4-103010"))
+    session.add(Team(name="Château", league_id="103010"))
     session.commit()
     proposal = service.propose(GAME_LINK)
     counts_before = _row_counts(session)
@@ -679,11 +667,11 @@ def test_creating_a_second_team_with_a_known_league_id_is_refused(service, sessi
 
 def test_linkable_teams_leave_out_other_league_teams(service, session):
     unlinked = Team(name="B Unlinked")
-    same = Team(name="A Same", league_id="10-4-104254")
-    session.add_all([unlinked, same, Team(name="C Other", league_id="10-9-1")])
+    same = Team(name="A Same", league_id="104254")
+    session.add_all([unlinked, same, Team(name="C Other", league_id="1")])
     session.commit()
 
-    linkable = service.linkable_teams("10-4-104254")
+    linkable = service.linkable_teams("104254")
 
     assert [team.team_id for team in linkable] == [same.id, unlinked.id]
 

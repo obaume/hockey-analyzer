@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0013
+---
+
 # League game-link import scrapes the PDF export, not the HTML pages, as its primary source
 
 Ticket 02's investigation found the league site's game and roster data via two separate HTML pages (`game/{id}`, `game/aufstellung/{id}`), scraped by CSS class. While designing ticket 11's import flow, we found the site also exposes a server-generated PDF (`GET .../GameCenter/GameDetail/ExportGameTimeline?gameId={id}`, unauthenticated aside from a `Referer` check) that bundles game metadata, final and period-by-period score, and both teams' full lineups in a single fetch — a superset of what the two HTML pages provide between them, in one document instead of two. We decided to make this PDF the primary source for game metadata and roster import, rather than the HTML pages ticket 02 originally investigated.
