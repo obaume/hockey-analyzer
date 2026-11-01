@@ -66,6 +66,8 @@ class LeaguePlayer:
     # The position group the player lined up in for this game; None for a
     # player listed outside the six groups.
     position: Position | None
+    # The SIHF licence number, as a string -- Player.league_id (ADR-0014).
+    league_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,7 +143,12 @@ def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> Leagu
         raise LeagueSourceError(f"no {side.value} team name")
     team_id = info[f"{side.value}_team_id"]
     lineup = tuple(
-        LeaguePlayer(row["player_jersey"], row["player_name"], _UNIT_POSITIONS[unit])
+        LeaguePlayer(
+            row["player_jersey"],
+            row["player_name"],
+            _UNIT_POSITIONS[unit],
+            None if row["player_id"] is None else str(row["player_id"]),
+        )
         for row in rows
         # A null unit is an absentee: never dressed, so not a roster row.
         if (unit := row["unit"]) is not None

@@ -213,3 +213,31 @@ def _side_of(
     if team_id == away_team:
         return "away"
     return None
+
+
+def player_licence_numbers(conn: Connection) -> list[str]:
+    """Version 2: a Player's SIHF licence number becomes their league
+    identity (ADR-0014), and team league IDs still in the scraped site's
+    `{league}-{div}-{teamNum}` format are cleared. The API's team IDs are
+    plain integers, so an old-format one would make import treat the team
+    as another league team; cleared, it's a name-match candidate again and
+    learns the new ID when that match is confirmed."""
+    conn.exec_driver_sql("ALTER TABLE players ADD COLUMN league_id VARCHAR")
+    conn.exec_driver_sql(
+        "CREATE UNIQUE INDEX ix_players_league_id ON players (league_id)"
+    )
+    cleared = conn.exec_driver_sql(
+        "UPDATE teams SET league_id = NULL WHERE league_id GLOB '*[^0-9]*'"
+    ).rowcount
+
+    if not cleared:
+        return []
+    if cleared == 1:
+        return [
+            "1 team had a league ID in the old format; it was cleared and will "
+            "be offered as a name match the next time it's imported."
+        ]
+    return [
+        f"{cleared} teams had a league ID in the old format; they were cleared "
+        "and will be offered as name matches the next time they're imported."
+    ]

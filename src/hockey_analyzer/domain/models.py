@@ -181,6 +181,12 @@ class Player(Base):
     position: Mapped[Position | None] = mapped_column(
         _enum_column(Position), nullable=True
     )
+    # The SIHF licence number (ADR-0014). Last, and a unique index rather
+    # than an inline UNIQUE, so the table schema migration 2 adds it to
+    # matches a freshly created one.
+    league_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, index=True
+    )
 
     roster_entries: Mapped[list[GameRosterEntry]] = relationship(
         back_populates="player"
