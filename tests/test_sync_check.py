@@ -463,21 +463,25 @@ def test_an_unknown_penalised_player_is_fillable():
         ("SH1", "4v5", HOME, True),
         ("SH1", "5v4", AWAY, True),
         ("SH1", "5v5", HOME, False),
-        # The other team's goalie pulled for an extra skater.
+        # An empty net alone: the strength before the goalie was pulled
+        # is unknown, so it says nothing.
         ("EN", "5v6", HOME, True),
-        ("EN", "6v5", AWAY, True),
-        ("EN", "5v5", HOME, False),
+        ("EN", "5v5", HOME, True),
         # Several tags, as the league prints them: strength first, and
         # only the strength ones say anything about it...
         ("PP1,GWG", "5v4", HOME, True),
         ("PP1,GWG", "5v5", HOME, False),
         ("EQ,GWG", "5v5", AWAY, True),
         ("GWG,SH1", "4v5", HOME, True),
-        # ...but an empty net wins wherever it is.
+        # ...and an empty net, wherever it is, gives the other team one
+        # extra skater on top of what the strength tag says.
         ("EQ,EN", "5v6", HOME, True),
+        ("EQ,EN", "6v5", AWAY, True),
         ("EQ,EN", "5v5", HOME, False),
-        ("PP1,EN", "6v5", AWAY, True),
-        ("SH1, EN,GWG", "5v6", HOME, True),
+        ("PP1,EN", "5v5", HOME, True),
+        ("PP1,EN", "5v6", HOME, False),
+        ("SH1, EN,GWG", "4v6", HOME, True),
+        ("SH1, EN,GWG", "5v6", HOME, False),
     ],
 )
 def test_the_strength_tag_maps_onto_skater_counts(tag, strength, team, agrees):

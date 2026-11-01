@@ -317,9 +317,6 @@ _TAG_AGREES = {
     "EQ": lambda own, other: own == other,
     "PP": lambda own, other: own > other,
     "SH": lambda own, other: own < other,
-    # Into an empty net: the other team's goalie is out for an extra
-    # skater.
-    "EN": lambda own, other: own < other,
 }
 # Strength states read "{home}v{away}" (see TaggingSession).
 _STRENGTH = re.compile(r"(\d+)v(\d+)")
@@ -331,24 +328,28 @@ def _strength_contradicts(
     """Whether a goal's tagged strength state contradicts the official
     tags ("EQ", "PP1,GWG", "EQ,EN"...). A tag is coarser than skater
     counts, so "agrees" is a range: a 5v4 or a 5v3 both agree with a
-    power play. An empty-net tag, wherever it is in the list, wins over
-    the strength one -- the pulled goalie is what the skater counts
-    show. Tags or a state that can't be read contradict nothing."""
-    agrees = _tags_agree(tags)
+    power play. An empty-net tag, wherever it is in the list, means the
+    other team pulled its goalie for an extra skater on top of what the
+    strength tag says ("PP1,EN" is 5v5 on ice), so that skater is taken
+    off before the strength tag is checked. Tags or a state that can't
+    be read contradict nothing."""
+    agrees, empty_net = _tags_agree(tags)
     match = _STRENGTH.fullmatch(strength_state or "")
     if agrees is None or match is None or side is None:
         return False
     home, away = int(match[1]), int(match[2])
     own, other = (home, away) if side == Side.HOME else (away, home)
-    return not agrees(own, other)
+    return not agrees(own, other - 1 if empty_net else other)
 
 
-def _tags_agree(tags: str | None) -> Callable[[int, int], bool] | None:
-    """The rule for a goal's tags: empty net if any tag says so, else the
-    first strength tag's."""
+def _tags_agree(
+    tags: str | None,
+) -> tuple[Callable[[int, int], bool] | None, bool]:
+    """A goal's first strength tag's rule, and whether any tag says empty
+    net. An empty-net tag alone, with no strength tag, gives no rule: the
+    strength before the goalie was pulled is unknown."""
     prefixes = [tag.strip()[:2] for tag in (tags or "").split(",")]
-    if "EN" in prefixes:
-        return _TAG_AGREES["EN"]
-    return next(
+    rule = next(
         (_TAG_AGREES[prefix] for prefix in prefixes if prefix in _TAG_AGREES), None
     )
+    return rule, "EN" in prefixes
