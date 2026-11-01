@@ -241,3 +241,41 @@ def player_licence_numbers(conn: Connection) -> list[str]:
         f"{cleared} teams had a league ID in the old format; they were cleared "
         "and will be offered as name matches the next time they're imported."
     ]
+
+
+def official_events(conn: Connection) -> list[str]:
+    """Version 3: a game's Official events -- the league's own play-by-play
+    (see CONTEXT.md's Official event) -- get a table of their own. Games
+    imported before this have none until they're refreshed from the
+    league."""
+    conn.exec_driver_sql(
+        """
+        CREATE TABLE official_events (
+            id INTEGER NOT NULL,
+            game_id INTEGER NOT NULL,
+            kind VARCHAR(13) NOT NULL,
+            period_number INTEGER NOT NULL,
+            elapsed_seconds INTEGER NOT NULL,
+            side VARCHAR(4),
+            player_league_id VARCHAR,
+            player_name VARCHAR,
+            player_jersey INTEGER,
+            assist1_league_id VARCHAR,
+            assist1_name VARCHAR,
+            assist1_jersey INTEGER,
+            assist2_league_id VARCHAR,
+            assist2_name VARCHAR,
+            assist2_jersey INTEGER,
+            strength_tag VARCHAR,
+            penalty_name VARCHAR,
+            penalty_minutes INTEGER,
+            goalie_in BOOLEAN,
+            PRIMARY KEY (id),
+            FOREIGN KEY(game_id) REFERENCES games (id)
+        )
+        """
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX ix_official_events_game_id ON official_events (game_id)"
+    )
+    return []

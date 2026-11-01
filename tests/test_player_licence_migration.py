@@ -43,10 +43,12 @@ OLD_FORMAT, NUMERIC, UNLINKED = 1, 2, 3  # team ids
 @pytest.fixture
 def v1_engine(tmp_path):
     """A version-1 database: every other table as today, `players` without
-    `league_id`, one team per kind of team league_id."""
+    `league_id`, no `official_events` (version 3's), one team per kind of
+    team league_id."""
     engine = create_sqlite_engine(tmp_path / "v1.db")
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE official_events")
         conn.exec_driver_sql("DROP TABLE players")
         conn.exec_driver_sql(_V1_PLAYERS)
         conn.exec_driver_sql("PRAGMA user_version = 1")

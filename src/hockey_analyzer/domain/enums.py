@@ -57,6 +57,14 @@ class UnitType(enum.StrEnum):
     PENALTY_KILL = "penalty-kill"
 
 
+class OfficialEventKind(enum.StrEnum):
+    """What an Official event records (see CONTEXT.md's Official event)."""
+
+    GOAL = "goal"
+    PENALTY = "penalty"
+    GOALIE_CHANGE = "goalie_change"
+
+
 class RinkType(enum.StrEnum):
     IIHF = "iihf"
     NHL = "nhl"

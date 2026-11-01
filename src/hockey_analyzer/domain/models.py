@@ -33,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date as date_
 from datetime import datetime
+from typing import NamedTuple
 
 from sqlalchemy import (
     JSON,
@@ -61,6 +62,7 @@ from hockey_analyzer.domain.enums import (
     EventSource,
     EventType,
     Handedness,
+    OfficialEventKind,
     Position,
     RinkType,
     ShotOutcome,
@@ -309,6 +311,71 @@ class GameUnitAssignment(Base):
     game: Mapped[Game] = relationship(back_populates="unit_assignments")
     player: Mapped[Player] = relationship(back_populates="unit_assignments")
     team: Mapped[Team] = relationship(back_populates="unit_assignments")
+
+
+class OfficialEvent(Base):
+    """An entry from the league's own play-by-play: a goal, a penalty or a
+    goalie change (see CONTEXT.md's Official event). Placed by game clock
+    -- period and elapsed time in it -- never by video timestamp, and
+    never an `Event`: it's reference data for the sync check, invisible to
+    stats, tagging and clip export.
+
+    Players are referenced the way the league names them -- licence
+    number, name and jersey -- not as `Player` rows: an official player
+    may be on no roster here. `player_*` is the entry's own player (the
+    scorer, the penalised player, or the goalie going in or out); assists
+    are only set on a goal."""
+
+    __tablename__ = "official_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    game_id: Mapped[int] = mapped_column(
+        ForeignKey("games.id"), nullable=False, index=True
+    )
+    kind: Mapped[OfficialEventKind] = mapped_column(
+        _enum_column(OfficialEventKind), nullable=False
+    )
+    period_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    elapsed_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    # None for an entry the league ties to no team of this game.
+    side: Mapped[Side | None] = mapped_column(_enum_column(Side), nullable=True)
+    player_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    player_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    player_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assist1_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist1_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist1_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assist2_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist2_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    assist2_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A goal's strength as the league tags it: "EQ", "PP1", "SH2", "EN"...
+    strength_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    penalty_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    penalty_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A goalie change's direction: True going in, False coming out.
+    goalie_in: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # One-way: nothing on `Game` lists these, so no tagging path reaches
+    # them. Lets an import attach them to a Game not yet flushed.
+    game: Mapped[Game] = relationship()
+
+    def official_player(self, slot: str) -> OfficialPlayer | None:
+        """The player in `slot` ("player", "assist1" or "assist2"), or None
+        when the league names nobody there."""
+        league_id, name, jersey = (
+            getattr(self, f"{slot}_{part}") for part in ("league_id", "name", "jersey")
+        )
+        if league_id is None and name is None and jersey is None:
+            return None
+        return OfficialPlayer(league_id, name, jersey)
+
+
+class OfficialPlayer(NamedTuple):
+    """A player as an Official event names them."""
+
+    league_id: str | None
+    name: str | None
+    jersey: int | None
 
 
 class Event(Base):

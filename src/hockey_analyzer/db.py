@@ -53,6 +53,7 @@ Migration = Callable[[Connection], Sequence[str] | None]
 MIGRATIONS: list[Migration] = [
     schema_migrations.faceoff_home_away,
     schema_migrations.player_licence_numbers,
+    schema_migrations.official_events,
 ]
 LATEST_VERSION = len(MIGRATIONS)
 
