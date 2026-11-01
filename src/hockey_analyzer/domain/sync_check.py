@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import enum
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from hockey_analyzer.domain.enums import (
     EventSource,
+    EventType,
     OfficialEventKind,
     ShotOutcome,
     Side,
@@ -35,6 +36,7 @@ from hockey_analyzer.domain.models import (
     Penalty,
     ShotAttempt,
 )
+from hockey_analyzer.domain.tagging_session import OFFICIAL_REFERENCES
 
 # How far apart a tagged and an official event may be, in elapsed time in
 # the period, and still match. A starting value, to be tuned on real games.
@@ -58,6 +60,11 @@ class Finding:
     event to seek the footage to, when there is one."""
 
     kind: FindingKind
+    # The goal or penalty found about, and its team's side (None for a
+    # tagged one with no team set). None for Drift, which is about a
+    # whole period.
+    event_kind: OfficialEventKind | None
+    side: Side | None
     # None only for an Extra event tagged before the first period start.
     period: int | None
     tagged_event_id: int | None = None
@@ -88,7 +95,7 @@ class SyncCheck:
 
 
 @dataclass(frozen=True)
-class _Tagged:
+class _TaggedEvent:
     event: Event
     kind: OfficialEventKind
     side: Side | None
@@ -99,50 +106,57 @@ class _Tagged:
 def sync_check(data: GameData) -> SyncCheck:
     if not data.official_events:
         return SyncCheck(has_official_events=False)
-    tagged = _tagged(data)
+    tagged_events = _tagged_events(data)
     official = [
         entry
         for entry in data.official_events
         if entry.kind in (OfficialEventKind.GOAL, OfficialEventKind.PENALTY)
     ]
-    pairs = _match(tagged, official)
-    matched_tagged = {id(t) for t, _ in pairs}
-    matched_official = {id(o) for _, o in pairs}
+    pairs = _match(tagged_events, official)
+    matched_tagged = {id(tagged) for tagged, _ in pairs}
+    matched_official = {id(entry) for _, entry in pairs}
 
     findings = [
-        Finding(FindingKind.MISSING, entry.period_number, official=entry)
+        Finding(
+            FindingKind.MISSING,
+            entry.kind,
+            entry.side,
+            entry.period_number,
+            official=entry,
+        )
         for entry in official
         if id(entry) not in matched_official
     ]
     findings += [
         Finding(
             FindingKind.EXTRA,
-            t.period,
-            tagged_event_id=t.event.id,
-            tagged_elapsed_ms=t.elapsed_ms,
+            tagged.kind,
+            tagged.side,
+            tagged.period,
+            tagged_event_id=tagged.event.id,
+            tagged_elapsed_ms=tagged.elapsed_ms,
         )
-        for t in tagged
-        if id(t) not in matched_tagged
+        for tagged in tagged_events
+        if id(tagged) not in matched_tagged
     ]
     findings += _drift(pairs)
-    for t, entry in sorted(pairs, key=lambda pair: _official_order(pair[1])):
-        findings += _disagreements(data, t, entry)
+    for tagged, entry in sorted(pairs, key=lambda pair: _official_order(pair[1])):
+        findings += _disagreements(data, tagged, entry)
     return SyncCheck(has_official_events=True, findings=tuple(findings))
 
 
-def _counts(event: Event) -> bool:
+def _is_counted(event: Event) -> bool:
     """An unconfirmed vision event is a suggestion, not a fact (CONTEXT.md's
     Event): only a manual or a confirmed event counts."""
     return event.source is not EventSource.VISION or event.confirmed
 
 
-def _tagged(data: GameData) -> list[_Tagged]:
+def _tagged_events(data: GameData) -> list[_TaggedEvent]:
     """The game's counted goals and penalties, in video order, each placed
     by the game clock derived from counted events only."""
-    events = [event for event in data.events if _counts(event)]
+    events = [event for event in data.events if _is_counted(event)]
     clocks = game_clocks(events)
-    sides = {data.game.home_team_id: Side.HOME, data.game.away_team_id: Side.AWAY}
-    tagged = []
+    tagged_events = []
     for event in sorted(events, key=lambda event: (event.video_timestamp, event.id)):
         if isinstance(event, ShotAttempt) and event.shot_outcome is ShotOutcome.GOAL:
             kind, team_id = OfficialEventKind.GOAL, event.shot_team_id
@@ -151,16 +165,16 @@ def _tagged(data: GameData) -> list[_Tagged]:
         else:
             continue
         clock = clocks.get(event.id)
-        tagged.append(
-            _Tagged(
+        tagged_events.append(
+            _TaggedEvent(
                 event,
                 kind,
-                sides.get(team_id) if team_id is not None else None,
+                data.game.side_of(team_id),
                 clock.period if clock is not None else None,
                 PERIOD_LENGTH_MS - clock.remaining_ms if clock is not None else None,
             )
         )
-    return tagged
+    return tagged_events
 
 
 def _official_order(entry: OfficialEvent) -> tuple[int, int, int]:
@@ -168,23 +182,23 @@ def _official_order(entry: OfficialEvent) -> tuple[int, int, int]:
 
 
 def _match(
-    tagged: Sequence[_Tagged], official: Sequence[OfficialEvent]
-) -> list[tuple[_Tagged, OfficialEvent]]:
+    tagged_events: Sequence[_TaggedEvent], official: Sequence[OfficialEvent]
+) -> list[tuple[_TaggedEvent, OfficialEvent]]:
     """Every candidate pair within the tolerance, nearest first; a tie goes
     to the earlier official event, then the earlier tagged one. Each event
     is matched at most once."""
     candidates = []
-    for t_index, t in enumerate(tagged):
-        if t.period is None or t.side is None:
+    for t_index, tagged in enumerate(tagged_events):
+        if tagged.period is None or tagged.side is None:
             continue
         for o_index, entry in enumerate(official):
-            if (t.kind, t.period, t.side) != (
+            if (tagged.kind, tagged.period, tagged.side) != (
                 entry.kind,
                 entry.period_number,
                 entry.side,
             ):
                 continue
-            gap = abs(t.elapsed_ms - entry.elapsed_seconds * 1000)
+            gap = abs(tagged.elapsed_ms - entry.elapsed_seconds * 1000)
             if gap <= MATCH_TOLERANCE_MS:
                 candidates.append((gap, _official_order(entry), o_index, t_index))
     pairs = []
@@ -194,21 +208,21 @@ def _match(
             continue
         used_tagged.add(t_index)
         used_official.add(o_index)
-        pairs.append((tagged[t_index], official[o_index]))
+        pairs.append((tagged_events[t_index], official[o_index]))
     return pairs
 
 
-def _drift(pairs: Sequence[tuple[_Tagged, OfficialEvent]]) -> list[Finding]:
+def _drift(pairs: Sequence[tuple[_TaggedEvent, OfficialEvent]]) -> list[Finding]:
     """Per period: the least-squares trend of the matched pairs' clock gaps
     (tagged minus official) over official elapsed time, projected across
     the span the pairs cover. Reported at the matched tagged event where
     the gap jumps the most from the pair before -- the place to look for
     a missed stoppage."""
-    by_period: dict[int, list[tuple[int, int, _Tagged]]] = {}
-    for t, entry in pairs:
+    by_period: dict[int, list[tuple[int, int, _TaggedEvent]]] = {}
+    for tagged, entry in pairs:
         official_ms = entry.elapsed_seconds * 1000
         by_period.setdefault(entry.period_number, []).append(
-            (official_ms, t.elapsed_ms - official_ms, t)
+            (official_ms, tagged.elapsed_ms - official_ms, tagged)
         )
     findings = []
     for period in sorted(by_period):
@@ -232,49 +246,43 @@ def _drift(pairs: Sequence[tuple[_Tagged, OfficialEvent]]) -> list[Finding]:
             continue
         # The first of the biggest jumps.
         jump = max(range(1, len(gaps)), key=lambda i: abs(gaps[i] - gaps[i - 1]))
-        t = points[jump][2]
+        tagged = points[jump][2]
         findings.append(
             Finding(
                 FindingKind.DRIFT,
+                None,
+                None,
                 period,
-                tagged_event_id=t.event.id,
-                tagged_elapsed_ms=t.elapsed_ms,
+                tagged_event_id=tagged.event.id,
+                tagged_elapsed_ms=tagged.elapsed_ms,
                 drift_ms=drift,
             )
         )
     return findings
 
 
-# Each matched kind's player references: (TaggingSession's reference name,
-# the event's id/unknown columns, the Official event's slot).
-_PLAYER_FIELDS = {
-    OfficialEventKind.GOAL: (
-        ("shooter", "shooter", "player"),
-        ("assist1", "assist1", "assist1"),
-        ("assist2", "assist2", "assist2"),
-    ),
-    OfficialEventKind.PENALTY: (("player", "penalty_player", "player"),),
-}
-
-
-def _disagreements(data: GameData, t: _Tagged, entry: OfficialEvent) -> list[Finding]:
+def _disagreements(
+    data: GameData, tagged: _TaggedEvent, entry: OfficialEvent
+) -> list[Finding]:
     def disagreement(field: str, *, fillable: bool = False) -> Finding:
         return Finding(
             FindingKind.DISAGREEMENT,
-            t.period,
-            tagged_event_id=t.event.id,
-            tagged_elapsed_ms=t.elapsed_ms,
+            entry.kind,
+            entry.side,
+            tagged.period,
+            tagged_event_id=tagged.event.id,
+            tagged_elapsed_ms=tagged.elapsed_ms,
             official=entry,
             field=field,
             fillable=fillable,
         )
 
     findings = []
-    for field, column, slot in _PLAYER_FIELDS[t.kind]:
-        player_id = getattr(t.event, f"{column}_id")
-        unknown = getattr(t.event, f"{column}_unknown")
-        official_player = entry.official_player(slot)
-        if unknown:
+    references = OFFICIAL_REFERENCES[EventType(tagged.event.event_type)]
+    for field, reference in references.items():
+        player_id = reference.player_id(tagged.event)
+        official_player = reference.official(entry)
+        if reference.is_unknown(tagged.event):
             # Fillable only from a player the league names by licence.
             fillable = official_player is not None and bool(official_player.league_id)
             findings.append(disagreement(field, fillable=fillable))
@@ -285,8 +293,8 @@ def _disagreements(data: GameData, t: _Tagged, entry: OfficialEvent) -> list[Fin
             data, player_id, official_player
         ):
             findings.append(disagreement(field))
-    if t.kind is OfficialEventKind.GOAL and _strength_contradicts(
-        entry.strength_tag, t.event.strength_state, t.side
+    if tagged.kind is OfficialEventKind.GOAL and _strength_contradicts(
+        entry.strength_tag, tagged.event.strength_state, tagged.side
     ):
         findings.append(disagreement("strength"))
     return findings
@@ -295,15 +303,16 @@ def _disagreements(data: GameData, t: _Tagged, entry: OfficialEvent) -> list[Fin
 def _same_player(data: GameData, player_id: int, official: OfficialPlayer) -> bool:
     """By licence number when the tagged Player has one (and the league
     names one); otherwise by the Player's jersey on this game's roster."""
-    entry = next((e for e in data.roster if e.player_id == player_id), None)
+    entry = data.roster_entry(player_id)
     player = entry.player if entry is not None else None
     if player is not None and player.league_id and official.league_id:
         return player.league_id == official.league_id
     return entry is not None and entry.jersey_number == official.jersey
 
 
-# The official strength tag, by its prefix ("PP1", "SH2"...), as what it
-# says about the scoring team's skaters against the other team's.
+# An official strength tag, by its prefix ("PP1", "SH2"...), as what it
+# says about the scoring team's skaters against the other team's. Other
+# tags ("GWG"...) say nothing about strength.
 _TAG_AGREES = {
     "EQ": lambda own, other: own == other,
     "PP": lambda own, other: own > other,
@@ -317,16 +326,29 @@ _STRENGTH = re.compile(r"(\d+)v(\d+)")
 
 
 def _strength_contradicts(
-    tag: str | None, strength_state: str | None, side: Side | None
+    tags: str | None, strength_state: str | None, side: Side | None
 ) -> bool:
     """Whether a goal's tagged strength state contradicts the official
-    tag. The tag is coarser than skater counts, so "agrees" is a range:
-    a 5v4 or a 5v3 both agree with a power play. A tag or a state that
-    can't be read contradicts nothing."""
-    agrees = _TAG_AGREES.get((tag or "")[:2])
+    tags ("EQ", "PP1,GWG", "EQ,EN"...). A tag is coarser than skater
+    counts, so "agrees" is a range: a 5v4 or a 5v3 both agree with a
+    power play. An empty-net tag, wherever it is in the list, wins over
+    the strength one -- the pulled goalie is what the skater counts
+    show. Tags or a state that can't be read contradict nothing."""
+    agrees = _tags_agree(tags)
     match = _STRENGTH.fullmatch(strength_state or "")
     if agrees is None or match is None or side is None:
         return False
     home, away = int(match[1]), int(match[2])
     own, other = (home, away) if side == Side.HOME else (away, home)
     return not agrees(own, other)
+
+
+def _tags_agree(tags: str | None) -> Callable[[int, int], bool] | None:
+    """The rule for a goal's tags: empty net if any tag says so, else the
+    first strength tag's."""
+    prefixes = [tag.strip()[:2] for tag in (tags or "").split(",")]
+    if "EN" in prefixes:
+        return _TAG_AGREES["EN"]
+    return next(
+        (_TAG_AGREES[prefix] for prefix in prefixes if prefix in _TAG_AGREES), None
+    )

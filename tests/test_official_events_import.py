@@ -115,33 +115,42 @@ def test_import_stores_goals_penalties_and_goalie_changes(session):
 def test_a_goal_carries_scorer_assists_and_strength_tag(session):
     goal = _official(session, _import(session))[0]
 
-    assert goal.official_player("player") == OfficialPlayer(
-        MEMETEAU, "Mémeteau Matthias", 69
-    )
-    assert goal.official_player("assist1") == OfficialPlayer(
-        METRAUX, "Métraux Dorian", 6
-    )
-    assert goal.official_player("assist2") == OfficialPlayer(
-        WURTH, "Würth Ezequiel", 11
-    )
+    assert goal.player == OfficialPlayer(MEMETEAU, "Mémeteau Matthias", 69)
+    assert goal.assist1 == OfficialPlayer(METRAUX, "Métraux Dorian", 6)
+    assert goal.assist2 == OfficialPlayer(WURTH, "Würth Ezequiel", 11)
     assert goal.strength_tag == "EQ"
 
 
 def test_an_unassisted_goal_names_no_assists(session):
     power_play_goal = _official(session, _import(session))[2]
 
-    assert power_play_goal.official_player("assist1") is None
-    assert power_play_goal.official_player("assist2") is None
+    assert power_play_goal.assist1 is None
+    assert power_play_goal.assist2 is None
     assert power_play_goal.strength_tag == "PP1"
+
+
+def test_a_goal_keeps_every_tag_the_league_prints(session):
+    # Strength first, then the rest: an empty-net tag isn't first, so
+    # keeping the first alone would lose it.
+    body = sihf_game_overview(
+        timeline=[
+            [
+                Goal("home", "19:31", 69, tags="EQ,EN"),
+                Goal("away", "19:50", 21, tags="PP1,GWG"),
+            ]
+        ]
+    )
+    empty_net, game_winner = _official(session, _import(session, body))
+
+    assert empty_net.strength_tag == "EQ,EN"
+    assert game_winner.strength_tag == "PP1,GWG"
 
 
 def test_a_penalty_carries_its_name_and_minutes(session):
     penalty = _official(session, _import(session))[1]
 
     assert (penalty.penalty_name, penalty.penalty_minutes) == ("Cross-Check", 2)
-    assert penalty.official_player("player") == OfficialPlayer(
-        BROGLI, "Brogli Gaël", 15
-    )
+    assert penalty.player == OfficialPlayer(BROGLI, "Brogli Gaël", 15)
 
 
 def test_a_goalie_change_says_which_way(session):

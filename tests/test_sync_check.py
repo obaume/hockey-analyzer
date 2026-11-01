@@ -467,6 +467,17 @@ def test_an_unknown_penalised_player_is_fillable():
         ("EN", "5v6", HOME, True),
         ("EN", "6v5", AWAY, True),
         ("EN", "5v5", HOME, False),
+        # Several tags, as the league prints them: strength first, and
+        # only the strength ones say anything about it...
+        ("PP1,GWG", "5v4", HOME, True),
+        ("PP1,GWG", "5v5", HOME, False),
+        ("EQ,GWG", "5v5", AWAY, True),
+        ("GWG,SH1", "4v5", HOME, True),
+        # ...but an empty net wins wherever it is.
+        ("EQ,EN", "5v6", HOME, True),
+        ("EQ,EN", "5v5", HOME, False),
+        ("PP1,EN", "6v5", AWAY, True),
+        ("SH1, EN,GWG", "5v6", HOME, True),
     ],
 )
 def test_the_strength_tag_maps_onto_skater_counts(tag, strength, team, agrees):
@@ -491,7 +502,7 @@ def test_the_strength_tag_maps_onto_skater_counts(tag, strength, team, agrees):
 
 @pytest.mark.parametrize(
     ("tag", "strength"),
-    [("EQ", None), ("EQ", "PP"), ("PS", "5v5"), (None, "5v4")],
+    [("EQ", None), ("EQ", "PP"), ("PS", "5v5"), ("GWG", "5v4"), (None, "5v4")],
 )
 def test_a_strength_that_cant_be_read_is_not_compared(tag, strength):
     game = _Game()

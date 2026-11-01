@@ -268,6 +268,18 @@ class Game(Base):
     )
     events: Mapped[list[Event]] = relationship(back_populates="game")
 
+    def team_id(self, side: Side) -> int | None:
+        return self.home_team_id if side == Side.HOME else self.away_team_id
+
+    def side_of(self, team_id: int | None) -> Side | None:
+        """The side `team_id` plays on in this game, or None for a team
+        that isn't in it."""
+        if team_id is None:
+            return None
+        if team_id == self.home_team_id:
+            return Side.HOME
+        return Side.AWAY if team_id == self.away_team_id else None
+
 
 class GameRosterEntry(Base):
     __tablename__ = "game_roster_entries"
@@ -348,7 +360,8 @@ class OfficialEvent(Base):
     assist2_league_id: Mapped[str | None] = mapped_column(String, nullable=True)
     assist2_name: Mapped[str | None] = mapped_column(String, nullable=True)
     assist2_jersey: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # A goal's strength as the league tags it: "EQ", "PP1", "SH2", "EN"...
+    # A goal's tags as the league prints them, strength first: "EQ",
+    # "PP1,GWG", "EQ,EN"...
     strength_tag: Mapped[str | None] = mapped_column(String, nullable=True)
     penalty_name: Mapped[str | None] = mapped_column(String, nullable=True)
     penalty_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -359,23 +372,60 @@ class OfficialEvent(Base):
     # them. Lets an import attach them to a Game not yet flushed.
     game: Mapped[Game] = relationship()
 
-    def official_player(self, slot: str) -> OfficialPlayer | None:
-        """The player in `slot` ("player", "assist1" or "assist2"), or None
-        when the league names nobody there."""
-        league_id, name, jersey = (
-            getattr(self, f"{slot}_{part}") for part in ("league_id", "name", "jersey")
+    # Each player slot over its three columns, None when the league names
+    # nobody there; settable, constructor keyword included.
+    @property
+    def player(self) -> OfficialPlayer | None:
+        return OfficialPlayer.named(
+            self.player_league_id, self.player_name, self.player_jersey
         )
-        if league_id is None and name is None and jersey is None:
-            return None
-        return OfficialPlayer(league_id, name, jersey)
+
+    @player.setter
+    def player(self, who: OfficialPlayer | None) -> None:
+        self.player_league_id, self.player_name, self.player_jersey = who or _NOBODY
+
+    @property
+    def assist1(self) -> OfficialPlayer | None:
+        return OfficialPlayer.named(
+            self.assist1_league_id, self.assist1_name, self.assist1_jersey
+        )
+
+    @assist1.setter
+    def assist1(self, who: OfficialPlayer | None) -> None:
+        self.assist1_league_id, self.assist1_name, self.assist1_jersey = who or _NOBODY
+
+    @property
+    def assist2(self) -> OfficialPlayer | None:
+        return OfficialPlayer.named(
+            self.assist2_league_id, self.assist2_name, self.assist2_jersey
+        )
+
+    @assist2.setter
+    def assist2(self, who: OfficialPlayer | None) -> None:
+        self.assist2_league_id, self.assist2_name, self.assist2_jersey = who or _NOBODY
 
 
 class OfficialPlayer(NamedTuple):
-    """A player as an Official event names them."""
+    """A player as the league's play-by-play names them: on an
+    `OfficialEvent`, and parsed from the league before import."""
 
+    # The SIHF licence number, as a string -- Player.league_id.
     league_id: str | None
     name: str | None
     jersey: int | None
+
+    @classmethod
+    def named(
+        cls, league_id: str | None, name: str | None, jersey: int | None
+    ) -> OfficialPlayer | None:
+        """The player, or None when nothing names one."""
+        if league_id is None and name is None and jersey is None:
+            return None
+        return cls(league_id, name, jersey)
+
+
+# An empty player slot's three columns.
+_NOBODY = (None, None, None)
 
 
 class Event(Base):

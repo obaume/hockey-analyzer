@@ -36,6 +36,12 @@ class GameData:
     unit_assignments: Sequence[GameUnitAssignment] = ()
     official_events: Sequence[OfficialEvent] = ()
 
+    def roster_entry(self, player_id: int) -> GameRosterEntry | None:
+        """The roster entry holding `player_id` in this game, if any."""
+        return next(
+            (entry for entry in self.roster if entry.player_id == player_id), None
+        )
+
 
 def load_game_data(db_session: Session, game_id: int) -> GameData:
     game = db_session.get(Game, game_id)

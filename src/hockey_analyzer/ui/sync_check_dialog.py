@@ -27,14 +27,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hockey_analyzer.domain.enums import OfficialEventKind, Side
+from hockey_analyzer.domain.enums import EventType, OfficialEventKind, Side
 from hockey_analyzer.domain.game_data import GameData
-from hockey_analyzer.domain.models import Event, OfficialEvent, OfficialPlayer, Penalty
+from hockey_analyzer.domain.models import Event, OfficialEvent, OfficialPlayer
 from hockey_analyzer.domain.sync_check import Finding, FindingKind, sync_check
 from hockey_analyzer.domain.tagging_session import (
+    OFFICIAL_REFERENCES,
     REFERENCE_NAMES,
     NamedPlayerNotOverwrittenError,
     OfficialPlayerNotRosteredError,
+    ReferenceSpec,
 )
 from hockey_analyzer.ui.game_setup_dialog import Confirm
 
@@ -56,13 +58,6 @@ _GROUP_NAMES = {
     FindingKind.DISAGREEMENT: "Disagreement",
 }
 _KIND_NAMES = {OfficialEventKind.GOAL: "Goal", OfficialEventKind.PENALTY: "Penalty"}
-# What a slot on the Official event a Disagreement's field compares with.
-_OFFICIAL_SLOTS = {
-    "shooter": "player",
-    "assist1": "assist1",
-    "assist2": "assist2",
-    "player": "player",
-}
 
 
 class SyncCheckDialog(QDialog):
@@ -157,8 +152,9 @@ class SyncCheckDialog(QDialog):
         finding = self._selected()
         if finding is None or not finding.fillable or self._fill is None:
             return
-        official = finding.official.official_player(_OFFICIAL_SLOTS[finding.field])
-        kind = _KIND_NAMES[finding.official.kind].lower()
+        event = _event(self._data, finding.tagged_event_id)
+        official = _reference(event, finding.field).official(finding.official)
+        kind = _KIND_NAMES[finding.event_kind].lower()
         question = (
             f"Set the {REFERENCE_NAMES[finding.field]} of this {kind} to "
             f"{_official_label(official)}, as the league has it?"
@@ -187,6 +183,11 @@ def _event(data: GameData, event_id: int) -> Event | None:
     return next((event for event in data.events if event.id == event_id), None)
 
 
+def _reference(event: Event, field: str) -> ReferenceSpec:
+    """The player reference a Disagreement's `field` names on `event`."""
+    return OFFICIAL_REFERENCES[EventType(event.event_type)][field]
+
+
 def _clock(period: int | None, elapsed_ms: int | None) -> str:
     """e.g. "P2 8:22" -- elapsed time in the period, as the league
     counts it."""
@@ -209,42 +210,36 @@ def _official_label(player: OfficialPlayer | None) -> str:
     )
 
 
-def _what(kind: OfficialEventKind, side: Side | None) -> str:
+def _event_label(kind: OfficialEventKind, side: Side | None) -> str:
+    """e.g. "Goal, home"."""
     return f"{_KIND_NAMES[kind]}, {side.value}" if side else _KIND_NAMES[kind]
 
 
-def _tagged_label(data: GameData, event: Event, column: str) -> str:
-    if getattr(event, f"{column}_unknown"):
+def _tagged_label(data: GameData, event: Event, reference: ReferenceSpec) -> str:
+    if reference.is_unknown(event):
         return "unknown"
-    player_id = getattr(event, f"{column}_id")
+    player_id = reference.player_id(event)
     if player_id is None:
         return "not set"
-    entry = next((e for e in data.roster if e.player_id == player_id), None)
+    entry = data.roster_entry(player_id)
     if entry is None:
         return f"player {player_id}"
     name = entry.player.full_name if entry.player is not None else None
     return f"#{entry.jersey_number} {name}" if name else f"#{entry.jersey_number}"
 
 
-_COLUMNS = {
-    ("shooter", OfficialEventKind.GOAL): "shooter",
-    ("assist1", OfficialEventKind.GOAL): "assist1",
-    ("assist2", OfficialEventKind.GOAL): "assist2",
-    ("player", OfficialEventKind.PENALTY): "penalty_player",
-}
-
-
 def _finding_text(data: GameData, finding: Finding) -> str:
     official: OfficialEvent | None = finding.official
     if finding.kind is FindingKind.MISSING:
         when = _clock(official.period_number, official.elapsed_seconds * 1000)
-        who = _official_label(official.official_player("player"))
+        who = _official_label(official.player)
         detail = (
             f" ({official.penalty_minutes} min {official.penalty_name})"
             if official.kind is OfficialEventKind.PENALTY and official.penalty_name
             else ""
         )
-        return f"{when}  {_what(official.kind, official.side)}: {who}{detail}"
+        what = _event_label(finding.event_kind, finding.side)
+        return f"{when}  {what}: {who}{detail}"
     when = _clock(finding.period, finding.tagged_elapsed_ms)
     if finding.kind is FindingKind.DRIFT:
         seconds = round(finding.drift_ms / 1000)
@@ -255,34 +250,18 @@ def _finding_text(data: GameData, finding: Finding) -> str:
             f"stoppage? Look before {_minutes(finding.tagged_elapsed_ms)}"
         )
     event = _event(data, finding.tagged_event_id)
+    what = _event_label(finding.event_kind, finding.side)
     if finding.kind is FindingKind.EXTRA:
-        kind = (
-            OfficialEventKind.PENALTY
-            if isinstance(event, Penalty)
-            else OfficialEventKind.GOAL
-        )
-        side = _event_side(data, event)
-        return f"{when}  {_what(kind, side)}: tagged, not in the league's record"
-    what = _what(official.kind, official.side)
+        return f"{when}  {what}: tagged, not in the league's record"
     if finding.field == "strength":
         return (
             f"{when}  {what}: strength is {event.strength_state}, "
             f"the league has {official.strength_tag}"
         )
-    tagged = _tagged_label(data, event, _COLUMNS[finding.field, official.kind])
-    league = _official_label(official.official_player(_OFFICIAL_SLOTS[finding.field]))
+    reference = _reference(event, finding.field)
+    tagged = _tagged_label(data, event, reference)
+    league = _official_label(reference.official(official))
     return (
         f"{when}  {what}: {REFERENCE_NAMES[finding.field]} is {tagged}, "
         f"the league has {league}"
     )
-
-
-def _event_side(data: GameData, event: Event | None) -> Side | None:
-    team_id = getattr(event, "shot_team_id", None) or getattr(
-        event, "penalty_team_id", None
-    )
-    if team_id is None:
-        return None
-    if team_id == data.game.home_team_id:
-        return Side.HOME
-    return Side.AWAY if team_id == data.game.away_team_id else None

@@ -28,6 +28,8 @@ from datetime import date as date_
 from typing import Any, NamedTuple
 
 from hockey_analyzer.domain.enums import OfficialEventKind, Position, Side, UnitType
+from hockey_analyzer.domain.game_clock import PERIOD_LENGTH_MS
+from hockey_analyzer.domain.models import OfficialPlayer
 
 
 class LeagueSourceError(Exception):
@@ -92,16 +94,6 @@ class LeagueTeam:
 
 
 @dataclass(frozen=True)
-class LeagueOfficialPlayer:
-    """A player as the play-by-play names them."""
-
-    # The SIHF licence number, as a string -- Player.league_id.
-    league_id: str
-    full_name: str | None
-    jersey_number: int | None
-
-
-@dataclass(frozen=True)
 class LeagueOfficialEvent:
     """One play-by-play entry, to become an `OfficialEvent`."""
 
@@ -110,9 +102,10 @@ class LeagueOfficialEvent:
     elapsed_seconds: int
     side: Side | None
     # The scorer, the penalised player, or the goalie going in or out.
-    player: LeagueOfficialPlayer | None
-    assist1: LeagueOfficialPlayer | None = None
-    assist2: LeagueOfficialPlayer | None = None
+    player: OfficialPlayer | None
+    assist1: OfficialPlayer | None = None
+    assist2: OfficialPlayer | None = None
+    # Every tag, strength first: "EQ", "PP1,GWG", "EQ,EN"...
     strength_tag: str | None = None
     penalty_name: str | None = None
     penalty_minutes: int | None = None
@@ -237,8 +230,8 @@ _PBP_KINDS = {
     "goalie": OfficialEventKind.GOALIE_CHANGE,
 }
 # The league's clock counts across periods ("65:56" is 5:56 into
-# overtime), each regulation period 20 minutes long.
-_PERIOD_SECONDS = 20 * 60
+# overtime), each regulation period a full period long.
+_PERIOD_SECONDS = PERIOD_LENGTH_MS // 1000
 
 
 def _official_events(
@@ -251,13 +244,11 @@ def _official_events(
         if row["player_id"] is not None
     }
 
-    def player(prefix: str, row: dict[str, Any]) -> LeagueOfficialPlayer | None:
+    def player(prefix: str, row: dict[str, Any]) -> OfficialPlayer | None:
         licence = row[f"{prefix}_id"]
         if licence is None:
             return None
-        return LeagueOfficialPlayer(
-            str(licence), row[f"{prefix}_name"], jerseys.get(licence)
-        )
+        return OfficialPlayer(str(licence), row[f"{prefix}_name"], jerseys.get(licence))
 
     events = []
     for row in rows:
@@ -284,7 +275,9 @@ def _official_events(
                 player=player("player", row),
                 assist1=player("assist1_player", row),
                 assist2=player("assist2_player", row),
-                strength_tag=row["strength"],
+                # All of them, not sportsdataverse's `strength` (the first
+                # only): an empty-net tag comes after the strength one.
+                strength_tag=row["goal_tags"],
                 penalty_name=row["penalty_name"],
                 penalty_minutes=row["penalty_minutes"],
                 goalie_in=None if goalie_change is None else goalie_change == "in",

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date as date_
 from difflib import SequenceMatcher
 from functools import partial
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -36,7 +36,6 @@ from hockey_analyzer.domain.models import (
 from hockey_analyzer.league_import.sihf import (
     LeagueGame,
     LeagueOfficialEvent,
-    LeagueOfficialPlayer,
     LeaguePlayer,
     LeagueSourceError,
     LeagueTeam,
@@ -283,6 +282,10 @@ class RefreshReport:
     skipped: tuple[SkippedPlayer, ...] = ()
 
 
+# A row `LeagueImportService` looks up by id.
+_Row = TypeVar("_Row", Team, Player, Game)
+
+
 class LeagueImportService:
     """Takes an already-open SQLAlchemy `Session` and a `LeagueSource`.
     `propose` only reads; `confirm` writes a reviewed proposal as one
@@ -459,7 +462,7 @@ class LeagueImportService:
         }
         added, skipped = 0, []
         for side in (Side.HOME, Side.AWAY):
-            team_id = game.home_team_id if side == Side.HOME else game.away_team_id
+            team_id = game.team_id(side)
             entries = {
                 entry.jersey_number: entry
                 for entry in self._db.scalars(
@@ -585,9 +588,7 @@ class LeagueImportService:
                 )
         return player
 
-    def _existing(
-        self, model: type[Team] | type[Player] | type[Game], id_: int
-    ) -> Team | Player | Game:
+    def _existing(self, model: type[_Row], id_: int) -> _Row:
         row = self._db.get(model, id_)
         if row is None:
             raise KeyError(f"no {model.__name__} with id {id_}")
@@ -623,15 +624,6 @@ class LeagueImportService:
 
 
 def _official_event(game: Game, entry: LeagueOfficialEvent) -> OfficialEvent:
-    def player(slot: str, who: LeagueOfficialPlayer | None) -> dict[str, Any]:
-        if who is None:
-            return {}
-        return {
-            f"{slot}_league_id": who.league_id,
-            f"{slot}_name": who.full_name,
-            f"{slot}_jersey": who.jersey_number,
-        }
-
     return OfficialEvent(
         game=game,
         kind=entry.kind,
@@ -642,9 +634,9 @@ def _official_event(game: Game, entry: LeagueOfficialEvent) -> OfficialEvent:
         penalty_name=entry.penalty_name,
         penalty_minutes=entry.penalty_minutes,
         goalie_in=entry.goalie_in,
-        **player("player", entry.player),
-        **player("assist1", entry.assist1),
-        **player("assist2", entry.assist2),
+        player=entry.player,
+        assist1=entry.assist1,
+        assist2=entry.assist2,
     )
 
 
