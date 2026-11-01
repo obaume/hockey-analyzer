@@ -9,6 +9,7 @@ from clip_fixtures import FakeEncoder, FakePreviewPlayer
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QDialog
+from sihf_fixtures import sihf_game_overview
 from stats_fixtures import named_game
 
 from hockey_analyzer.domain.enums import EventSource, EventType, Side, UnitType
@@ -18,7 +19,7 @@ from hockey_analyzer.domain.report_bundle import (
     build_game_report,
     write_bundle,
 )
-from hockey_analyzer.league_import import LeagueImportService
+from hockey_analyzer.league_import import LeagueImportService, LeagueSourceError
 from hockey_analyzer.ui.clip_export_dialog import ClipExportDialog
 from hockey_analyzer.ui.main_window import MainWindow
 from hockey_analyzer.ui.playback_controller import PlaybackController
@@ -1782,3 +1783,145 @@ def test_navigation_with_no_game_loaded_does_nothing(qtbot):
         qtbot.keyClick(window, key, _SHIFT)
 
     controller.seek.assert_not_called()
+
+
+# -- Game > Sync Check… and Refresh from League (#102) ---------------------------
+
+
+class _FakeSyncCheckDialog:
+    """Stands in for SyncCheckDialog.exec() -- records what it was handed."""
+
+    def __init__(self, load, *, seek, fill, parent=None) -> None:
+        self.load, self.seek, self.fill, self.parent = load, seek, fill, parent
+        self.executed = False
+
+    def exec(self) -> QDialog.DialogCode:
+        self.executed = True
+        return QDialog.DialogCode.Accepted
+
+
+def _window_with_sync_check(qtbot, session, game, opened, **kwargs):
+    def factory(load, **dialog_kwargs):
+        dialog = _FakeSyncCheckDialog(load, **dialog_kwargs)
+        opened.append(dialog)
+        return dialog
+
+    controller = Mock(spec=PlaybackController)
+    window = MainWindow(
+        controller=controller,
+        player=FakePlayer(),
+        shortcuts=ShortcutRegistry(),
+        db_session=session,
+        game_list_dialog_factory=lambda service: _FakeGameListDialog(
+            selected_game_id=game.id
+        ),
+        sync_check_dialog_factory=factory,
+        **kwargs,
+    )
+    qtbot.addWidget(window)
+    window.select_game_action.trigger()
+    return window, controller
+
+
+def test_sync_check_is_disabled_with_no_active_game(qtbot, session):
+    window = _make_window(qtbot)
+
+    assert window.sync_check_action.isEnabled() is False
+    assert window.refresh_from_league_action.isEnabled() is False
+
+
+def test_sync_check_opens_on_the_active_game(qtbot, session, game_setup_service):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    opened = []
+    window, controller = _window_with_sync_check(qtbot, session, game, opened)
+    assert window.sync_check_action.isEnabled() is True
+
+    window.sync_check_action.trigger()
+
+    (dialog,) = opened
+    assert dialog.executed is True
+    assert dialog.parent is window
+    assert dialog.load().game.id == game.id
+    dialog.seek(42_000)
+    controller.seek.assert_called_once_with(42_000)
+
+
+def test_a_fill_from_the_sync_check_is_an_undoable_tagging_step(
+    qtbot, session, game_setup_service
+):
+    game, home, _away = _game_with_sides(game_setup_service)
+    kim = game_setup_service.add_roster_entry(
+        game_id=game.id, team_id=home.id, jersey_number=14, full_name="Jordan Kim"
+    )
+    kim.player.league_id = "300014"
+    session.commit()
+    opened = []
+    window, _ = _window_with_sync_check(qtbot, session, game, opened)
+    penalty = window.tagging_panel.session.log_event(EventType.PENALTY, 5_000)
+    window.sync_check_action.trigger()
+
+    opened[0].fill(penalty.id, "player", "300014")
+
+    assert penalty.penalty_player_id == kim.player_id
+    assert window.undo_action.text().startswith("Undo Filled player from official")
+
+
+def test_refresh_from_league_needs_a_game_imported_from_the_league(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    window, _ = _window_with_sync_check(qtbot, session, game, [])
+
+    assert window.refresh_from_league_action.isEnabled() is False
+
+
+class _FakeRefreshSource:
+    def __init__(self, error=None) -> None:
+        self.error = error
+
+    def fetch_game_overview(self, game_id):
+        if self.error is not None:
+            raise self.error
+        return sihf_game_overview(game_id=game_id)
+
+
+def test_refresh_from_league_refreshes_the_active_game_and_reports(
+    qtbot, session, game_setup_service
+):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    game.league_id = "20270009263101"
+    session.commit()
+    notices = []
+    window, _ = _window_with_sync_check(
+        qtbot,
+        session,
+        game,
+        [],
+        league_source=_FakeRefreshSource(),
+        refresh_notice=notices.append,
+    )
+    assert window.refresh_from_league_action.isEnabled() is True
+
+    window.refresh_from_league_action.trigger()
+
+    (notice,) = notices
+    assert "0 Official events" in notice
+
+
+def test_a_failed_refresh_says_so(qtbot, session, game_setup_service):
+    game, _home, _away = _game_with_sides(game_setup_service)
+    game.league_id = "20270009263101"
+    session.commit()
+    notices = []
+    window, _ = _window_with_sync_check(
+        qtbot,
+        session,
+        game,
+        [],
+        league_source=_FakeRefreshSource(LeagueSourceError("league is down")),
+        refresh_notice=notices.append,
+    )
+
+    window.refresh_from_league_action.trigger()
+
+    assert notices == ["Couldn't refresh from the league: league is down"]

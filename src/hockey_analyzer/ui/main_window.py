@@ -49,6 +49,9 @@ from hockey_analyzer.domain.video_timestamp import (
 from hockey_analyzer.league_import import (
     LeagueImportService,
     LeagueSource,
+    LeagueSourceError,
+    RefreshReport,
+    RefreshSkipReason,
     SihfApiSource,
 )
 from hockey_analyzer.ui.clip_export_dialog import ClipExportDialog
@@ -73,6 +76,7 @@ from hockey_analyzer.ui.shortcuts import (
     ShortcutRegistry,
 )
 from hockey_analyzer.ui.stats_dialog import StatsDialog
+from hockey_analyzer.ui.sync_check_dialog import Fill, SyncCheckDialog
 from hockey_analyzer.ui.tagging_panel import REDO_KEY, UNDO_KEY, TaggingPanel
 from hockey_analyzer.ui.units_dialog import UnitsDialog
 from hockey_analyzer.ui.video_frame_view import VideoFrameView
@@ -109,6 +113,20 @@ class RosterDialogFactory(Protocol):
     ) -> RosterDialog: ...
 
 
+class SyncCheckDialogFactory(Protocol):
+    """`SyncCheckDialog`'s constructor shape, as `_show_sync_check` calls
+    it."""
+
+    def __call__(
+        self,
+        load: Callable[[], GameData],
+        *,
+        seek: Callable[[int], None],
+        fill: Fill | None,
+        parent: QWidget | None = None,
+    ) -> SyncCheckDialog: ...
+
+
 class ClipExportDialogFactory(Protocol):
     def __call__(
         self, data: GameData, parent: QWidget, shortcuts: ShortcutRegistry
@@ -137,6 +155,28 @@ def _clip_export_dialog(
         shortcuts=shortcuts,
         parent=parent,
     )
+
+
+def _refresh_summary(report: RefreshReport) -> str:
+    """What a refresh from the league did, for the user (CONTEXT.md's
+    Official event)."""
+    lines = [
+        f"The game now has {report.official_events} Official events.",
+        f"{report.licences_added} rostered players got their licence numbers.",
+    ]
+    reasons = {
+        RefreshSkipReason.HAS_ANOTHER_NUMBER: "already holds another licence number",
+        RefreshSkipReason.NUMBER_HELD_BY_ANOTHER_PLAYER: (
+            "their licence number belongs to another player"
+        ),
+    }
+    for skipped in report.skipped:
+        name = f" {skipped.full_name}" if skipped.full_name else ""
+        lines.append(
+            f"Skipped {skipped.side.value} #{skipped.jersey_number}{name} "
+            f"(licence {skipped.league_id}): {reasons[skipped.reason]}."
+        )
+    return "\n".join(lines)
 
 
 def _edit_label(verb: str, description: str | None, key: str) -> str:
@@ -180,6 +220,8 @@ class MainWindow(QMainWindow):
         stats_game_picker_factory: Callable[[GameSetupService], GameListDialog]
         | None = None,
         clip_export_dialog_factory: ClipExportDialogFactory | None = None,
+        sync_check_dialog_factory: SyncCheckDialogFactory | None = None,
+        refresh_notice: Callable[[str], None] | None = None,
         video_missing_notice: Callable[[str], None] | None = None,
         report_file_dialog: Callable[[], str] | None = None,
         report_viewer_factory: ReportViewerFactory | None = None,
@@ -234,6 +276,8 @@ class MainWindow(QMainWindow):
         self._clip_export_dialog_factory = (
             clip_export_dialog_factory or _clip_export_dialog
         )
+        self._sync_check_dialog_factory = sync_check_dialog_factory or SyncCheckDialog
+        self._refresh_notice = refresh_notice or self._show_refresh_notice
         self._video_missing_notice = (
             video_missing_notice
             if video_missing_notice is not None
@@ -369,6 +413,16 @@ class MainWindow(QMainWindow):
         self.export_clips_action = game_menu.addAction("Export Clips…")
         self.export_clips_action.triggered.connect(self._export_clips)
         self.export_clips_action.setEnabled(False)
+        # The active game's tagging against its Official events (#102)
+        # -- for/against one side vs. the other, like Stats.
+        self.sync_check_action = game_menu.addAction("Sync Check…")
+        self.sync_check_action.triggered.connect(self._show_sync_check)
+        self.sync_check_action.setEnabled(False)
+        # Re-fetches a league-imported game's Official events and its
+        # players' licence numbers -- only for a game with a league_id.
+        self.refresh_from_league_action = game_menu.addAction("Refresh from League")
+        self.refresh_from_league_action.triggered.connect(self._refresh_from_league)
+        self.refresh_from_league_action.setEnabled(False)
         # Stats over a hand-picked set of games (ticket 19) -- picks its
         # own games, so it doesn't depend on the active one.
         self.multi_game_stats_action = game_menu.addAction("Multi-Game Stats…")
@@ -510,6 +564,10 @@ class MainWindow(QMainWindow):
         self.roster_action.setEnabled(has_both_sides)
         self.stats_action.setEnabled(has_both_sides)
         self.export_clips_action.setEnabled(has_both_sides and bool(game.video_path))
+        self.sync_check_action.setEnabled(has_both_sides)
+        self.refresh_from_league_action.setEnabled(
+            has_both_sides and game.league_id is not None
+        )
 
     def _new_game(self) -> None:
         if self._game_setup_service is None:
@@ -600,6 +658,44 @@ class MainWindow(QMainWindow):
         # playhead stays where it is for when the dialog closes.
         self._controller.pause()
         dialog.exec()
+
+    def _show_sync_check(self) -> None:
+        if self._db_session is None or self._active_game_id is None:
+            return
+        game_id = self._active_game_id
+        session = self._tagging_session()
+        fill = None
+        if session is not None:
+
+            def fill(event_id: int, reference: str, league_id: str) -> None:
+                session.fill_from_official(event_id, reference, league_id)
+                self._reload_game_views()
+                self._refresh_edit_actions()
+
+        dialog = self._sync_check_dialog_factory(
+            lambda: load_game_data(self._db_session, game_id),
+            seek=self._controller.seek,
+            fill=fill,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _refresh_from_league(self) -> None:
+        if self._db_session is None or self._active_game_id is None:
+            return
+        service = LeagueImportService(self._db_session, self._league_source)
+        try:
+            report = service.refresh(self._active_game_id)
+        except LeagueSourceError as error:
+            self._refresh_notice(f"Couldn't refresh from the league: {error}")
+            return
+        # Players' licence numbers changed under the undo history (#64).
+        self._on_setup_saved("refreshed from the league")
+        self._reload_game_views()
+        self._refresh_notice(_refresh_summary(report))
+
+    def _show_refresh_notice(self, message: str) -> None:
+        QMessageBox.information(self, "Refresh from League", message)
 
     def _show_multi_game_stats(self) -> None:
         if self._game_setup_service is None:
