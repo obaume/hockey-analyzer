@@ -8,16 +8,19 @@ The API isn't a contract, so every parse failure here raises a
 `LeagueSourceError` rather than returning partial data -- the caller decides
 how far a failed source degrades the import.
 
-`sportsdataverse` is imported inside the functions that need it, not at
-module level: importing any part of it imports the whole package (every
-league, pandas, polars and its ML stack -- xgboost, scikit-learn, scipy),
-which takes seconds, so it's paid on the first league import rather than
-at app start.
+`sportsdataverse` is loaded on first use (see `_sihf`), not at module
+level, and without running its package `__init__`s: those import every
+league and its ML stack, and xgboost alone fails to load on a Mac without
+Homebrew's `libomp`.
 """
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import re
+import sys
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date as date_
@@ -106,12 +109,8 @@ _UNIT_POSITIONS: dict[str, Position | None] = {
 
 
 def parse_game_overview(body: Mapping[str, Any]) -> LeagueGame:
-    from sportsdataverse.hockey.sihf import (
-        parse_sihf_game_info,
-        parse_sihf_game_lineups,
-    )
-
-    info_rows = parse_sihf_game_info(body).to_dicts()
+    sihf = _sihf()
+    info_rows = sihf.parse_sihf_game_info(body).to_dicts()
     if len(info_rows) != 1 or info_rows[0]["game_id"] is None:
         raise LeagueSourceError("not a game body")
     info = info_rows[0]
@@ -119,7 +118,7 @@ def parse_game_overview(body: Mapping[str, Any]) -> LeagueGame:
     if home_score is None or away_score is None:
         # An unfinished game isn't importable (ticket 11).
         raise LeagueSourceError("no final score (game not finished?)")
-    lineups = parse_sihf_game_lineups(body).to_dicts()
+    lineups = sihf.parse_sihf_game_lineups(body).to_dicts()
     home, away = (
         _team(info, [row for row in lineups if row["team_side"] == side.value], side)
         for side in (Side.HOME, Side.AWAY)
@@ -178,15 +177,34 @@ class SihfApiSource:
     another game than the one asked for."""
 
     def fetch_game_overview(self, game_id: str) -> dict[str, Any]:
-        from sportsdataverse.errors import SportsDataverseError
-        from sportsdataverse.hockey.sihf import sihf_pbp
-
+        sihf = _sihf()
+        errors = importlib.import_module("sportsdataverse.errors")
         try:
-            return sihf_pbp(game_id=int(game_id), return_parsed=False)
+            return sihf.sihf_pbp(game_id=int(game_id), return_parsed=False)
         # SportsDataverseError covers a failed fetch (AssetFetchError) and
         # an unknown game (NoDataError); ValueError a rejected request;
         # OSError anything the HTTP layer lets through.
-        except (SportsDataverseError, ValueError, OSError) as error:
+        except (errors.SportsDataverseError, ValueError, OSError) as error:
             raise LeagueSourceError(
                 f"couldn't fetch league game {game_id}: {error}"
             ) from error
+
+
+def _sihf() -> types.ModuleType:
+    """`sportsdataverse.hockey.sihf`, imported without running the
+    `sportsdataverse` and `sportsdataverse.hockey` package `__init__`s.
+    Those eagerly import every league, and `cfb` pulls in xgboost, whose
+    macOS wheel won't load without Homebrew's `libomp` -- so on a stock Mac
+    any league import would crash. Each is registered as a bare package
+    (its `__path__` only), which is all the SIHF module's own imports need.
+    Drop this once sportsdataverse imports its leagues lazily."""
+    for name in ("sportsdataverse", "sportsdataverse.hockey"):
+        if name not in sys.modules:
+            spec = importlib.util.find_spec(name)
+            if spec is None or spec.submodule_search_locations is None:
+                raise LeagueSourceError(f"{name} isn't installed")
+            package = types.ModuleType(name)
+            package.__spec__ = spec
+            package.__path__ = list(spec.submodule_search_locations)
+            sys.modules[name] = package
+    return importlib.import_module("sportsdataverse.hockey.sihf")
