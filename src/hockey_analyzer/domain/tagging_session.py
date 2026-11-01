@@ -265,6 +265,19 @@ class Unit(NamedTuple):
     player_ids: tuple[int, ...]
 
 
+class NamedPlayerNotOverwrittenError(ValueError):
+    """Fill from official was asked for a field that isn't an Unknown
+    player reference: a named player (or an empty assist) is only ever
+    reported against the official record, never overwritten (CONTEXT.md's
+    Sync check)."""
+
+
+class OfficialPlayerNotRosteredError(LookupError):
+    """Fill from official found no Player on the event's team in this
+    game holding the official licence number -- the roster is the
+    tagger's to control, so nobody is rostered on the fly."""
+
+
 class TaggingSession:
     """Owns all state changes for one `Game`'s tagging pass, scoped to two
     sides (`home_team_id`/`away_team_id`) so a tagger can identify a
@@ -679,6 +692,60 @@ class TaggingSession:
                 getattr(event, spec.id_column), getattr(event, spec.unknown_column)
             )
             step.description = f"Set {REFERENCE_NAMES[reference]}: {who}"
+            step.event_id = event.id
+        return event
+
+    def fill_from_official(
+        self, event_id: int, reference: str, league_id: str
+    ) -> Event:
+        """Fill from official (see `sync_check`): set one Unknown player
+        reference on one event to the Player on this game's roster, on the
+        event's team, holding the official `league_id` -- one undoable
+        step, asked for only after the tagger confirms it. Refuses a field
+        that isn't unknown (`NamedPlayerNotOverwrittenError`) and an
+        official player nobody on the roster is
+        (`OfficialPlayerNotRosteredError`)."""
+        event = self._get(event_id)
+        specs = _REFERENCE_SPECS.get(EventType(event.event_type), {})
+        spec = specs.get(reference)
+        if spec is None:
+            raise ValueError(
+                f"{event.event_type.value} events have no {reference!r} reference"
+            )
+        if not getattr(event, spec.unknown_column):
+            raise NamedPlayerNotOverwrittenError(
+                f"the {REFERENCE_NAMES[reference]} isn't an unknown player"
+            )
+        # An assist has no team column of its own: it's the shooter's team.
+        team_column = next(
+            (s.team_column for s in specs.values() if s.team_column is not None),
+            None,
+        )
+        team_id = getattr(event, team_column) if team_column is not None else None
+        stmt = (
+            select(GameRosterEntry)
+            .join(Player)
+            .where(
+                GameRosterEntry.game_id == self.game_id,
+                Player.league_id == league_id,
+            )
+        )
+        if team_id is not None:
+            stmt = stmt.where(GameRosterEntry.team_id == team_id)
+        entry = self._db.scalars(stmt).one_or_none()
+        if entry is None:
+            raise OfficialPlayerNotRosteredError(
+                f"no player with licence number {league_id} is on this "
+                "game's roster for that team"
+            )
+        with self._history.record() as step:
+            setattr(event, spec.id_column, entry.player_id)
+            setattr(event, spec.unknown_column, False)
+            self._db.commit()
+            step.description = (
+                f"Filled {REFERENCE_NAMES[reference]} from official: "
+                f"{roster_entry_label(entry)}"
+            )
             step.event_id = event.id
         return event
 
