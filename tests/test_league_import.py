@@ -7,6 +7,8 @@ import pytest
 from sihf_fixtures import (
     GAME_LINK,
     FakeLeagueSource,
+    Foul,
+    Goal,
     Lineup,
     sihf_game_overview,
 )
@@ -18,6 +20,7 @@ from hockey_analyzer.domain.models import (
     Game,
     GameRosterEntry,
     GameUnitAssignment,
+    OfficialEvent,
     Player,
     Team,
 )
@@ -36,7 +39,12 @@ from hockey_analyzer.league_import import (
 
 @pytest.fixture
 def source():
-    return FakeLeagueSource()
+    # With a play-by-play, so a confirm has Official events to write too.
+    return FakeLeagueSource(
+        sihf_game_overview(
+            timeline=[[Goal("home", "08:22", 69), Foul("away", "13:45", 15)]]
+        )
+    )
 
 
 @pytest.fixture
@@ -405,7 +413,14 @@ def test_proposing_writes_nothing(service, session):
 def _row_counts(session):
     return {
         model.__name__: session.scalar(select(func.count()).select_from(model))
-        for model in (Game, Team, Player, GameRosterEntry, GameUnitAssignment)
+        for model in (
+            Game,
+            Team,
+            Player,
+            GameRosterEntry,
+            GameUnitAssignment,
+            OfficialEvent,
+        )
     }
 
 
@@ -947,6 +962,23 @@ def test_a_failure_partway_through_writes_nothing(service, session):
 
     assert _row_counts(session) == counts_before
     assert session.get(Team, existing.id).league_id is None
+
+
+def test_a_failed_commit_writes_no_official_events(service, session, monkeypatch):
+    proposal = service.propose(GAME_LINK)
+    assert proposal.official_events
+    counts_before = _row_counts(session)
+
+    def fail():
+        raise RuntimeError("disk full")
+
+    # Fails after everything, Official events included, was staged.
+    monkeypatch.setattr(session, "commit", fail)
+    with pytest.raises(RuntimeError):
+        service.confirm(proposal, _as_proposed(proposal))
+    monkeypatch.undo()
+
+    assert _row_counts(session) == counts_before
 
 
 def test_creating_a_second_team_with_a_known_league_id_is_refused(service, session):
