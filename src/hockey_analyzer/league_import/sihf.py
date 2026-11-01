@@ -21,12 +21,13 @@ import importlib.util
 import re
 import sys
 import types
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date as date_
-from typing import Any
+from typing import Any, NamedTuple
 
-from hockey_analyzer.domain.enums import Position, Side
+from hockey_analyzer.domain.enums import Position, Side, UnitType
 
 
 class LeagueSourceError(Exception):
@@ -58,6 +59,14 @@ def parse_game_link(link: str) -> str:
     return match.group(1)
 
 
+class LineupUnit(NamedTuple):
+    """A unit the lineup puts a player on, e.g. Forward line 2 -- to
+    become a `GameUnitAssignment`."""
+
+    unit_type: UnitType
+    unit_number: int
+
+
 @dataclass(frozen=True)
 class LeaguePlayer:
     jersey_number: int
@@ -66,6 +75,9 @@ class LeaguePlayer:
     # The position group the player lined up in for this game; None for a
     # player listed outside the six groups.
     position: Position | None
+    # The forward line or defense pair the lineup's order puts them on;
+    # None for goalies, extras, and anyone past the shortest side's list.
+    unit: LineupUnit | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +120,14 @@ _UNIT_POSITIONS: dict[str, Position | None] = {
 }
 
 
+# The lineup units whose Nth players make up a unit N together (CONTEXT.md's
+# Game unit assignment). Goalies and `other` make up none.
+_UNIT_SIDES: dict[UnitType, tuple[str, ...]] = {
+    UnitType.FORWARD_LINE: ("forward_left", "forward_center", "forward_right"),
+    UnitType.DEFENSE_PAIR: ("defense_left", "defense_right"),
+}
+
+
 def parse_game_overview(body: Mapping[str, Any]) -> LeagueGame:
     sihf = _sihf()
     info_rows = sihf.parse_sihf_game_info(body).to_dicts()
@@ -140,11 +160,17 @@ def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> Leagu
     if not name:
         raise LeagueSourceError(f"no {side.value} team name")
     team_id = info[f"{side.value}_team_id"]
+    # A null unit is an absentee: never dressed, so not a roster row.
+    dressed = [row for row in rows if row["unit"] is not None]
+    units = _lineup_units(dressed)
     lineup = tuple(
-        LeaguePlayer(row["player_jersey"], row["player_name"], _UNIT_POSITIONS[unit])
-        for row in rows
-        # A null unit is an absentee: never dressed, so not a roster row.
-        if (unit := row["unit"]) is not None
+        LeaguePlayer(
+            row["player_jersey"],
+            row["player_name"],
+            _UNIT_POSITIONS[row["unit"]],
+            units.get((row["unit"], row["slot"])),
+        )
+        for row in dressed
     )
     if not lineup:
         # Also a game whose lineups aren't out yet.
@@ -152,6 +178,20 @@ def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> Leagu
     if any(p.jersey_number is None or not p.full_name for p in lineup):
         raise LeagueSourceError(f"a {side.value} lineup player has no name or jersey")
     return LeagueTeam(name, None if team_id is None else str(team_id), lineup)
+
+
+def _lineup_units(rows: list[dict[str, Any]]) -> dict[tuple[str, int], LineupUnit]:
+    """The unit each `(lineup unit, slot)` goes to: the Nth player of each
+    side makes up unit N, for N up to the shortest side's list -- so a 13th
+    forward or a 7th defenseman is rostered without a unit, never as a
+    one-player "line 5"."""
+    listed = Counter(row["unit"] for row in rows)
+    units = {}
+    for unit_type, sides in _UNIT_SIDES.items():
+        for number in range(1, min(listed[side] for side in sides) + 1):
+            for side in sides:
+                units[side, number] = LineupUnit(unit_type, number)
+    return units
 
 
 def _start_date(start: str | None) -> date_ | None:

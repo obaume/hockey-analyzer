@@ -12,9 +12,15 @@ from sihf_fixtures import (
 )
 from sqlalchemy import func, select
 
-from hockey_analyzer.domain.enums import Position, RinkType, Side
-from hockey_analyzer.domain.game_setup import SameTeamBothSidesError
-from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
+from hockey_analyzer.domain.enums import Position, RinkType, Side, UnitType
+from hockey_analyzer.domain.game_setup import GameSetupService, SameTeamBothSidesError
+from hockey_analyzer.domain.models import (
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+    Player,
+    Team,
+)
 from hockey_analyzer.league_import import (
     AlreadyImportedError,
     ImportResolution,
@@ -352,7 +358,7 @@ def test_proposing_writes_nothing(service, session):
 def _row_counts(session):
     return {
         model.__name__: session.scalar(select(func.count()).select_from(model))
-        for model in (Game, Team, Player, GameRosterEntry)
+        for model in (Game, Team, Player, GameRosterEntry, GameUnitAssignment)
     }
 
 
@@ -387,6 +393,166 @@ def test_unusable_league_data_signals_fallback_to_manual_entry(session, body):
 
     with pytest.raises(ManualEntryFallbackError):
         service.propose(GAME_LINK)
+
+
+# -- units prefilled from the lineup ---------------------------------------------
+
+
+def _uneven_lineup():
+    """4 LW / 5 C / 4 RW and 4 LD / 3 RD, plus two goalies and an extra."""
+    return Lineup(
+        goalies=[(1, "Tor Erster"), (30, "Tor Zweiter")],
+        defense_left=[(2, "Links Eins"), (4, "Links Zwei"), (6, "Links Drei")]
+        + [(8, "Links Vier")],
+        defense_right=[(3, "Rechts Eins"), (5, "Rechts Zwei"), (7, "Rechts Drei")],
+        left_wings=[(10 + n, f"Flügel Links{n}") for n in range(1, 5)],
+        centers=[(20 + n, f"Mitte Center{n}") for n in range(1, 6)],
+        right_wings=[(30 + n, f"Flügel Rechts{n}") for n in range(1, 5)],
+        others=[(99, "Extra Erich")],
+    )
+
+
+def _uneven_service(session):
+    body = sihf_game_overview(home_lineup=_uneven_lineup())
+    return LeagueImportService(session, FakeLeagueSource(body))
+
+
+def test_the_nth_player_of_each_side_makes_up_line_n(session):
+    rows = _uneven_service(session).propose(GAME_LINK).roster_for(Side.HOME)
+
+    units = {row.jersey_number: row.unit for row in rows}
+    for n in range(1, 5):
+        line = {units[10 + n], units[20 + n], units[30 + n]}
+        assert line == {(UnitType.FORWARD_LINE, n)}
+    assert {units[2], units[3]} == {(UnitType.DEFENSE_PAIR, 1)}
+    assert {units[6], units[7]} == {(UnitType.DEFENSE_PAIR, 3)}
+
+
+def test_only_as_many_units_as_the_shortest_side_are_prefilled(session):
+    rows = _uneven_service(session).propose(GAME_LINK).roster_for(Side.HOME)
+
+    by_jersey = {row.jersey_number: row for row in rows}
+    # A 5th center and a 4th left defenseman are rostered, with no unit.
+    assert by_jersey[25].position == Position.CENTER
+    assert by_jersey[25].unit is None
+    assert by_jersey[8].position == Position.DEFENSE
+    assert by_jersey[8].unit is None
+    lines = {row.unit for row in rows if row.unit is not None}
+    assert lines == {(UnitType.FORWARD_LINE, n) for n in range(1, 5)} | {
+        (UnitType.DEFENSE_PAIR, n) for n in range(1, 4)
+    }
+
+
+def test_goalies_and_extras_get_no_unit(session):
+    rows = _uneven_service(session).propose(GAME_LINK).roster_for(Side.HOME)
+
+    by_jersey = {row.jersey_number: row for row in rows}
+    assert [by_jersey[j].unit for j in (1, 30, 99)] == [None, None, None]
+    assert by_jersey[99].position is None
+
+
+def test_a_side_missing_a_forward_group_gets_no_forward_lines(session):
+    lineup = Lineup(
+        goalies=[(1, "Tor Hüter")],
+        left_wings=[(10, "Links Lars")],
+        centers=[(20, "Mitte Max")],
+    )
+    service = LeagueImportService(
+        session, FakeLeagueSource(sihf_game_overview(home_lineup=lineup))
+    )
+
+    rows = service.propose(GAME_LINK).roster_for(Side.HOME)
+
+    assert [row.unit for row in rows] == [None, None, None]
+
+
+def test_confirming_writes_the_prefilled_units(session):
+    service = _uneven_service(session)
+    proposal = service.propose(GAME_LINK)
+
+    game = service.confirm(proposal, _as_proposed(proposal))
+
+    jerseys = {
+        (entry.team_id, entry.player_id): entry.jersey_number
+        for entry in game.roster_entries
+    }
+    written = {
+        (jerseys[(unit.team_id, unit.player_id)], unit.unit_type, unit.unit_number)
+        for unit in session.scalars(
+            select(GameUnitAssignment).where(GameUnitAssignment.game_id == game.id)
+        )
+        if unit.team_id == game.home_team_id
+    }
+    expected = {
+        (row.jersey_number, *row.unit)
+        for row in proposal.roster_for(Side.HOME)
+        if row.unit is not None
+    }
+    assert written == expected
+    assert len(written) == 4 * 3 + 3 * 2
+    # The sample away lineup has one player per group: line 1, pair 1.
+    away_units = session.scalar(
+        select(func.count())
+        .select_from(GameUnitAssignment)
+        .where(GameUnitAssignment.team_id == game.away_team_id)
+    )
+    assert away_units == 3 + 2
+
+
+def test_no_goalie_power_play_or_penalty_kill_unit_is_written(session):
+    service = _uneven_service(session)
+    proposal = service.propose(GAME_LINK)
+
+    service.confirm(proposal, _as_proposed(proposal))
+
+    unit_types = set(session.scalars(select(GameUnitAssignment.unit_type)))
+    assert unit_types == {UnitType.FORWARD_LINE, UnitType.DEFENSE_PAIR}
+
+
+def test_a_relinked_rows_units_follow_it(service, session):
+    existing = Player(full_name="Someone Else")
+    session.add(existing)
+    session.commit()
+    proposal = service.propose(GAME_LINK)
+    player_ids = list(ImportResolution.as_proposed(proposal).player_ids)
+    row = _row(proposal, "Graf Marcel")
+    player_ids[proposal.roster.index(row)] = existing.id
+
+    game = service.confirm(
+        proposal, _as_proposed(proposal, player_ids=tuple(player_ids))
+    )
+
+    unit = session.scalar(
+        select(GameUnitAssignment).where(GameUnitAssignment.player_id == existing.id)
+    )
+    assert (unit.game_id, unit.team_id) == (game.id, game.home_team_id)
+    assert (unit.unit_type, unit.unit_number) == row.unit == (UnitType.FORWARD_LINE, 2)
+
+
+def test_imported_units_are_editable_like_hand_made_ones(service, session):
+    proposal = service.propose(GAME_LINK)
+    game = service.confirm(proposal, _as_proposed(proposal))
+    graf = next(
+        entry.player_id
+        for entry in game.roster_entries
+        if entry.player.full_name == "Graf Marcel"
+    )
+    setup = GameSetupService(session)
+    assert setup.player_unit_assignments(game_id=game.id, player_id=graf) == {
+        UnitType.FORWARD_LINE: 2
+    }
+
+    setup.assign_unit(
+        game_id=game.id,
+        player_id=graf,
+        team_id=game.home_team_id,
+        unit_type=UnitType.FORWARD_LINE,
+        unit_number=1,
+    )
+
+    assert setup.player_unit_assignments(game_id=game.id, player_id=graf) == {
+        UnitType.FORWARD_LINE: 1
+    }
 
 
 # -- confirming a reviewed proposal ---------------------------------------------

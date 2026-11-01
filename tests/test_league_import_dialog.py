@@ -6,7 +6,13 @@ from sihf_fixtures import GAME_LINK, FakeLeagueSource, Lineup, sihf_game_overvie
 from sqlalchemy import func, select
 
 from hockey_analyzer.domain.enums import RinkType, Side
-from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
+from hockey_analyzer.domain.models import (
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+    Player,
+    Team,
+)
 from hockey_analyzer.league_import import LeagueImportService, LeagueSourceError
 from hockey_analyzer.ui.league_import_dialog import LeagueImportDialog
 
@@ -26,7 +32,7 @@ def _fetch(dialog, link=GAME_LINK):
 def _row_counts(session):
     return {
         model.__name__: session.scalar(select(func.count()).select_from(model))
-        for model in (Game, Team, Player, GameRosterEntry)
+        for model in (Game, Team, Player, GameRosterEntry, GameUnitAssignment)
     }
 
 
@@ -70,6 +76,34 @@ def test_a_player_listed_outside_a_position_group_shows_no_position(qtbot, sessi
     assert _cell_texts(dialog.roster_table(Side.HOME), 2) == ["G", ""]
 
 
+def test_each_row_shows_the_unit_it_will_be_put_on(qtbot, session):
+    lineup = Lineup(
+        goalies=[(1, "Tor Hüter")],
+        defense_left=[(2, "Links Lars"), (4, "Links Leo")],
+        defense_right=[(3, "Rechts Rolf")],
+        left_wings=[(10, "Flügel Fritz")],
+        centers=[(20, "Mitte Max")],
+        right_wings=[(30, "Flügel Franz")],
+        others=[(99, "Extra Erich")],
+    )
+    source = FakeLeagueSource(sihf_game_overview(home_lineup=lineup))
+    dialog = _make_dialog(qtbot, session, source)
+
+    _fetch(dialog)
+
+    home = dialog.roster_table(Side.HOME)
+    assert dict(zip(_cell_texts(home, 0), _cell_texts(home, 3), strict=True)) == {
+        "1": "",
+        "2": "Defense pair 1",
+        "4": "",
+        "3": "Defense pair 1",
+        "10": "Forward line 1",
+        "20": "Forward line 1",
+        "30": "Forward line 1",
+        "99": "",
+    }
+
+
 def test_game_summary_shows_date_venue_and_score(qtbot, session):
     dialog = _make_dialog(qtbot, session)
 
@@ -88,7 +122,7 @@ def test_each_row_shows_whether_it_links_or_creates_a_player(qtbot, session):
 
     _fetch(dialog)
 
-    away_status = _cell_texts(dialog.roster_table(Side.AWAY), 3)
+    away_status = _cell_texts(dialog.roster_table(Side.AWAY), 4)
     names = _cell_texts(dialog.roster_table(Side.AWAY), 1)
     assert away_status[names.index("Galley Noham")] == "Linked"
     # A near miss is surfaced, not silently merged.
@@ -165,6 +199,8 @@ def test_confirming_imports_the_game_as_reviewed_and_closes(qtbot, session):
     assert game.rink_type == RinkType.NHL
     assert game.home_team.is_user_team
     assert len(game.roster_entries) == 12 + 6
+    # Home: 2 forward lines and 2 D pairs; away: 1 of each.
+    assert len(game.unit_assignments) == (6 + 4) + (3 + 2)
 
 
 def test_uncertain_team_match_must_be_confirmed_or_corrected(qtbot, session):
