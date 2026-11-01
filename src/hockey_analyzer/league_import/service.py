@@ -120,8 +120,9 @@ class TeamProposal:
 
 
 class PlayerMatchStatus(enum.StrEnum):
-    # Exactly one existing Player with the same full_name (case/accent
-    # insensitive): linked without asking.
+    # The existing Player holding the row's licence number, or failing
+    # that exactly one with the same full_name (case/accent insensitive):
+    # linked without asking.
     LINKED = "linked"
     # Anything else -- near-miss, several candidates, or none: create a new
     # Player unless the user overrides with one of the candidates.
@@ -158,6 +159,8 @@ class RosterRowProposal:
     player_id: int | None = None
     candidates: tuple[PlayerCandidate, ...] = field(default_factory=tuple)
     unit: LineupUnit | None = None
+    # The SIHF licence number -- Player.league_id (ADR-0014).
+    league_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -267,13 +270,17 @@ class LeagueImportService:
             self._resolve_team(side, league_game.team(side))
             for side in (Side.HOME, Side.AWAY)
         )
+        players = list(self._db.scalars(select(Player).order_by(Player.id)))
+        licence_holders = {
+            player.league_id: player for player in players if player.league_id
+        }
         known_players = [
             (_normalize_name(player.full_name), player)
-            for player in self._db.scalars(select(Player).order_by(Player.id))
+            for player in players
             if player.full_name
         ]
         roster = tuple(
-            _resolve_player(side, league_player, known_players)
+            _resolve_player(side, league_player, licence_holders, known_players)
             for side in (Side.HOME, Side.AWAY)
             for league_player in league_game.team(side).lineup
         )
@@ -337,14 +344,7 @@ class LeagueImportService:
             for row, player_id in zip(
                 proposal.roster, resolution.player_ids, strict=True
             ):
-                # A new Player gets its name only: the row's position is
-                # this game's lineup slot, never Player.position
-                # (CONTEXT.md's Game roster entry).
-                player = (
-                    Player(full_name=row.full_name)
-                    if player_id is None
-                    else self._existing(Player, player_id)
-                )
+                player = self._confirmed_player(row, player_id)
                 self._db.add(
                     GameRosterEntry(
                         game=game,
@@ -428,6 +428,36 @@ class LeagueImportService:
             team.is_user_team = True
         return team
 
+    def _confirmed_player(
+        self, row: RosterRowProposal, player_id: int | None
+    ) -> Player:
+        """The Player a roster row confirms to. A licence number is never
+        given to a second Player (ADR-0014): a row whose number is already
+        held is its holder's, whatever was chosen for it."""
+        if row.league_id is not None:
+            holder = self._db.scalar(
+                select(Player).where(Player.league_id == row.league_id)
+            )
+            if holder is not None:
+                return holder
+        if player_id is None:
+            # A new Player gets its name and licence number only: the
+            # row's position is this game's lineup slot, never
+            # Player.position (CONTEXT.md's Game roster entry).
+            return Player(full_name=row.full_name, league_id=row.league_id)
+        player = self._existing(Player, player_id)
+        if row.league_id is not None:
+            if player.league_id is None:
+                # A confirmed name match: remember the licence number, so
+                # this player's next import links silently by it.
+                player.league_id = row.league_id
+            elif player.league_id != row.league_id:
+                raise ValueError(
+                    f"player {player_id} holds licence number "
+                    f"{player.league_id}, not {row.league_id}"
+                )
+        return player
+
     def _existing(self, model: type[Team] | type[Player], id_: int) -> Team | Player:
         row = self._db.get(model, id_)
         if row is None:
@@ -475,14 +505,17 @@ _REORDERED_NAME_SIMILARITY = 0.99
 
 
 def _resolve_player(
-    side: Side, league_player: LeaguePlayer, known_players: list[tuple[str, Player]]
+    side: Side,
+    league_player: LeaguePlayer,
+    licence_holders: Mapping[str, Player],
+    known_players: list[tuple[str, Player]],
 ) -> RosterRowProposal:
-    """Only a single exact (case/accent-insensitive) `full_name` match
-    links silently; anything else defaults to a new `Player`, offering the
-    closest existing ones as alternates -- a name match is a manual
-    judgment call, never automated identity resolution."""
-    key = _normalize_name(league_player.full_name)
-    exact = [player for known_key, player in known_players if known_key == key]
+    """The holder of the row's licence number links silently (ADR-0014).
+    Failing that, only a single exact (case/accent-insensitive)
+    `full_name` match does; anything else defaults to a new `Player`,
+    offering the closest existing ones as alternates -- a name match is a
+    manual judgment call, never automated identity resolution."""
+    league_id = league_player.league_id
     proposed_row = partial(
         RosterRowProposal,
         side,
@@ -490,7 +523,22 @@ def _resolve_player(
         league_player.full_name,
         league_player.position,
         unit=league_player.unit,
+        league_id=league_id,
     )
+    holder = licence_holders.get(league_id) if league_id is not None else None
+    if holder is not None:
+        return proposed_row(PlayerMatchStatus.LINKED, player_id=holder.id)
+    if league_id is not None:
+        # With the licence number known, a player already holding a
+        # different one is provably someone else, whatever their name.
+        known_players = [
+            (known_key, player)
+            for known_key, player in known_players
+            if player.league_id is None
+        ]
+
+    key = _normalize_name(league_player.full_name)
+    exact = [player for known_key, player in known_players if known_key == key]
     if len(exact) == 1:
         return proposed_row(PlayerMatchStatus.LINKED, player_id=exact[0].id)
 

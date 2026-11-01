@@ -78,6 +78,8 @@ class LeaguePlayer:
     # The forward line or defense pair the lineup's order puts them on;
     # None for goalies, extras, and anyone past the shortest side's list.
     unit: LineupUnit | None = None
+    # The SIHF licence number, as a string -- Player.league_id (ADR-0014).
+    league_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,7 +170,8 @@ def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> Leagu
             row["player_jersey"],
             row["player_name"],
             _UNIT_POSITIONS[row["unit"]],
-            units.get((row["unit"], row["slot"])),
+            unit=units.get((row["unit"], row["slot"])),
+            league_id=None if row["player_id"] is None else str(row["player_id"]),
         )
         for row in dressed
     )
