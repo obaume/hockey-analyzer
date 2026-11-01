@@ -355,6 +355,10 @@ class OfficialEvent(Base):
     # A goalie change's direction: True going in, False coming out.
     goalie_in: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # One-way: nothing on `Game` lists these, so no tagging path reaches
+    # them. Lets an import attach them to a Game not yet flushed.
+    game: Mapped[Game] = relationship()
+
     def official_player(self, slot: str) -> OfficialPlayer | None:
         """The player in `slot` ("player", "assist1" or "assist2"), or None
         when the league names nobody there."""

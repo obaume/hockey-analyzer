@@ -20,7 +20,7 @@ from difflib import SequenceMatcher
 from functools import partial
 from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from hockey_analyzer.domain.enums import Position, RinkType, Side
@@ -29,10 +29,14 @@ from hockey_analyzer.domain.models import (
     Game,
     GameRosterEntry,
     GameUnitAssignment,
+    OfficialEvent,
     Player,
     Team,
 )
 from hockey_analyzer.league_import.sihf import (
+    LeagueGame,
+    LeagueOfficialEvent,
+    LeagueOfficialPlayer,
     LeaguePlayer,
     LeagueSourceError,
     LeagueTeam,
@@ -183,6 +187,9 @@ class ImportProposal:
     away: TeamProposal
     # Both teams' rows, home first, each in the league's listing order.
     roster: tuple[RosterRowProposal, ...]
+    # The league's play-by-play, to become the game's Official events --
+    # not reviewed, just stored (see CONTEXT.md's Official event).
+    official_events: tuple[LeagueOfficialEvent, ...] = ()
 
     def team(self, side: Side) -> TeamProposal:
         return self.home if side == Side.HOME else self.away
@@ -247,6 +254,35 @@ class ImportResolution:
         return self.home_team_id if side == Side.HOME else self.away_team_id
 
 
+class RefreshSkipReason(enum.StrEnum):
+    # The rostered player already holds a different licence number.
+    HAS_ANOTHER_NUMBER = "has_another_number"
+    # Another Player already holds this one: never given twice (ADR-0014).
+    NUMBER_HELD_BY_ANOTHER_PLAYER = "number_held_by_another_player"
+
+
+@dataclass(frozen=True)
+class SkippedPlayer:
+    """A rostered player a refresh didn't give a licence number to."""
+
+    side: Side
+    jersey_number: int
+    full_name: str | None
+    # The licence number the league gives that jersey.
+    league_id: str
+    reason: RefreshSkipReason
+
+
+@dataclass(frozen=True)
+class RefreshReport:
+    """What `LeagueImportService.refresh` did, for the user."""
+
+    # How many Official events the game has now.
+    official_events: int
+    licences_added: int
+    skipped: tuple[SkippedPlayer, ...] = ()
+
+
 class LeagueImportService:
     """Takes an already-open SQLAlchemy `Session` and a `LeagueSource`.
     `propose` only reads; `confirm` writes a reviewed proposal as one
@@ -259,13 +295,9 @@ class LeagueImportService:
     def propose(self, game_link: str) -> ImportProposal:
         game_id = parse_game_link(game_link)
         try:
-            league_game = parse_game_overview(self._source.fetch_game_overview(game_id))
+            league_game = self._fetch(game_id)
         except LeagueSourceError as error:
             raise ManualEntryFallbackError(str(error)) from error
-        if league_game.league_id != game_id:
-            raise ManualEntryFallbackError(
-                f"league data is for game {league_game.league_id}, not {game_id}"
-            )
         home, away = (
             self._resolve_team(side, league_game.team(side))
             for side in (Side.HOME, Side.AWAY)
@@ -297,6 +329,7 @@ class LeagueImportService:
             home=home,
             away=away,
             roster=roster,
+            official_events=league_game.official_events,
         )
 
     def linkable_teams(self, league_id: str | None) -> tuple[TeamCandidate, ...]:
@@ -320,9 +353,9 @@ class LeagueImportService:
 
     def confirm(self, proposal: ImportProposal, resolution: ImportResolution) -> Game:
         """Create the `Game`, any new `Team`s and `Player`s, every
-        `GameRosterEntry` and every prefilled `GameUnitAssignment` exactly
-        as reviewed, in a single commit: a refusal or failure anywhere
-        writes nothing at all."""
+        `GameRosterEntry`, every prefilled `GameUnitAssignment` and the
+        game's Official events exactly as reviewed, in a single commit: a
+        refusal or failure anywhere writes nothing at all."""
         self._check_confirmable(proposal, resolution)
         try:
             teams = {
@@ -364,11 +397,105 @@ class LeagueImportService:
                             unit_number=row.unit.unit_number,
                         )
                     )
+            self._db.add_all(
+                _official_event(game, entry) for entry in proposal.official_events
+            )
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
         return game
+
+    def refresh(self, game_id: int) -> RefreshReport:
+        """Re-fetch an already-created game's league data (CONTEXT.md's
+        Official event): replace the game's Official events, and give its
+        rostered players their licence numbers, matched by `(side, jersey
+        number)` within that game. Never writes the score, roster entries
+        or units, which may have been corrected by hand since. One commit;
+        a fetch or parse failure (a `LeagueSourceError`) writes nothing."""
+        game = self._existing(Game, game_id)
+        if game.league_id is None:
+            raise ValueError(f"game {game_id} wasn't imported from a league game")
+        league_game = self._fetch(game.league_id)
+        try:
+            self._db.execute(
+                delete(OfficialEvent).where(OfficialEvent.game_id == game.id)
+            )
+            self._db.add_all(
+                _official_event(game, entry) for entry in league_game.official_events
+            )
+            added, skipped = self._backfill_licences(game, league_game)
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return RefreshReport(
+            official_events=len(league_game.official_events),
+            licences_added=added,
+            skipped=tuple(skipped),
+        )
+
+    def _fetch(self, game_id: str) -> LeagueGame:
+        """The league's data for `game_id`, refusing a body for another
+        game as a failed fetch."""
+        league_game = parse_game_overview(self._source.fetch_game_overview(game_id))
+        if league_game.league_id != game_id:
+            raise LeagueSourceError(
+                f"league data is for game {league_game.league_id}, not {game_id}"
+            )
+        return league_game
+
+    def _backfill_licences(
+        self, game: Game, league_game: LeagueGame
+    ) -> tuple[int, list[SkippedPlayer]]:
+        """Each rostered player the lineup names by jersey number gets that
+        row's licence number, unless they already hold another one or
+        another Player holds this one (ADR-0014): those are skipped."""
+        holders = {
+            player.league_id: player
+            for player in self._db.scalars(
+                select(Player).where(Player.league_id.is_not(None))
+            )
+        }
+        added, skipped = 0, []
+        for side in (Side.HOME, Side.AWAY):
+            team_id = game.home_team_id if side == Side.HOME else game.away_team_id
+            entries = {
+                entry.jersey_number: entry
+                for entry in self._db.scalars(
+                    select(GameRosterEntry).where(
+                        GameRosterEntry.game_id == game.id,
+                        GameRosterEntry.team_id == team_id,
+                    )
+                )
+            }
+            for league_player in league_game.team(side).lineup:
+                entry = entries.get(league_player.jersey_number)
+                licence = league_player.league_id
+                if entry is None or licence is None:
+                    continue
+                player = entry.player
+                if player.league_id == licence:
+                    continue
+                if player.league_id is not None:
+                    reason = RefreshSkipReason.HAS_ANOTHER_NUMBER
+                elif licence in holders:
+                    reason = RefreshSkipReason.NUMBER_HELD_BY_ANOTHER_PLAYER
+                else:
+                    player.league_id = licence
+                    holders[licence] = player
+                    added += 1
+                    continue
+                skipped.append(
+                    SkippedPlayer(
+                        side,
+                        league_player.jersey_number,
+                        player.full_name or league_player.full_name,
+                        licence,
+                        reason,
+                    )
+                )
+        return added, skipped
 
     def _check_confirmable(
         self, proposal: ImportProposal, resolution: ImportResolution
@@ -458,7 +585,9 @@ class LeagueImportService:
                 )
         return player
 
-    def _existing(self, model: type[Team] | type[Player], id_: int) -> Team | Player:
+    def _existing(
+        self, model: type[Team] | type[Player] | type[Game], id_: int
+    ) -> Team | Player | Game:
         row = self._db.get(model, id_)
         if row is None:
             raise KeyError(f"no {model.__name__} with id {id_}")
@@ -491,6 +620,32 @@ class LeagueImportService:
             TeamMatchStatus.NEEDS_CONFIRMATION if candidates else TeamMatchStatus.NEW
         )
         return TeamProposal(side, name, league_id, status, candidates=candidates)
+
+
+def _official_event(game: Game, entry: LeagueOfficialEvent) -> OfficialEvent:
+    def player(slot: str, who: LeagueOfficialPlayer | None) -> dict[str, Any]:
+        if who is None:
+            return {}
+        return {
+            f"{slot}_league_id": who.league_id,
+            f"{slot}_name": who.full_name,
+            f"{slot}_jersey": who.jersey_number,
+        }
+
+    return OfficialEvent(
+        game=game,
+        kind=entry.kind,
+        period_number=entry.period_number,
+        elapsed_seconds=entry.elapsed_seconds,
+        side=entry.side,
+        strength_tag=entry.strength_tag,
+        penalty_name=entry.penalty_name,
+        penalty_minutes=entry.penalty_minutes,
+        goalie_in=entry.goalie_in,
+        **player("player", entry.player),
+        **player("assist1", entry.assist1),
+        **player("assist2", entry.assist2),
+    )
 
 
 # How many alternate matches a new-player row offers. The review screen's

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date as date_
 from typing import Any, NamedTuple
 
-from hockey_analyzer.domain.enums import Position, Side, UnitType
+from hockey_analyzer.domain.enums import OfficialEventKind, Position, Side, UnitType
 
 
 class LeagueSourceError(Exception):
@@ -92,6 +92,34 @@ class LeagueTeam:
 
 
 @dataclass(frozen=True)
+class LeagueOfficialPlayer:
+    """A player as the play-by-play names them."""
+
+    # The SIHF licence number, as a string -- Player.league_id.
+    league_id: str
+    full_name: str | None
+    jersey_number: int | None
+
+
+@dataclass(frozen=True)
+class LeagueOfficialEvent:
+    """One play-by-play entry, to become an `OfficialEvent`."""
+
+    kind: OfficialEventKind
+    period_number: int
+    elapsed_seconds: int
+    side: Side | None
+    # The scorer, the penalised player, or the goalie going in or out.
+    player: LeagueOfficialPlayer | None
+    assist1: LeagueOfficialPlayer | None = None
+    assist2: LeagueOfficialPlayer | None = None
+    strength_tag: str | None = None
+    penalty_name: str | None = None
+    penalty_minutes: int | None = None
+    goalie_in: bool | None = None
+
+
+@dataclass(frozen=True)
 class LeagueGame:
     """What the league says about one game, before any matching."""
 
@@ -104,6 +132,9 @@ class LeagueGame:
     period_scores: list[dict[str, int]]
     home: LeagueTeam
     away: LeagueTeam
+    # Goals, penalties and goalie changes in timeline order; never the
+    # shootout.
+    official_events: tuple[LeagueOfficialEvent, ...] = ()
 
     def team(self, side: Side) -> LeagueTeam:
         return self.home if side == Side.HOME else self.away
@@ -154,6 +185,7 @@ def parse_game_overview(body: Mapping[str, Any]) -> LeagueGame:
         period_scores=_period_scores(info),
         home=home,
         away=away,
+        official_events=_official_events(sihf.parse_sihf_pbp(body).to_dicts(), lineups),
     )
 
 
@@ -195,6 +227,70 @@ def _lineup_units(rows: list[dict[str, Any]]) -> dict[tuple[str, int], LineupUni
             for side in sides:
                 units[side, number] = LineupUnit(unit_type, number)
     return units
+
+
+# The play-by-play's event types worth keeping. Shootout attempts aren't
+# (CONTEXT.md's Sync check), nor are revoked goals, which aren't goals.
+_PBP_KINDS = {
+    "goal": OfficialEventKind.GOAL,
+    "penalty": OfficialEventKind.PENALTY,
+    "goalie": OfficialEventKind.GOALIE_CHANGE,
+}
+# The league's clock counts across periods ("65:56" is 5:56 into
+# overtime), each regulation period 20 minutes long.
+_PERIOD_SECONDS = 20 * 60
+
+
+def _official_events(
+    rows: list[dict[str, Any]], lineups: list[dict[str, Any]]
+) -> tuple[LeagueOfficialEvent, ...]:
+    # The play-by-play gives the scorer's jersey but not the assists'.
+    jerseys = {
+        row["player_id"]: row["player_jersey"]
+        for row in lineups
+        if row["player_id"] is not None
+    }
+
+    def player(prefix: str, row: dict[str, Any]) -> LeagueOfficialPlayer | None:
+        licence = row[f"{prefix}_id"]
+        if licence is None:
+            return None
+        return LeagueOfficialPlayer(
+            str(licence), row[f"{prefix}_name"], jerseys.get(licence)
+        )
+
+    events = []
+    for row in rows:
+        kind = _PBP_KINDS.get(row["event_type"])
+        if kind is None:
+            continue
+        period, seconds = row["period_number"], row["game_seconds"]
+        if period is None or seconds is None:
+            raise LeagueSourceError(
+                f"a play-by-play entry has no time: {row['text']!r}"
+            )
+        elapsed = seconds - (period - 1) * _PERIOD_SECONDS
+        if elapsed < 0:
+            raise LeagueSourceError(
+                f"play-by-play time {row['time']} isn't in period {period}"
+            )
+        goalie_change = row["goalie_change"]
+        events.append(
+            LeagueOfficialEvent(
+                kind=kind,
+                period_number=period,
+                elapsed_seconds=elapsed,
+                side=None if row["team_side"] is None else Side(row["team_side"]),
+                player=player("player", row),
+                assist1=player("assist1_player", row),
+                assist2=player("assist2_player", row),
+                strength_tag=row["strength"],
+                penalty_name=row["penalty_name"],
+                penalty_minutes=row["penalty_minutes"],
+                goalie_in=None if goalie_change is None else goalie_change == "in",
+            )
+        )
+    return tuple(events)
 
 
 def _start_date(start: str | None) -> date_ | None:
