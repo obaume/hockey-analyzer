@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0014
+---
+
 # No cross-install player identity in report bundles; teams get `league_id`, players are name-matched
 
 A report bundle is opened on an independent install of the app with its own local database, so sender-side internal IDs mean nothing to the recipient. `Team` already carries an optional `league_id` (populated from a league game-link import), so a bundle uses that when present, falling back to name. `Player` has no equivalent: per the league API investigation (ticket 02), the league site exposes no stable per-player identifier anywhere, so there was never a candidate ID to carry. We decided a report bundle always represents a player as `full_name` + jersey number, with no automated way to match that against a recipient's existing `Player` records — reconciling "is this the same player I already track" is left as a manual judgment call, the same precedent `Player.full_name` matching already sets for cross-game identity within a single install.

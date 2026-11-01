@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtWidgets import QDialog
-from sihf_fixtures import GAME_LINK, FakeLeagueSource
+from sihf_fixtures import GAME_LINK, FakeLeagueSource, Lineup, sihf_game_overview
 from sqlalchemy import func, select
 
 from hockey_analyzer.domain.enums import RinkType, Side
@@ -60,6 +60,16 @@ def test_fetching_shows_both_teams_and_every_roster_row_without_saving(qtbot, se
     assert _row_counts(session) == counts_before
 
 
+def test_a_player_listed_outside_a_position_group_shows_no_position(qtbot, session):
+    lineup = Lineup(goalies=[(1, "Tor Hüter")], others=[(99, "Extra Erich")])
+    source = FakeLeagueSource(sihf_game_overview(home_lineup=lineup))
+    dialog = _make_dialog(qtbot, session, source)
+
+    _fetch(dialog)
+
+    assert _cell_texts(dialog.roster_table(Side.HOME), 2) == ["G", ""]
+
+
 def test_game_summary_shows_date_venue_and_score(qtbot, session):
     dialog = _make_dialog(qtbot, session)
 
@@ -87,7 +97,7 @@ def test_each_row_shows_whether_it_links_or_creates_a_player(qtbot, session):
 
 
 def test_each_team_shows_whether_it_links_or_creates_a_team(qtbot, session):
-    session.add(Team(name="Château", league_id="10-4-103010"))
+    session.add(Team(name="Château", league_id="103010"))
     session.commit()
     dialog = _make_dialog(qtbot, session)
 
@@ -114,7 +124,7 @@ def test_confirm_waits_for_an_explicit_user_team_answer(qtbot, session):
 
 
 def test_user_team_is_prefilled_from_a_linked_team_already_flagged(qtbot, session):
-    session.add(Team(name="Mine", league_id="10-4-104254", is_user_team=True))
+    session.add(Team(name="Mine", league_id="104254", is_user_team=True))
     session.commit()
     dialog = _make_dialog(qtbot, session)
 
@@ -188,7 +198,7 @@ def test_uncertain_team_match_can_be_corrected_to_a_new_team(qtbot, session):
 
     away = session.get(Game, dialog.game_id).away_team
     assert away.id != existing.id
-    assert away.league_id == "10-4-104254"
+    assert away.league_id == "104254"
 
 
 def test_confirming_a_flagged_candidate_prefills_the_user_team(qtbot, session):
@@ -317,10 +327,12 @@ def test_a_link_that_isnt_a_league_game_shows_an_error(qtbot, session):
 
 
 @pytest.mark.parametrize(
-    "pdf", [LeagueSourceError("HTTP 400"), b"not a pdf"], ids=["fetch", "parse"]
+    "body",
+    [LeagueSourceError("HTTP 500"), {"error": "GameNotFound"}],
+    ids=["fetch", "parse"],
 )
-def test_an_unreadable_game_offers_manual_entry_instead(qtbot, session, pdf):
-    dialog = _make_dialog(qtbot, session, FakeLeagueSource(pdf=pdf))
+def test_an_unreadable_game_offers_manual_entry_instead(qtbot, session, body):
+    dialog = _make_dialog(qtbot, session, FakeLeagueSource(body))
 
     _fetch(dialog)
 

@@ -137,8 +137,6 @@ class LeagueImportDialog(QDialog):
 
     def _build_review_panel(self) -> None:
         self.game_summary_label = QLabel("")
-        self.team_ids_note_label = QLabel("")
-        self.team_ids_note_label.setWordWrap(True)
 
         # Set once at creation and immutable afterward (ADR-0008) -- the
         # league site doesn't say, so it's asked here like the manual path
@@ -198,7 +196,6 @@ class LeagueImportDialog(QDialog):
 
         layout = QVBoxLayout()
         layout.addLayout(form)
-        layout.addWidget(self.team_ids_note_label)
         layout.addLayout(sides_row, stretch=1)
         self.review_panel.setLayout(layout)
 
@@ -282,12 +279,6 @@ class LeagueImportDialog(QDialog):
     def _show_review(self, proposal: ImportProposal) -> None:
         self._proposal = proposal
         self.game_summary_label.setText(_game_summary(proposal))
-        self.team_ids_note_label.setText(
-            ""
-            if proposal.team_league_ids_found
-            else "The league's team IDs couldn't be read, so teams were "
-            "matched by name only."
-        )
         self.rink_type_combo.setCurrentIndex(0)
         known_players = self._service.known_players()
         for side in _SIDES:
@@ -339,7 +330,8 @@ class LeagueImportDialog(QDialog):
         table.setRowCount(len(rows))
         for index, row in enumerate(rows):
             status = _row_status(row)
-            cells = [str(row.jersey_number), row.full_name, row.position.value, status]
+            position = "" if row.position is None else row.position.value
+            cells = [str(row.jersey_number), row.full_name, position, status]
             for column, text in enumerate(cells):
                 table.setItem(index, column, QTableWidgetItem(text))
             table.setCellWidget(

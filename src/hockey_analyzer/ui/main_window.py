@@ -49,7 +49,7 @@ from hockey_analyzer.domain.video_timestamp import (
 from hockey_analyzer.league_import import (
     LeagueImportService,
     LeagueSource,
-    SihfHttpSource,
+    SihfApiSource,
 )
 from hockey_analyzer.ui.clip_export_dialog import ClipExportDialog
 from hockey_analyzer.ui.game_list_dialog import GameListDialog
@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
         self._league_import_dialog_factory = (
             league_import_dialog_factory or LeagueImportDialog
         )
-        self._league_source = league_source or SihfHttpSource()
+        self._league_source = league_source or SihfApiSource()
         self._units_dialog_factory = units_dialog_factory or UnitsDialog
         self._roster_dialog_factory = roster_dialog_factory or RosterDialog
         self._stats_dialog_factory = stats_dialog_factory or StatsDialog
