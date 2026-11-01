@@ -8,9 +8,10 @@ Two steps, both free of any GUI dependency:
   the same stat result types the live stats view renders, but with every
   sender-side database id swapped for a bundle-local key into the report's
   own `teams`/`players`/`games` tables -- a recipient's install has its own
-  database, where those ids mean nothing (see ADR-0004). Teams carry
-  `league_id` when known plus their name; players only `full_name` plus
-  jersey number. Nothing matches either against the recipient's records.
+  database, where those ids mean nothing. Teams and players carry their
+  `league_id` when known, plus a team's name or a player's `full_name`
+  and jersey number to fall back on (see CONTEXT.md's Report bundle
+  identity and ADR-0014).
 - `write_bundle` / `read_bundle` (the writer/reader pair) move a `Report`
   to and from a zip archive holding `manifest.json` (format marker and
   integer schema version), `report.json` (stats, identities, game list,
@@ -114,7 +115,7 @@ class AggregationMode(enum.StrEnum):
 @dataclass(frozen=True)
 class TeamRef:
     """A team as a recipient's install can recognize it: by `league_id`
-    when the sender's team has one, else by name (see ADR-0004)."""
+    when the sender's team has one, else by name (see ADR-0014)."""
 
     name: str
     league_id: str | None = None
@@ -128,12 +129,21 @@ class TeamRef:
 
 @dataclass(frozen=True)
 class PlayerRef:
-    """A player as `full_name` + jersey number -- no cross-install id
-    exists (see ADR-0004). Jersey number as of the latest game in the
-    report; None only for a unit member missing from every roster."""
+    """A player as a recipient's install can recognize them: by their
+    licence number (`league_id`) when the sender's player has one, else by
+    `full_name` + jersey number (see ADR-0014). Jersey number as of the
+    latest game in the report; None only for a unit member missing from
+    every roster."""
 
     full_name: str | None
     jersey_number: int | None
+    league_id: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, str] | tuple[str, str | None, int | None]:
+        if self.league_id is not None:
+            return "league_id", self.league_id
+        return "full_name", self.full_name, self.jersey_number
 
 
 @dataclass(frozen=True)
@@ -430,8 +440,12 @@ def _player_refs(games: Sequence[GameData]) -> dict[int, PlayerRef]:
     refs: dict[int, PlayerRef] = {}
     for data in games:
         for entry in data.roster:
-            name = entry.player.full_name if entry.player is not None else None
-            refs[entry.player_id] = PlayerRef(name, entry.jersey_number)
+            player = entry.player
+            refs[entry.player_id] = PlayerRef(
+                None if player is None else player.full_name,
+                entry.jersey_number,
+                None if player is None else player.league_id,
+            )
     for data in games:
         for assignment in data.unit_assignments:
             refs.setdefault(assignment.player_id, PlayerRef(None, None))
@@ -563,6 +577,7 @@ def _report_json(report: Report) -> dict[str, Any]:
                 "id": key,
                 "full_name": ref.full_name,
                 "jersey_number": ref.jersey_number,
+                "league_id": ref.league_id,
             }
             for key, ref in report.players.items()
         ],
@@ -815,7 +830,9 @@ def _report_from_json(
         },
         players={
             player["id"]: PlayerRef(
-                player.get("full_name"), player.get("jersey_number")
+                player.get("full_name"),
+                player.get("jersey_number"),
+                player.get("league_id"),
             )
             for player in obj.get("players", [])
         },

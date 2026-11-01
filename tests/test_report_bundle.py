@@ -138,6 +138,25 @@ def test_players_are_carried_as_name_and_jersey_never_as_database_ids(tmp_path):
     assert report.players[goalie.player_id] == PlayerRef(None, 30)
 
 
+def test_player_identity_is_licence_number_when_known_else_name_and_jersey(
+    tmp_path,
+):
+    game = GameBuilder()
+    game.player(HOME, 14, name="Jordan Kim", player_id=501)
+    game.player(HOME, 30, name="Sam Lee", player_id=502, position=Position.GOALIE)
+    data = game.build()
+    licensed = next(entry.player for entry in data.roster if entry.player_id == 501)
+    licensed.league_id = "300042"
+
+    report = _round_trip(build_game_report(data, summary=""), tmp_path)
+
+    kim, lee = sorted(report.players.values(), key=lambda ref: ref.jersey_number)
+    assert kim == PlayerRef("Jordan Kim", 14, "300042")
+    assert kim.identity == ("league_id", "300042")
+    assert lee == PlayerRef("Sam Lee", 30)
+    assert lee.identity == ("full_name", "Sam Lee", 30)
+
+
 def test_game_report_has_team_skater_goalie_and_shot_quality_stats(tmp_path):
     game = GameBuilder()
     skater = game.player(HOME, 14)
