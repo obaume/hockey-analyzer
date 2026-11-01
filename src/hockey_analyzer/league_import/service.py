@@ -25,11 +25,18 @@ from sqlalchemy.orm import Session
 
 from hockey_analyzer.domain.enums import Position, RinkType, Side
 from hockey_analyzer.domain.game_setup import SameTeamBothSidesError
-from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
+from hockey_analyzer.domain.models import (
+    Game,
+    GameRosterEntry,
+    GameUnitAssignment,
+    Player,
+    Team,
+)
 from hockey_analyzer.league_import.sihf import (
     LeaguePlayer,
     LeagueSourceError,
     LeagueTeam,
+    LineupUnit,
     parse_game_link,
     parse_game_overview,
 )
@@ -135,7 +142,11 @@ class RosterRowProposal:
     """One league lineup row, to become a `GameRosterEntry`. `position` is
     the game-of-the-day position for that entry only -- never a proposed
     write to `Player.position` (see CONTEXT.md's Game roster entry) --
-    and None for a player listed outside the lineup's position groups."""
+    and None for a player listed outside the lineup's position groups.
+
+    `unit` is the forward line or defense pair the lineup puts the row on,
+    to become a `GameUnitAssignment` for whichever `Player` the row is
+    finally linked to -- so a relinked row's unit follows it."""
 
     side: Side
     jersey_number: int
@@ -146,12 +157,14 @@ class RosterRowProposal:
     status: PlayerMatchStatus
     player_id: int | None = None
     candidates: tuple[PlayerCandidate, ...] = field(default_factory=tuple)
+    unit: LineupUnit | None = None
 
 
 @dataclass(frozen=True)
 class ImportProposal:
     """Everything a confirmed import would write, as plain data: the
-    `Game` fields, both sides' teams, and every roster row."""
+    `Game` fields, both sides' teams, and every roster row with its
+    prefilled unit, if any."""
 
     # The league's game ID -- Game.league_id.
     league_id: str
@@ -299,9 +312,10 @@ class LeagueImportService:
         )
 
     def confirm(self, proposal: ImportProposal, resolution: ImportResolution) -> Game:
-        """Create the `Game`, any new `Team`s and `Player`s, and every
-        `GameRosterEntry` exactly as reviewed, in a single commit: a
-        refusal or failure anywhere writes nothing at all."""
+        """Create the `Game`, any new `Team`s and `Player`s, every
+        `GameRosterEntry` and every prefilled `GameUnitAssignment` exactly
+        as reviewed, in a single commit: a refusal or failure anywhere
+        writes nothing at all."""
         self._check_confirmable(proposal, resolution)
         try:
             teams = {
@@ -340,6 +354,16 @@ class LeagueImportService:
                         position=row.position,
                     )
                 )
+                if row.unit is not None:
+                    self._db.add(
+                        GameUnitAssignment(
+                            game=game,
+                            player=player,
+                            team=teams[row.side],
+                            unit_type=row.unit.unit_type,
+                            unit_number=row.unit.unit_number,
+                        )
+                    )
             self._db.commit()
         except BaseException:
             self._db.rollback()
@@ -465,6 +489,7 @@ def _resolve_player(
         league_player.jersey_number,
         league_player.full_name,
         league_player.position,
+        unit=league_player.unit,
     )
     if len(exact) == 1:
         return proposed_row(PlayerMatchStatus.LINKED, player_id=exact[0].id)
