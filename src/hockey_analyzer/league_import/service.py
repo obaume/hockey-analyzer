@@ -29,6 +29,7 @@ from hockey_analyzer.domain.models import Game, GameRosterEntry, Player, Team
 from hockey_analyzer.league_import.sihf import (
     LeaguePlayer,
     LeagueSourceError,
+    LeagueTeam,
     parse_game_link,
     parse_game_overview,
 )
@@ -250,9 +251,7 @@ class LeagueImportService:
                 f"league data is for game {league_game.league_id}, not {game_id}"
             )
         home, away = (
-            self._resolve_team(
-                side, league_game.team(side).name, league_game.team(side).league_id
-            )
+            self._resolve_team(side, league_game.team(side))
             for side in (Side.HOME, Side.AWAY)
         )
         known_players = [
@@ -411,9 +410,8 @@ class LeagueImportService:
             raise KeyError(f"no {model.__name__} with id {id_}")
         return row
 
-    def _resolve_team(
-        self, side: Side, name: str, league_id: str | None
-    ) -> TeamProposal:
+    def _resolve_team(self, side: Side, league_team: LeagueTeam) -> TeamProposal:
+        name, league_id = league_team.name, league_team.league_id
         if league_id is not None:
             team = self._db.scalar(select(Team).where(Team.league_id == league_id))
             if team is not None:
@@ -457,9 +455,8 @@ def _resolve_player(
 ) -> RosterRowProposal:
     """Only a single exact (case/accent-insensitive) `full_name` match
     links silently; anything else defaults to a new `Player`, offering the
-    closest existing ones as alternates -- matching players is a manual
-    judgment call, never automated identity resolution (CONTEXT.md's
-    Player entry)."""
+    closest existing ones as alternates -- a name match is a manual
+    judgment call, never automated identity resolution."""
     key = _normalize_name(league_player.full_name)
     exact = [player for known_key, player in known_players if known_key == key]
     proposed_row = partial(

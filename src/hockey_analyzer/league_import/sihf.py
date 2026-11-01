@@ -4,7 +4,7 @@ API, and reading it through sportsdataverse's parsers (ADR-0013) into this
 app's own plain dataclasses -- the polars frames those parsers return never
 leave this module.
 
-The API isn't a contract either, so every parse failure here raises a
+The API isn't a contract, so every parse failure here raises a
 `LeagueSourceError` rather than returning partial data -- the caller decides
 how far a failed source degrades the import.
 
