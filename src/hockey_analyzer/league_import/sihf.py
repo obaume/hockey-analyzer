@@ -1,30 +1,33 @@
-"""The SIHF league site (`sihf.ch`) as an import source: turning a game link
-into a game ID, and scraping the two documents league import reads for it
-(see ADR-0005) -- the server-generated game PDF export (metadata, score,
-lineups) and the `game/{id}` HTML overview page (each team's `league_id`,
-which the PDF doesn't carry as text).
+"""The SIHF league as an import source: turning a `sihf.ch` game link into a
+game ID, fetching that game's `gameoverview` body from the SIHF statistics
+API, and reading it through sportsdataverse's parsers (ADR-0013) into this
+app's own plain dataclasses -- the polars frames those parsers return never
+leave this module.
 
-Both are markup scrapes, not a versioned contract, so every parse failure
-here raises a `LeagueSourceError` rather than returning partial data -- the
-caller decides how far a failed source degrades the import.
+The API isn't a contract either, so every parse failure here raises a
+`LeagueSourceError` rather than returning partial data -- the caller decides
+how far a failed source degrades the import.
+
+`sportsdataverse` is imported inside the functions that need it, not at
+module level: importing any part of it imports the whole package (every
+league, pandas, polars and its ML stack -- xgboost, scikit-learn, scipy),
+which takes seconds, so it's paid on the first league import rather than
+at app start.
 """
 
 from __future__ import annotations
 
-import io
 import re
-import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date as date_
-from html.parser import HTMLParser
-
-from pypdf import PdfReader
+from typing import Any
 
 from hockey_analyzer.domain.enums import Position, Side
 
 
 class LeagueSourceError(Exception):
-    """A league-site document couldn't be fetched or didn't parse."""
+    """A league game couldn't be fetched or its body didn't parse."""
 
 
 class InvalidGameLinkError(ValueError):
@@ -32,7 +35,8 @@ class InvalidGameLinkError(ValueError):
 
 
 # `https://www.sihf.ch/{lang}/game-center/game/[{tab}/]{game_id}` -- any
-# language, any per-game tab (e.g. `aufstellung`), scheme optional.
+# language, any per-game tab (e.g. `aufstellung`), scheme optional. The
+# link's ID is the API's game ID.
 _GAME_LINK = re.compile(
     r"^(?:https?://)?(?:www\.)?sihf\.ch/[a-z]{2}/game-center/game/"
     r"(?:[\w-]+/)?(\d+)/?(?:[?#].*)?$"
@@ -52,23 +56,27 @@ def parse_game_link(link: str) -> str:
 
 
 @dataclass(frozen=True)
-class ScrapedPlayer:
+class LeaguePlayer:
     jersey_number: int
-    # As the export prints it ("Last First"), markers like "(C)" removed.
+    # As the API prints it: "Last First".
     full_name: str
-    # The position group the player lined up in for this game.
-    position: Position
+    # The position group the player lined up in for this game; None for a
+    # player listed outside the six groups.
+    position: Position | None
 
 
 @dataclass(frozen=True)
-class ScrapedTeam:
+class LeagueTeam:
     name: str
-    lineup: tuple[ScrapedPlayer, ...]
+    # The SIHF team ID, as a string -- Team.league_id.
+    league_id: str | None
+    # Dressed players only, in the API's listing order.
+    lineup: tuple[LeaguePlayer, ...]
 
 
 @dataclass(frozen=True)
-class ScrapedGame:
-    """What the PDF export yields for one game, before any matching."""
+class LeagueGame:
+    """What the league says about one game, before any matching."""
 
     league_id: str
     date: date_ | None
@@ -77,295 +85,108 @@ class ScrapedGame:
     away_score: int
     # One {"home": int, "away": int} per period, like Game.period_scores.
     period_scores: list[dict[str, int]]
-    home: ScrapedTeam
-    away: ScrapedTeam
+    home: LeagueTeam
+    away: LeagueTeam
 
-    def team(self, side: Side) -> ScrapedTeam:
+    def team(self, side: Side) -> LeagueTeam:
         return self.home if side == Side.HOME else self.away
 
 
-# -- PDF export ---------------------------------------------------------------
+# sportsdataverse's lineup units -> the game-of-the-day position. `other`
+# (dressed, outside the six groups) has none; absentees have no unit at all.
+_UNIT_POSITIONS: dict[str, Position | None] = {
+    "goalkeeper": Position.GOALIE,
+    "defense_left": Position.DEFENSE,
+    "defense_right": Position.DEFENSE,
+    "forward_left": Position.LEFT_WING,
+    "forward_center": Position.CENTER,
+    "forward_right": Position.RIGHT_WING,
+    "other": None,
+}
 
 
-@dataclass(frozen=True)
-class _Fragment:
-    """One positioned run of text on a PDF page, in PDF user-space points
-    (origin bottom-left)."""
+def parse_game_overview(body: Mapping[str, Any]) -> LeagueGame:
+    from sportsdataverse.hockey.sihf import (
+        parse_sihf_game_info,
+        parse_sihf_game_lineups,
+    )
 
-    x: float
-    y: float
-    text: str
-
-
-def parse_game_pdf(pdf: bytes) -> ScrapedGame:
-    pages = _pdf_fragments(pdf)
-    summary_page = _page_with(pages, "Spielort")
-    home_score, away_score = _final_score(summary_page)
-    game_id = _game_id(summary_page)
-    home, away = _lineups(_page_with(pages, "Team-Lineups"))
-    return ScrapedGame(
-        league_id=game_id.text,
-        date=_game_date(summary_page, game_id),
-        venue=_below(summary_page, "Spielort"),
+    info_rows = parse_sihf_game_info(body).to_dicts()
+    if len(info_rows) != 1 or info_rows[0]["game_id"] is None:
+        raise LeagueSourceError("not a game body")
+    info = info_rows[0]
+    home_score, away_score = info["home_score"], info["away_score"]
+    if home_score is None or away_score is None:
+        # An unfinished game isn't importable (ticket 11).
+        raise LeagueSourceError("no final score (game not finished?)")
+    lineups = parse_sihf_game_lineups(body).to_dicts()
+    home, away = (
+        _team(info, [row for row in lineups if row["team_side"] == side.value], side)
+        for side in (Side.HOME, Side.AWAY)
+    )
+    return LeagueGame(
+        league_id=str(info["game_id"]),
+        date=_start_date(info["start_date_time"]),
+        venue=info["venue_name"] or None,
         home_score=home_score,
         away_score=away_score,
-        period_scores=_period_scores(summary_page),
+        period_scores=_period_scores(info),
         home=home,
         away=away,
     )
 
 
-_GAME_ID = re.compile(r"^\d{8,}$")
-# "Samstag, 05.09.2026 15:30" -- the weekday is in the export's language.
-_GAME_DATE = re.compile(r"^[^\W\d]+, (\d{2})\.(\d{2})\.(\d{4})\b")
-_SCORE = re.compile(r"^\d{1,3}$")
-_PERIOD_SCORES = re.compile(r"^\d+:\d+(\s*\|\s*\d+:\d+)+$")
-
-
-def _game_id(summary_page: list[_Fragment]) -> _Fragment:
-    for fragment in summary_page:
-        if _GAME_ID.match(fragment.text):
-            return fragment
-    raise LeagueSourceError("no game ID on the summary page")
-
-
-def _game_date(summary_page: list[_Fragment], game_id: _Fragment) -> date_ | None:
-    """The game's own date sits in the game ID's column; the same format
-    elsewhere on the page is the "last changed" timestamp."""
-    for fragment in summary_page:
-        match = _GAME_DATE.match(fragment.text)
-        if match and abs(fragment.x - game_id.x) < 1:
-            day, month, year = (int(part) for part in match.groups())
-            return date_(year, month, day)
-    return None
-
-
-def _below(page: list[_Fragment], label: str) -> str | None:
-    """The value printed directly under `label`, in the same column."""
-    anchor = next((f for f in page if f.text == label), None)
-    if anchor is None:
-        return None
-    under = [f for f in page if abs(f.x - anchor.x) < 1 and f.y < anchor.y - 1]
-    return max(under, key=lambda f: f.y).text if under else None
-
-
-def _final_score(summary_page: list[_Fragment]) -> tuple[int, int]:
-    """The big "7 : 1" header prints each number as its own fragment, on
-    the only row of the page holding exactly two bare numbers (the page
-    number sits alone on its row). Blank in the pre-game template -- an
-    unfinished game isn't importable (ticket 11)."""
-    rows: dict[float, list[_Fragment]] = {}
-    for fragment in summary_page:
-        if _SCORE.match(fragment.text):
-            rows.setdefault(round(fragment.y), []).append(fragment)
-    pairs = [row for row in rows.values() if len(row) == 2]
-    if len(pairs) != 1:
-        raise LeagueSourceError("no final score (game not finished?)")
-    home, away = sorted(pairs[0], key=lambda f: f.x)
-    return int(home.text), int(away.text)
-
-
-def _period_scores(summary_page: list[_Fragment]) -> list[dict[str, int]]:
-    for fragment in summary_page:
-        if _PERIOD_SCORES.match(fragment.text):
-            return [
-                {"home": int(home), "away": int(away)}
-                for home, away in (
-                    period.strip().split(":") for period in fragment.text.split("|")
-                )
-            ]
-    raise LeagueSourceError("no period-by-period score")
-
-
-def _lineups(lineup_page: list[_Fragment]) -> tuple[ScrapedTeam, ScrapedTeam]:
-    """Both teams' names and lineups, home first."""
-    title = _find(lineup_page, "Team-Lineups")
-    # The row directly under the "Team-Lineups" title holds both team
-    # names: home on the left half of the page, away on the right.
-    below_title = [f for f in lineup_page if f.y < title.y - 1]
-    if not below_title:
-        raise LeagueSourceError("no team names under the lineup title")
-    names_y = max(f.y for f in below_title)
-    names = sorted(
-        (f for f in below_title if abs(f.y - names_y) < 1), key=lambda f: f.x
+def _team(info: dict[str, Any], rows: list[dict[str, Any]], side: Side) -> LeagueTeam:
+    name = info[f"{side.value}_team_name"]
+    if not name:
+        raise LeagueSourceError(f"no {side.value} team name")
+    team_id = info[f"{side.value}_team_id"]
+    lineup = tuple(
+        LeaguePlayer(row["player_jersey"], row["player_name"], _UNIT_POSITIONS[unit])
+        for row in rows
+        # A null unit is an absentee: never dressed, so not a roster row.
+        if (unit := row["unit"]) is not None
     )
-    if len(names) != 2:
-        raise LeagueSourceError(f"expected two team names, found {len(names)}")
-    home_name, away_name = names
-    lineup_area = [f for f in below_title if f.y < names_y - 1]
-    # Everything from the away team's name rightward is the away half.
-    home_area = [f for f in lineup_area if f.x < away_name.x - 1]
-    away_area = [f for f in lineup_area if f.x >= away_name.x - 1]
-    return (
-        ScrapedTeam(home_name.text, _parse_lineup(home_area)),
-        ScrapedTeam(away_name.text, _parse_lineup(away_area)),
-    )
+    if not lineup:
+        # Also a game whose lineups aren't out yet.
+        raise LeagueSourceError(f"the {side.value} team's lineup has no players")
+    if any(p.jersey_number is None or not p.full_name for p in lineup):
+        raise LeagueSourceError(f"a {side.value} lineup player has no name or jersey")
+    return LeagueTeam(name, None if team_id is None else str(team_id), lineup)
 
 
-# The six position-group headers every lineup uses (ticket 11), plus the
-# sections after them whose rows aren't game participants. Compared
-# casefolded: the PDF capitalizes "Stürmer Links", the HTML "links".
-_LINEUP_HEADERS: dict[str, Position | None] = {
-    "goalie": Position.GOALIE,
-    "verteidiger links": Position.DEFENSE,
-    "verteidiger rechts": Position.DEFENSE,
-    "stürmer mitte": Position.CENTER,
-    "stürmer links": Position.LEFT_WING,
-    "stürmer rechts": Position.RIGHT_WING,
-    "head coach": None,
-    "absenzen": None,
-}
-
-_PLAYER_ROW = re.compile(r"^(\d{1,3})\s*-\s*(.+)$")
-# Trailing markers after a name: captain "(C)", first goalie "(1st)", etc.
-_NAME_MARKERS = re.compile(r"(\s*\([^()]*\))+$")
-
-
-def _parse_lineup(team_area: list[_Fragment]) -> tuple[ScrapedPlayer, ...]:
-    """One team's half of the lineup page. Each player row belongs to the
-    nearest header row above it, and -- where a row pairs two headers
-    (links/rechts) -- to the header horizontally closest to it, since each
-    header is centered over its own column."""
-    headers = [f for f in team_area if f.text.casefold() in _LINEUP_HEADERS]
-    placed = []
-    for fragment in team_area:
-        row = _PLAYER_ROW.match(fragment.text)
-        if not row:
-            continue
-        above = [h for h in headers if h.y > fragment.y + 1]
-        if not above:
-            continue
-        nearest_y = min(h.y for h in above)
-        header = min(
-            (h for h in above if abs(h.y - nearest_y) < 1),
-            key=lambda h: abs(h.x - fragment.x),
-        )
-        position = _LINEUP_HEADERS[header.text.casefold()]
-        if position is None:
-            continue
-        name = _NAME_MARKERS.sub("", row.group(2)).strip()
-        player = ScrapedPlayer(int(row.group(1)), name, position)
-        # Listing order: section by section, left column before right,
-        # then top to bottom -- the order the export reads in.
-        placed.append(((-header.y, header.x, -fragment.y), player))
-    if not placed:
-        # Also the pre-game export's shape: a structurally empty template.
-        raise LeagueSourceError("a team's lineup has no players")
-    return tuple(player for _, player in sorted(placed, key=lambda p: p[0]))
-
-
-def _pdf_fragments(pdf: bytes) -> list[list[_Fragment]]:
+def _start_date(start: str | None) -> date_ | None:
+    """The calendar date of the start time, as the league prints it (local
+    time, with its UTC offset)."""
     try:
-        reader = PdfReader(io.BytesIO(pdf))
-        pages = []
-        for page in reader.pages:
-            fragments: list[_Fragment] = []
-
-            def visit(text, cm, tm, _font_dict, _font_size, fragments=fragments):
-                text = text.strip()
-                if text:
-                    x = tm[4] * cm[0] + tm[5] * cm[2] + cm[4]
-                    y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
-                    fragments.append(_Fragment(x, y, text))
-
-            page.extract_text(visitor_text=visit)
-            pages.append(fragments)
-    # pypdf raises a wide, undocumented range of exception types on
-    # malformed input; any of them just means "not a readable export".
-    except Exception as error:
-        raise LeagueSourceError(f"unreadable PDF: {error}") from error
-    return pages
+        return date_.fromisoformat(start[:10]) if start else None
+    except ValueError:
+        return None
 
 
-def _page_with(pages: list[list[_Fragment]], text: str) -> list[_Fragment]:
-    for fragments in pages:
-        if any(f.text == text for f in fragments):
-            return fragments
-    raise LeagueSourceError(f"no page containing {text!r}")
+def _period_scores(info: dict[str, Any]) -> list[dict[str, int]]:
+    home, away = info["home_score_by_period"], info["away_score_by_period"]
+    if not home or len(home) != len(away) or None in home or None in away:
+        raise LeagueSourceError("no period-by-period score")
+    return [{"home": h, "away": a} for h, a in zip(home, away, strict=True)]
 
 
-def _find(fragments: list[_Fragment], text: str) -> _Fragment:
-    for fragment in fragments:
-        if fragment.text == text:
-            return fragment
-    raise LeagueSourceError(f"no {text!r} on the page")
+class SihfApiSource:
+    """The live `LeagueSource`: the keyless SIHF statistics API, through
+    sportsdataverse's raw-response fetch (ADR-0013). sportsdataverse
+    retries and throttles the request itself, and refuses a body for
+    another game than the one asked for."""
 
+    def fetch_game_overview(self, game_id: str) -> dict[str, Any]:
+        from sportsdataverse.errors import SportsDataverseError
+        from sportsdataverse.hockey.sihf import sihf_pbp
 
-# -- fetching -------------------------------------------------------------------
-
-
-_SITE = "https://www.sihf.ch"
-
-
-def _game_page_url(game_id: str) -> str:
-    return f"{_SITE}/de/game-center/game/{game_id}"
-
-
-class SihfHttpSource:
-    """The live `LeagueSource`: plain unauthenticated GETs (ticket 02). The
-    PDF endpoint answers 400 without a `Referer` naming the game's page --
-    hotlink protection, not auth (ADR-0005). The German page is requested
-    because the parsers match the export's German labels."""
-
-    def __init__(self, *, timeout_seconds: float = 15.0) -> None:
-        self._timeout = timeout_seconds
-
-    def fetch_game_pdf(self, game_id: str) -> bytes:
-        return self._get(
-            f"{_SITE}/umbraco/GameCenter/GameDetail/ExportGameTimeline"
-            f"?gameId={game_id}",
-            referer=_game_page_url(game_id),
-        )
-
-    def fetch_game_page(self, game_id: str) -> str:
-        return self._get(_game_page_url(game_id)).decode("utf-8", errors="replace")
-
-    def _get(self, url: str, *, referer: str | None = None) -> bytes:
-        headers = {"User-Agent": "hockey-analyzer"}
-        if referer is not None:
-            headers["Referer"] = referer
         try:
-            with urllib.request.urlopen(
-                urllib.request.Request(url, headers=headers), timeout=self._timeout
-            ) as response:
-                return response.read()
-        # URLError covers HTTPError (non-2xx) and connection failures;
-        # OSError covers timeouts and resets mid-read.
-        except OSError as error:
-            raise LeagueSourceError(f"couldn't fetch {url}: {error}") from error
-
-
-# -- HTML overview page -------------------------------------------------------
-
-
-_TEAM_PATH = re.compile(r"/game-center/team/([^/?#\s]+)")
-
-
-class _HeaderTeamLinks(HTMLParser):
-    """Collects the header's `c-game-detail-header__team--home/--away`
-    anchors' `team/{league_id}` paths."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.league_ids: dict[Side, str] = {}
-
-    def handle_starttag(self, tag, attrs):
-        if tag != "a":
-            return
-        attributes = dict(attrs)
-        classes = (attributes.get("class") or "").split()
-        match = _TEAM_PATH.search(attributes.get("href") or "")
-        for side in Side:
-            if f"c-game-detail-header__team--{side.value}" in classes and match:
-                self.league_ids.setdefault(side, match.group(1))
-
-
-def parse_team_league_ids(html: str) -> dict[Side, str]:
-    """Each side's team `league_id`, from the game page's header links --
-    the opaque `team/{league}-{div}-{teamNum}` path segment (never parsed
-    further, per ticket 02)."""
-    parser = _HeaderTeamLinks()
-    parser.feed(html)
-    if set(parser.league_ids) != set(Side):
-        raise LeagueSourceError("game page header has no home/away team links")
-    return parser.league_ids
+            return sihf_pbp(game_id=int(game_id), return_parsed=False)
+        # SportsDataverseError covers a failed fetch (AssetFetchError) and
+        # an unknown game (NoDataError); ValueError a rejected request;
+        # OSError anything the HTTP layer lets through.
+        except (SportsDataverseError, ValueError, OSError) as error:
+            raise LeagueSourceError(
+                f"couldn't fetch league game {game_id}: {error}"
+            ) from error
